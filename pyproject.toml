@@ -1,0 +1,21 @@
+[project]
+name = "agent-builder-app"
+version = "0.1.0"
+description = "Visual drag-and-drop LangGraph agent builder for Databricks"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "langgraph>=0.2.0",
+    "langchain-core>=0.3.0",
+    "langchain-community>=0.3.0",
+    "databricks-sdk>=0.20.0",
+    "pydantic>=2.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
