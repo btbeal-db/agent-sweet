@@ -156,17 +156,12 @@ def deploy_graph(req: DeployRequest):
             ],
         }
 
-        # 5. Log model to MLflow
-        pip_requirements = [
-            "langgraph>=0.2.0",
-            "langchain-core>=0.3.0",
-            "langchain-community>=0.3.0",
-            "databricks-sdk>=0.20.0",
-            "databricks-langchain>=0.17.0",
-            "langgraph-checkpoint-postgres>=2.0.0",
-            "psycopg[binary]>=3.1.0",
-            "mlflow>=3.10.1",
-        ]
+        # 5. Log model to MLflow — use pinned requirements from uv
+        requirements_path = _BACKEND_DIR.parent / "requirements.txt"
+        if not requirements_path.exists():
+            raise FileNotFoundError(
+                "requirements.txt not found. Run: uv pip compile pyproject.toml -o requirements.txt --python-version 3.11"
+            )
 
         with mlflow.start_run() as run:
             model_info = mlflow.pyfunc.log_model(
@@ -174,7 +169,7 @@ def deploy_graph(req: DeployRequest):
                 python_model=AgentGraphModel(),
                 artifacts={"graph_def": graph_def_path},
                 code_paths=_collect_code_paths(),
-                pip_requirements=pip_requirements,
+                pip_requirements=str(requirements_path),
                 resources=auth_policy,
             )
 
