@@ -1,35 +1,34 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
+import { Home, Hammer } from "lucide-react";
 import Canvas from "./components/Canvas";
 import NodePalette from "./components/NodePalette";
-import ConfigPanel from "./components/ConfigPanel";
 import StateModelModal from "./components/StateModelModal";
 import StateSummary from "./components/StateSummary";
 import ChatPlayground from "./components/ChatPlayground";
 import DeployModal from "./components/DeployModal";
+import HomePage from "./components/HomePage";
 import { StateProvider } from "./StateContext";
 import { fetchNodeTypes, exportGraph } from "./api";
 import type { NodeTypeMetadata, GraphDef, StateFieldDef } from "./types";
 
-const MIN_PANEL_WIDTH = 280;
-const MAX_PANEL_WIDTH = 700;
-const DEFAULT_PANEL_WIDTH = 380;
+type AppView = "home" | "builder";
 
 export default function App() {
   const [nodeTypes, setNodeTypes] = useState<NodeTypeMetadata[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [graphGetter, setGraphGetter] = useState<(() => GraphDef) | null>(null);
   const [exportedCode, setExportedCode] = useState<string>("");
-  const [activePanel, setActivePanel] = useState<"export" | null>(null);
-  const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [showExport, setShowExport] = useState(false);
   const [stateFields, setStateFields] = useState<StateFieldDef[]>([
     { name: "user_input", type: "str", description: "The user's initial message", sub_fields: [] },
   ]);
-  const [showStateModal, setShowStateModal] = useState(true);
+  const [showStateModal, setShowStateModal] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showDeploy, setShowDeploy] = useState(false);
   const [graphImporter, setGraphImporter] = useState<((g: GraphDef) => void) | null>(null);
-  const isResizing = useRef(false);
+  const [view, setView] = useState<AppView>("home");
+  const hasOpenedBuilder = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const stateVariableNames = stateFields.map((f) => f.name);
@@ -40,41 +39,13 @@ export default function App() {
     fetchNodeTypes().then(setNodeTypes).catch(console.error);
   }, []);
 
-  // ── Resize handling ──────────────────────────────────────────
-  const startResize = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    isResizing.current = true;
-    const startX = e.clientX;
-    const startWidth = panelWidth;
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (!isResizing.current) return;
-      const delta = startX - e.clientX;
-      const newWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, startWidth + delta));
-      setPanelWidth(newWidth);
-    };
-
-    const onMouseUp = () => {
-      isResizing.current = false;
-      document.removeEventListener("mousemove", onMouseMove);
-      document.removeEventListener("mouseup", onMouseUp);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
-  }, [panelWidth]);
-
   const handleExport = useCallback(async () => {
     if (!graphGetter) return;
     const graph = graphGetter();
     graph.state_fields = stateFieldsRef.current;
     const result = await exportGraph(graph);
     setExportedCode(result.success ? result.code : `# Error: ${result.error}`);
-    setActivePanel("export");
+    setShowExport(true);
   }, [graphGetter]);
 
   const handleSaveJson = useCallback(() => {
@@ -103,107 +74,110 @@ export default function App() {
             setStateFields(graph.state_fields);
           }
           graphImporter(graph);
+          hasOpenedBuilder.current = true;
           setShowStateModal(false);
+          setView("builder");
         } catch (err) {
           console.error("Failed to parse graph JSON:", err);
         }
       };
       reader.readAsText(file);
-      // Reset input so the same file can be re-loaded
       e.target.value = "";
     },
     [graphImporter]
   );
 
+  const openBuilder = useCallback(() => {
+    setView("builder");
+    if (!hasOpenedBuilder.current) {
+      hasOpenedBuilder.current = true;
+      setShowStateModal(true);
+    }
+  }, []);
+
   return (
     <ReactFlowProvider>
       <StateProvider value={{ names: stateVariableNames, fields: stateFields }}>
-      <div className={`app${showStateModal ? " app-blurred" : ""}`}>
-        {/* Header */}
+      <div className={`app${showStateModal && view === "builder" ? " app-blurred" : ""}`}>
         <header className="header">
-          <h1>Agent Builder</h1>
-          <div className="header-actions">
-            <button className="btn btn-secondary" onClick={handleSaveJson}>
-              Save JSON
-            </button>
-            <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()}>
-              Load JSON
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".json"
-              style={{ display: "none" }}
-              onChange={handleLoadJson}
-            />
-            <button className="btn btn-secondary" onClick={handleExport}>
-              Export Python
-            </button>
-            <button className="btn btn-primary" onClick={() => setShowChat(true)}>
-              Chat Playground
-            </button>
-            <button className="btn btn-deploy" onClick={() => setShowDeploy(true)}>
-              Deploy
-            </button>
+          <div className="header-left">
+            <span className="header-logo">Agent Builder</span>
           </div>
+          {view === "builder" && (
+            <div className="header-actions">
+              <button className="btn btn-secondary" onClick={handleSaveJson}>
+                Save JSON
+              </button>
+              <button className="btn btn-secondary" onClick={() => fileInputRef.current?.click()}>
+                Load JSON
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json"
+                style={{ display: "none" }}
+                onChange={handleLoadJson}
+              />
+              <button className="btn btn-secondary" onClick={handleExport}>
+                Export Python
+              </button>
+              <button className="btn btn-primary" onClick={() => setShowChat(true)}>
+                Chat Playground
+              </button>
+              <button className="btn btn-deploy" onClick={() => setShowDeploy(true)}>
+                Deploy
+              </button>
+            </div>
+          )}
         </header>
 
         <div className="main">
-          {/* Left sidebar */}
-          <div className="left-panel" onKeyDown={(e) => e.stopPropagation()}>
-            <StateSummary
-              fields={stateFields}
-              onEdit={() => setShowStateModal(true)}
-            />
-            <NodePalette nodeTypes={nodeTypes} />
-          </div>
+          <nav className="nav-rail" onKeyDown={(e) => e.stopPropagation()}>
+            <button
+              className={`nav-rail-btn${view === "home" ? " active" : ""}`}
+              onClick={() => setView("home")}
+              title="Home"
+            >
+              <Home size={18} />
+              <span>Home</span>
+            </button>
+            <button
+              className={`nav-rail-btn${view === "builder" ? " active" : ""}`}
+              onClick={openBuilder}
+              title="Builder"
+            >
+              <Hammer size={18} />
+              <span>Builder</span>
+            </button>
+          </nav>
 
-          {/* Center — canvas */}
-          <Canvas
-            nodeTypes={nodeTypes}
-            stateVariableNames={stateVariableNames}
-            onNodeSelect={setSelectedNodeId}
-            onGraphReady={(getter) => setGraphGetter(() => getter)}
-            onImportReady={(importer) => setGraphImporter(() => importer)}
-          />
+          {view === "home" && (
+            <HomePage onGetStarted={openBuilder} />
+          )}
 
-          {/* Resize handle */}
-          <div className="resize-handle" onMouseDown={startResize} />
-
-          {/* Right sidebar — config & results */}
-          <aside
-            className="right-panel"
-            style={{ width: panelWidth }}
-            onKeyDown={(e) => e.stopPropagation()}
-          >
-            {selectedNodeId && (
-              <ConfigPanel
-                selectedNodeId={selectedNodeId}
-                nodeTypes={nodeTypes}
-                stateVariables={stateVariableNames}
-              />
-            )}
-
-            {activePanel === "export" && (
-              <div className="result-panel">
-                <h3>Exported Code</h3>
-                <pre>{exportedCode}</pre>
-                <button
-                  className="btn btn-sm"
-                  onClick={() => navigator.clipboard.writeText(exportedCode)}
-                >
-                  Copy
-                </button>
-                <button className="btn btn-sm" onClick={() => setActivePanel(null)}>
-                  Close
-                </button>
+          {view === "builder" && (
+            <>
+              <div className="left-panel" onKeyDown={(e) => e.stopPropagation()}>
+                <StateSummary
+                  fields={stateFields}
+                  onEdit={() => setShowStateModal(true)}
+                />
+                <NodePalette nodeTypes={nodeTypes} />
               </div>
-            )}
-          </aside>
+
+              <Canvas
+                nodeTypes={nodeTypes}
+                stateVariableNames={stateVariableNames}
+                selectedNodeId={selectedNodeId}
+                onNodeSelect={setSelectedNodeId}
+                onGraphReady={(getter) => setGraphGetter(() => getter)}
+                onImportReady={(importer) => setGraphImporter(() => importer)}
+              />
+            </>
+          )}
         </div>
       </div>
 
-      {/* State Model Modal — shown on launch and when editing */}
       {showStateModal && (
         <StateModelModal
           fields={stateFields}
@@ -212,7 +186,6 @@ export default function App() {
         />
       )}
 
-      {/* Chat Playground drawer */}
       {showChat && (
         <ChatPlayground
           graphGetter={graphGetter}
@@ -221,13 +194,37 @@ export default function App() {
         />
       )}
 
-      {/* Deploy modal */}
       {showDeploy && (
         <DeployModal
           graphGetter={graphGetter}
           stateFieldsRef={stateFieldsRef}
           onClose={() => setShowDeploy(false)}
         />
+      )}
+
+      {/* Export code modal */}
+      {showExport && (
+        <div className="modal-overlay" onClick={() => setShowExport(false)}>
+          <div className="modal-card" style={{ width: 640 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h1>Exported Python</h1>
+            </div>
+            <div className="modal-body">
+              <pre className="export-code">{exportedCode}</pre>
+            </div>
+            <div className="modal-footer">
+              <button
+                className="btn btn-secondary"
+                onClick={() => { navigator.clipboard.writeText(exportedCode); }}
+              >
+                Copy
+              </button>
+              <button className="btn btn-primary" onClick={() => setShowExport(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       </StateProvider>
     </ReactFlowProvider>

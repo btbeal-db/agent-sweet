@@ -1,5 +1,5 @@
 import type { NodeTypeMetadata } from "../types";
-import { ICON_MAP } from "./nodes/AgentNode";
+import { NodeIcon } from "./NodeIcon";
 
 interface Props {
   nodeTypes: NodeTypeMetadata[];
@@ -37,7 +37,7 @@ export default function NodePalette({ nodeTypes }: Props) {
                 className="palette-icon"
                 style={{ background: nt.color }}
               >
-                {ICON_MAP[nt.icon] ?? "?"}
+                <NodeIcon name={nt.icon} size={14} />
               </div>
               <div>
                 <div className="palette-label">{nt.display_name}</div>

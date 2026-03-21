@@ -1,4 +1,4 @@
-import { useCallback, useRef, useEffect, useMemo } from "react";
+import { useCallback, useRef, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -7,15 +7,18 @@ import {
   addEdge,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   type Connection,
   type Edge,
   type Node,
   type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { X } from "lucide-react";
 
 import AgentNode from "./nodes/AgentNode";
 import SentinelNode from "./nodes/SentinelNode";
+import ConfigPanel from "./ConfigPanel";
 import type { NodeTypeMetadata, GraphDef } from "../types";
 
 const START_ID = "__start__";
@@ -42,13 +45,45 @@ interface Props {
   nodeTypes: NodeTypeMetadata[];
   stateVariableNames: string[];
   onNodeSelect: (nodeId: string | null) => void;
+  selectedNodeId: string | null;
   onGraphReady: (getter: () => GraphDef) => void;
   onImportReady?: (importer: (graph: GraphDef) => void) => void;
 }
 
 let nodeIdCounter = 0;
 
-export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, onGraphReady, onImportReady }: Props) {
+/** Compute screen-space position for the popover anchored to a node. */
+function usePopoverPosition(selectedNodeId: string | null, wrapperRef: React.RefObject<HTMLDivElement | null>) {
+  const { getNode, flowToScreenPosition } = useReactFlow();
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    if (!selectedNodeId) { setPos(null); return; }
+    const update = () => {
+      const node = getNode(selectedNodeId);
+      const wrapper = wrapperRef.current;
+      if (!node || !wrapper) { setPos(null); return; }
+      const wrapperRect = wrapper.getBoundingClientRect();
+      // Anchor to the right edge of the node, vertically centered
+      const screenPos = flowToScreenPosition({
+        x: node.position.x + (node.measured?.width ?? 160),
+        y: node.position.y,
+      });
+      setPos({
+        x: screenPos.x - wrapperRect.left + 12,
+        y: screenPos.y - wrapperRect.top,
+      });
+    };
+    update();
+    // Update on short interval to track panning/zooming
+    const id = setInterval(update, 60);
+    return () => clearInterval(id);
+  }, [selectedNodeId, getNode, flowToScreenPosition, wrapperRef]);
+
+  return pos;
+}
+
+export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, selectedNodeId, onGraphReady, onImportReady }: Props) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(INITIAL_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -60,22 +95,17 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
 
   const SENTINEL_IDS = new Set([START_ID, END_ID]);
 
-  // Wrap onNodesChange to protect sentinel nodes and clear selection on delete
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      // Block removal of sentinel nodes
       const safe = changes.filter(
         (c) => c.type !== "remove" || !SENTINEL_IDS.has(c.id)
       );
-
-      // Clear selection for any nodes being removed
       const removedIds = safe
         .filter((c) => c.type === "remove")
         .map((c) => c.id);
       if (removedIds.length > 0) {
         onNodeSelect(null);
       }
-
       onNodesChange(safe);
     },
     [onNodesChange, onNodeSelect]
@@ -90,6 +120,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
+      if (SENTINEL_IDS.has(node.id)) return;
       onNodeSelect(node.id);
     },
     [onNodeSelect]
@@ -99,7 +130,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
     onNodeSelect(null);
   }, [onNodeSelect]);
 
-  // Expose a function to serialize the current graph
+  // Expose graph serialization
   const nodesRef = useRef(nodes);
   const edgesRef = useRef(edges);
   nodesRef.current = nodes;
@@ -107,7 +138,6 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
 
   useEffect(() => {
     onGraphReady(() => {
-      // Exclude sentinel nodes from the node list
       const graphNodes = nodesRef.current
         .filter((n) => n.id !== START_ID && n.id !== END_ID)
         .map((n) => ({
@@ -117,8 +147,6 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
           config: (n.data.config as Record<string, unknown>) ?? {},
           position: n.position,
         }));
-      // Edges from/to sentinel nodes use the special __start__/__end__ ids
-      // which the backend maps to LangGraph START/END
       const graphEdges = edgesRef.current.map((e) => ({
         id: e.id,
         source: e.source,
@@ -129,7 +157,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
     });
   }, [onGraphReady]);
 
-  // Expose an import function to load a saved GraphDef onto the canvas
+  // Import handler
   useEffect(() => {
     if (!onImportReady) return;
     onImportReady((graph: GraphDef) => {
@@ -166,7 +194,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
     });
   }, [onImportReady, nodeTypes, setNodes, setEdges]);
 
-  // Handle drop from palette
+  // Drop from palette
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
@@ -189,7 +217,6 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
         y: e.clientY - wrapperBounds.top - 20,
       };
 
-      // Build default config from field definitions
       const defaultConfig: Record<string, unknown> = {};
       for (const field of meta.config_fields) {
         if (field.default != null) {
@@ -201,7 +228,6 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
         }
       }
 
-      // Default writes_to: first non-user_input state variable, or ""
       const defaultWritesTo = meta.type === "router"
         ? ""
         : stateVariableNames.find((v) => v !== "user_input") ?? "";
@@ -228,6 +254,9 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
     [nodeTypes, setNodes]
   );
 
+  // Floating popover position
+  const popoverPos = usePopoverPosition(selectedNodeId, reactFlowWrapper);
+
   return (
     <div className="canvas-wrapper" ref={reactFlowWrapper}>
       <ReactFlow
@@ -247,10 +276,29 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, on
         <Background />
         <Controls />
         <MiniMap
-          style={{ background: "#1a1d27" }}
+          style={{ background: "#12151c" }}
           maskColor="rgba(0,0,0,0.4)"
         />
       </ReactFlow>
+
+      {/* Floating config popover */}
+      {selectedNodeId && popoverPos && (
+        <div
+          className="config-popover"
+          style={{ left: popoverPos.x, top: popoverPos.y }}
+          onKeyDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button className="config-popover-close" onClick={() => onNodeSelect(null)}>
+            <X size={14} />
+          </button>
+          <ConfigPanel
+            selectedNodeId={selectedNodeId}
+            nodeTypes={nodeTypes}
+            stateVariables={stateVariableNames}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -1,14 +1,7 @@
 import { Handle, Position, useReactFlow } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useStateVars } from "../../StateContext";
-
-export const ICON_MAP: Record<string, string> = {
-  brain: "\u{1F9E0}",
-  search: "\u{1F50D}",
-  database: "\u{1F4CA}",
-  "git-branch": "\u{1F500}",
-  puzzle: "\u{1F9E9}",
-};
+import { NodeIcon } from "../NodeIcon";
 
 interface RouteEntry {
   label: string;
@@ -36,7 +29,7 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
   const stateVarNames = useStateVars();
 
   const color = (data.color as string) ?? "#6366f1";
-  const icon = ICON_MAP[(data.icon as string) ?? "puzzle"] ?? "\u{1F9E9}";
+  const iconKey = (data.icon as string) ?? "puzzle";
   const displayName = (data.display_name as string) ?? "Node";
   const isRouter = (data.is_router as boolean) ?? false;
   const writesTo = (data.writes_to as string) ?? "";
@@ -58,7 +51,7 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
       <Handle type="target" position={Position.Top} />
 
       <div className="agent-node-header" style={{ background: color }}>
-        <span>{icon}</span>
+        <NodeIcon name={iconKey} size={15} />
         <span>{displayName}</span>
       </div>
 
@@ -80,7 +73,6 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
           </div>
         )}
 
-        {/* Router: each route is a row with a labeled handle on the right */}
         {isRouter && routes.length > 0 && (
           <div className="router-outputs">
             {routes.map((route, i) => {
@@ -103,7 +95,6 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
         )}
       </div>
 
-      {/* Non-router: single source handle at the bottom */}
       {!isRouter && <Handle type="source" position={Position.Bottom} />}
     </div>
   );
