@@ -23,6 +23,12 @@ from databricks.sdk.service.serving import (
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from mlflow.models.resources import (
+    DatabricksGenieSpace,
+    DatabricksServingEndpoint,
+    DatabricksTable,
+    DatabricksVectorSearchIndex,
+)
 
 from .graph_builder import build_graph, generate_code, run_graph
 from .nodes import get_all_metadata
@@ -38,6 +44,41 @@ from .schema import (
 logger = logging.getLogger(__name__)
 
 _BACKEND_DIR = Path(__file__).parent
+
+
+def _extract_resources(graph: GraphDef) -> list:
+    """Extract Databricks resource declarations from all nodes in the graph.
+
+    Maps node config fields to the appropriate MLflow resource types so that
+    Model Serving provisions credentials (OBO) for each external resource.
+    """
+    resources = []
+    seen = set()
+
+    # Config field name → resource class mapping
+    resource_map = {
+        "endpoint": DatabricksServingEndpoint,        # LLM serving endpoints
+        "endpoint_name": DatabricksServingEndpoint,   # VS endpoint names
+        "index_name": DatabricksVectorSearchIndex,    # VS indexes
+        "room_id": DatabricksGenieSpace,              # Genie rooms
+        "table_name": DatabricksTable,                # UC tables
+    }
+
+    for node in graph.nodes:
+        for config_key, resource_cls in resource_map.items():
+            value = node.config.get(config_key)
+            if value and (config_key, value) not in seen:
+                seen.add((config_key, value))
+                # Each resource class takes a single positional arg for its identifier
+                init_param = {
+                    DatabricksServingEndpoint: "endpoint_name",
+                    DatabricksVectorSearchIndex: "index_name",
+                    DatabricksGenieSpace: "genie_space_id",
+                    DatabricksTable: "table_name",
+                }[resource_cls]
+                resources.append(resource_cls(**{init_param: value}))
+
+    return resources
 
 
 def _collect_code_paths() -> list[str]:
@@ -153,17 +194,8 @@ def deploy_graph(req: DeployRequest):
             f.write(req.graph.model_dump_json())
             graph_def_path = f.name
 
-        # 4. OBO auth policy scopes
-        auth_policy = {
-            "permissions": [
-                {"serving_endpoint_permission": {"allowed_entities": [], "filter": "ALL"}},
-            ],
-            "system_permissions": [
-                {"permission": "serving.serving-endpoints"},
-                {"permission": "vectorsearch.vector-search-endpoints"},
-                {"permission": "vectorsearch.vector-search-indexes"},
-            ],
-        }
+        # 4. Declare Databricks resources the model needs (enables OBO auth)
+        resources = _extract_resources(req.graph)
 
         # 5. Log model to MLflow — use pinned requirements compiled from pyproject.toml
         requirements_path = _BACKEND_DIR.parent / "requirements-serving.txt"
@@ -180,7 +212,7 @@ def deploy_graph(req: DeployRequest):
                 artifacts={"graph_def": graph_def_path},
                 code_paths=_collect_code_paths(),
                 pip_requirements=str(requirements_path),
-                resources=auth_policy,
+                resources=resources if resources else None,
             )
 
             # 6. Ensure catalog and schema exist, then register in UC
