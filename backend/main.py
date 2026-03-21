@@ -25,7 +25,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .graph_builder import build_graph, generate_code, run_graph
-from .mlflow_model import AgentGraphModel
 from .nodes import get_all_metadata
 from .schema import (
     DeployRequest,
@@ -42,11 +41,20 @@ _BACKEND_DIR = Path(__file__).parent
 
 
 def _collect_code_paths() -> list[str]:
-    """Collect all .py files under backend/ for MLflow code_paths (skip __pycache__, static, etc.)."""
-    return sorted(
-        str(p) for p in _BACKEND_DIR.rglob("*.py")
-        if "__pycache__" not in p.parts
+    """Copy backend/ to a clean temp directory (no __pycache__, static, etc.) for MLflow code_paths.
+
+    MLflow code_paths needs a directory to preserve the package structure
+    so that `from backend.graph_builder import ...` works in the serving container.
+    """
+    import shutil
+
+    tmp = Path(tempfile.mkdtemp()) / "backend"
+    shutil.copytree(
+        _BACKEND_DIR,
+        tmp,
+        ignore=shutil.ignore_patterns("mlruns", "__pycache__", "static", "*.pyc", "*.db"),
     )
+    return [str(tmp)]
 
 
 app = FastAPI(title="Agent Builder", version="0.1.0")
@@ -168,7 +176,7 @@ def deploy_graph(req: DeployRequest):
         with mlflow.start_run() as run:
             model_info = mlflow.pyfunc.log_model(
                 artifact_path="agent",
-                python_model=AgentGraphModel(),
+                python_model=str(_BACKEND_DIR / "mlflow_model.py"),
                 artifacts={"graph_def": graph_def_path},
                 code_paths=_collect_code_paths(),
                 pip_requirements=str(requirements_path),

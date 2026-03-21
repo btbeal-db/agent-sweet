@@ -1,18 +1,31 @@
-"""MLflow ResponsesAgent wrapper for deploying Agent Builder graphs via Model Serving."""
+"""MLflow ResponsesAgent wrapper for deploying Agent Builder graphs via Model Serving.
+
+This file is used as a "models from code" entry point by MLflow.
+It must be importable standalone (no relative imports) because MLflow
+loads it directly via the file path.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import sys
 import uuid
 
 import mlflow
 from mlflow.pyfunc import ResponsesAgent
 from mlflow.types.responses import ResponsesAgentRequest, ResponsesAgentResponse
 
-from .graph_builder import build_graph
-from .schema import GraphDef
+# Ensure the backend package is importable when MLflow loads this file
+# from the code/ directory in the serving container.
+_this_dir = os.path.dirname(os.path.abspath(__file__))
+_parent_dir = os.path.dirname(_this_dir)
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
+
+from backend.graph_builder import build_graph
+from backend.schema import GraphDef
 
 logger = logging.getLogger(__name__)
 
@@ -114,3 +127,7 @@ class AgentGraphModel(ResponsesAgent):
                 }
             ],
         )
+
+
+# Register this model for MLflow "models from code" loading
+mlflow.models.set_model(AgentGraphModel())
