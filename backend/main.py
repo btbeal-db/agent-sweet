@@ -27,6 +27,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from mlflow.models.resources import (
+    DatabricksFunction,
     DatabricksGenieSpace,
     DatabricksServingEndpoint,
     DatabricksTable,
@@ -65,6 +66,7 @@ def _extract_resources(graph: GraphDef) -> list:
         "index_name": DatabricksVectorSearchIndex,    # VS indexes
         "room_id": DatabricksGenieSpace,              # Genie rooms
         "table_name": DatabricksTable,                # UC tables
+        "function_name": DatabricksFunction,          # UC functions
     }
 
     for node in graph.nodes:
@@ -78,6 +80,7 @@ def _extract_resources(graph: GraphDef) -> list:
                     DatabricksVectorSearchIndex: "index_name",
                     DatabricksGenieSpace: "genie_space_id",
                     DatabricksTable: "table_name",
+                    DatabricksFunction: "function_name",
                 }[resource_cls]
                 resources.append(resource_cls(**{init_param: value}))
 

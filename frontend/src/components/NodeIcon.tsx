@@ -7,9 +7,11 @@ import {
   Cpu,
   Database,
   FileText,
+  FunctionSquare,
   Globe,
   MessageSquare,
   Shield,
+  User,
   Zap,
   type LucideProps,
 } from "lucide-react";
@@ -26,7 +28,9 @@ const ICON_MAP: Record<string, ComponentType<LucideProps>> = {
   "file-text": FileText,
   globe: Globe,
   message: MessageSquare,
+  "function-square": FunctionSquare,
   shield: Shield,
+  user: User,
   zap: Zap,
 };
 

@@ -11,6 +11,8 @@ import {
   Shield,
   Workflow,
   ArrowRight,
+  FunctionSquare,
+  User,
 } from "lucide-react";
 
 interface Props {
@@ -121,6 +123,32 @@ export default function HomePage({ onGetStarted }: Props) {
             </div>
           </div>
           <div className="home-card">
+            <div className="home-card-icon" style={{ background: "#8b5cf6" }}>
+              <FunctionSquare size={18} />
+            </div>
+            <div>
+              <h3>UC Function</h3>
+              <p>
+                Execute Unity Catalog functions as actions in your agent flow.
+                Parameters can be passed dynamically from state, enabling
+                LLM-driven function calling.
+              </p>
+            </div>
+          </div>
+          <div className="home-card">
+            <div className="home-card-icon" style={{ background: "#f59e0b" }}>
+              <User size={18} />
+            </div>
+            <div>
+              <h3>Human Input</h3>
+              <p>
+                Pause the agent and ask the user a question. Supports
+                template variables from state in the prompt. The user's
+                response flows into the target state field.
+              </p>
+            </div>
+          </div>
+          <div className="home-card">
             <div className="home-card-icon" style={{ background: "#ef4444" }}>
               <GitBranch size={18} />
             </div>
@@ -206,6 +234,13 @@ export default function HomePage({ onGetStarted }: Props) {
             <div>
               <strong>Genie Rooms</strong>
               <span>CAN RUN access to Genie Rooms used in your agent flow</span>
+            </div>
+          </div>
+          <div className="home-perm">
+            <FunctionSquare size={16} />
+            <div>
+              <strong>UC Functions</strong>
+              <span>EXECUTE access to any Unity Catalog functions your agent calls</span>
             </div>
           </div>
           <div className="home-perm">
