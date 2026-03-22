@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
 from langgraph.types import Command
 
 from .nodes import get_node
@@ -19,7 +20,8 @@ def _build_state_type(state_fields: list[StateFieldDef]) -> type:
     fields: dict[str, type] = {}
     for sf in state_fields:
         fields[sf.name] = str  # all state values are strings at runtime
-    fields["messages"] = list
+    # Use add_messages reducer so the checkpointer accumulates messages across turns
+    fields["messages"] = Annotated[list, add_messages]
     return TypedDict("AgentState", fields)  # type: ignore[misc]
 
 
@@ -36,11 +38,6 @@ def _make_node_fn(node_impl, config: dict[str, Any], writes_to: str, target_fiel
             "_target_field": target_field,
         }
         updates = node_impl.execute(state, enriched_config)
-
-        # Append messages rather than replace
-        if "messages" in updates:
-            updates["messages"] = state.get("messages", []) + updates["messages"]
-
         return updates
 
     fn.__name__ = f"node_{writes_to or node_impl.node_type}"
@@ -138,6 +135,10 @@ def run_graph(
 
     When *resume_value* is provided the graph is resumed from an interrupt
     using ``Command(resume=...)``.  Otherwise a fresh invocation is started.
+
+    When a *checkpointer* and *thread_id* are provided and the thread already
+    has checkpoint state, only the new user message is sent so that prior
+    conversation history is preserved by the checkpointer.
     """
     compiled = build_graph(graph_def, checkpointer=checkpointer)
 
@@ -148,14 +149,33 @@ def run_graph(
     if resume_value is not None:
         result = compiled.invoke(Command(resume=resume_value), config=config)
     else:
-        initial_state: dict[str, Any] = {
-            f.name: "" for f in graph_def.state_fields
-        }
-        initial_state["input"] = input_message
-        initial_state["messages"] = [
-            {"role": "user", "content": input_message, "node": "_start"},
-        ]
-        result = compiled.invoke(initial_state, config=config if config else None)
+        # Check if this thread already has conversation history
+        has_history = False
+        if checkpointer and thread_id:
+            existing = compiled.get_state(config)
+            if existing and existing.values:
+                has_history = True
+
+        if has_history:
+            # Continuation: send only the new user message; the checkpointer
+            # restores prior state and add_messages appends this message.
+            result = compiled.invoke(
+                {
+                    "input": input_message,
+                    "messages": [{"role": "user", "content": input_message}],
+                },
+                config=config,
+            )
+        else:
+            # First message: full initial state
+            initial_state: dict[str, Any] = {
+                f.name: "" for f in graph_def.state_fields
+            }
+            initial_state["input"] = input_message
+            initial_state["messages"] = [
+                {"role": "user", "content": input_message},
+            ]
+            result = compiled.invoke(initial_state, config=config if config else None)
 
     return result
 

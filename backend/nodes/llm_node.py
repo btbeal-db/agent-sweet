@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import Field, create_model
 from databricks_langchain import ChatDatabricks
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from .base import BaseNode, NodeConfigField
 from . import register
@@ -60,6 +60,37 @@ def _build_state_context(state: dict[str, Any]) -> str:
             continue
         parts.append(f"{key}: {val}")
     return "\n".join(parts)
+
+
+def _format_conversation_history(state: dict[str, Any], last_n: int = 0) -> str:
+    """Format prior user/assistant turns as a readable text block.
+
+    Args:
+        state: The full agent state (messages may be BaseMessage or dict).
+        last_n: Number of recent messages to include. 0 means all.
+
+    Returns:
+        A formatted string like:
+            User: hello
+            Assistant: Hi there!
+    """
+    _TYPE_TO_ROLE = {"human": "User", "ai": "Assistant"}
+    turns: list[str] = []
+    for msg in state.get("messages", []):
+        if isinstance(msg, BaseMessage):
+            role = _TYPE_TO_ROLE.get(msg.type)
+            if role:
+                turns.append(f"{role}: {msg.content}")
+        elif isinstance(msg, dict):
+            role = msg.get("role", "")
+            if role in ("user", "assistant"):
+                label = "User" if role == "user" else "Assistant"
+                turns.append(f"{label}: {msg.get('content', '')}")
+
+    if last_n and last_n > 0:
+        turns = turns[-last_n:]
+
+    return "\n".join(turns)
 
 
 def _build_schema_instruction(sub_fields: list[dict[str, str]], field_name: str) -> str:
@@ -123,6 +154,23 @@ class LLMNode(BaseNode):
                 required=False,
                 default=0.7,
             ),
+            NodeConfigField(
+                name="conversational",
+                label="Conversational",
+                field_type="select",
+                required=False,
+                default="false",
+                options=["false", "true"],
+                help_text="Include conversation history in the prompt for multi-turn awareness.",
+            ),
+            NodeConfigField(
+                name="last_n_messages",
+                label="Last N Messages",
+                field_type="number",
+                required=False,
+                default=0,
+                help_text="Number of recent messages to include (0 = all). Only used when Conversational is enabled.",
+            ),
         ]
 
     def execute(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
@@ -131,10 +179,18 @@ class LLMNode(BaseNode):
         endpoint = config.get("endpoint", "databricks-meta-llama-3-3-70b-instruct")
         temperature = float(config.get("temperature", 0.7))
         raw_prompt = config.get("system_prompt", "You are a helpful assistant.")
+        conversational = str(config.get("conversational", "false")).lower() == "true"
+        last_n = int(config.get("last_n_messages", 0) or 0)
 
         # Resolve {field_name} templates in the system prompt from state
         system_prompt = _resolve_templates(raw_prompt, state)
         state_context = _build_state_context(state)
+
+        # Optionally append conversation history to the context
+        if conversational:
+            history_text = _format_conversation_history(state, last_n=last_n)
+            if history_text:
+                state_context = f"{state_context}\n\nConversation History:\n{history_text}" if state_context else f"Conversation History:\n{history_text}"
 
         llm = ChatDatabricks(endpoint=endpoint, temperature=temperature)
 

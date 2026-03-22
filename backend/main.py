@@ -34,6 +34,8 @@ from mlflow.models.resources import (
     DatabricksVectorSearchIndex,
 )
 
+from langchain_core.messages import BaseMessage
+
 from .graph_builder import build_graph, generate_code, run_graph
 from .nodes import get_all_metadata
 from .schema import (
@@ -48,6 +50,25 @@ from .schema import (
 logger = logging.getLogger(__name__)
 
 _BACKEND_DIR = Path(__file__).parent
+
+_MSG_TYPE_TO_ROLE = {"human": "user", "ai": "assistant", "system": "system"}
+
+
+def _serialize_messages(messages: list) -> list[dict]:
+    """Convert BaseMessage objects (from add_messages reducer) to plain dicts."""
+    result = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            result.append(msg)
+        elif isinstance(msg, BaseMessage):
+            role = _MSG_TYPE_TO_ROLE.get(msg.type, msg.type)
+            entry: dict = {"role": role, "content": msg.content}
+            # Preserve the node tag if present in additional_kwargs
+            node = msg.additional_kwargs.get("node")
+            if node:
+                entry["node"] = node
+            result.append(entry)
+    return result
 
 
 def _extract_resources(graph: GraphDef) -> list:
@@ -178,6 +199,8 @@ def preview_graph(req: PreviewRequest):
         # Check for interrupt in the returned state (LangGraph embeds it
         # as __interrupt__ rather than raising GraphInterrupt when a
         # checkpointer is present).
+        messages = _serialize_messages(result.get("messages", []))
+
         interrupts = result.get("__interrupt__")
         if interrupts:
             prompt = interrupts[0].get("value", "Input needed") if isinstance(interrupts[0], dict) else str(interrupts[0].value)
@@ -189,7 +212,7 @@ def preview_graph(req: PreviewRequest):
                 success=True,
                 interrupt=str(prompt),
                 thread_id=thread_id,
-                execution_trace=result.get("messages", []),
+                execution_trace=messages,
                 state=state_snapshot,
             )
 
@@ -200,7 +223,7 @@ def preview_graph(req: PreviewRequest):
         return PreviewResponse(
             success=True,
             output=str(result.get("output", result.get("input", ""))),
-            execution_trace=result.get("messages", []),
+            execution_trace=messages,
             state=state_snapshot,
             thread_id=thread_id,
         )

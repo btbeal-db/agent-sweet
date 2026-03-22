@@ -51,13 +51,21 @@ def _extract_user_message(request: ResponsesAgentRequest) -> str:
 
 
 def _build_initial_state(graph_def: GraphDef, user_message: str) -> dict:
-    """Build the initial state dict for graph invocation."""
+    """Build the initial state dict for the first graph invocation."""
     state = {f.name: "" for f in graph_def.state_fields}
     state["input"] = user_message
     state["messages"] = [
-        {"role": "user", "content": user_message, "node": "_start"},
+        {"role": "user", "content": user_message},
     ]
     return state
+
+
+def _build_continuation_state(user_message: str) -> dict:
+    """Build state for a follow-up turn (checkpointer restores prior state)."""
+    return {
+        "input": user_message,
+        "messages": [{"role": "user", "content": user_message}],
+    }
 
 
 def _build_config(checkpointer, thread_id: str | None) -> dict | None:
@@ -119,15 +127,31 @@ class AgentGraphModel(ResponsesAgent):
             )
 
         thread_id = _get_thread_id(request)
-        initial_state = _build_initial_state(self.graph_def, user_message)
         config = _build_config(self.checkpointer, thread_id)
 
-        result = self.compiled_graph.invoke(initial_state, config=config)
+        # Check if this thread already has conversation history
+        has_history = False
+        if self.checkpointer and config:
+            existing = self.compiled_graph.get_state(config)
+            if existing and existing.values:
+                has_history = True
+
+        invoke_state = (
+            _build_continuation_state(user_message)
+            if has_history
+            else _build_initial_state(self.graph_def, user_message)
+        )
+        result = self.compiled_graph.invoke(invoke_state, config=config)
 
         output = result.get("output", result.get("input", ""))
-        for msg in reversed(result.get("messages", [])):
+        messages = result.get("messages", [])
+        for msg in reversed(messages):
+            # Handle both dict messages and BaseMessage objects
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 output = msg.get("content", output)
+                break
+            elif hasattr(msg, "type") and msg.type == "ai":
+                output = msg.content
                 break
 
         return ResponsesAgentResponse(
@@ -154,8 +178,20 @@ class AgentGraphModel(ResponsesAgent):
             return
 
         thread_id = _get_thread_id(request)
-        initial_state = _build_initial_state(self.graph_def, user_message)
         config = _build_config(self.checkpointer, thread_id)
+
+        # Check if this thread already has conversation history
+        has_history = False
+        if self.checkpointer and config:
+            existing = self.compiled_graph.get_state(config)
+            if existing and existing.values:
+                has_history = True
+
+        invoke_state = (
+            _build_continuation_state(user_message)
+            if has_history
+            else _build_initial_state(self.graph_def, user_message)
+        )
 
         msg_id = _make_msg_id()
         output_index = 0
@@ -163,7 +199,7 @@ class AgentGraphModel(ResponsesAgent):
         full_text = ""
 
         # Stream node-by-node from the compiled graph
-        for chunk in self.compiled_graph.stream(initial_state, config=config):
+        for chunk in self.compiled_graph.stream(invoke_state, config=config):
             # Each chunk is {node_name: state_update_dict}
             for node_name, state_update in chunk.items():
                 if not isinstance(state_update, dict):
@@ -172,9 +208,12 @@ class AgentGraphModel(ResponsesAgent):
                 # Extract any assistant messages produced by this node
                 messages = state_update.get("messages", [])
                 for msg in messages:
+                    text = ""
                     if isinstance(msg, dict) and msg.get("role") == "assistant":
                         text = msg.get("content", "")
-                        if text:
+                    elif hasattr(msg, "type") and msg.type == "ai":
+                        text = msg.content
+                    if text:
                             yield ResponsesAgentStreamEvent(
                                 type="response.output_text.delta",
                                 delta=str(text),
