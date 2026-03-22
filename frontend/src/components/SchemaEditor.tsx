@@ -6,7 +6,16 @@ const FIELD_TYPES = [
   { value: "list[str]", label: "List of Text" },
   { value: "list[int]", label: "List of Integers" },
   { value: "list[float]", label: "List of Numbers" },
+  { value: "vector_search_filter", label: "Vector Search Filter" },
 ];
+
+const DEFAULT_DESCRIPTIONS: Record<string, string> = {
+  vector_search_filter:
+    'JSON filter for Vector Search. Format: {"column_name operator": value}. ' +
+    'Operators: =, !=, <, <=, >, >=, LIKE, NOT LIKE, IS, IS NOT. ' +
+    'Example: {"department =": "cardiology", "year >=": 2020}. ' +
+    'Return {} if no filters are needed.',
+};
 
 export interface SchemaField {
   name: string;
@@ -53,7 +62,17 @@ export default function SchemaEditor({ fields, onChange }: Props) {
                 <select
                   className="schema-type"
                   value={field.type}
-                  onChange={(e) => updateField(i, "type", e.target.value)}
+                  onChange={(e) => {
+                    const newType = e.target.value;
+                    const prevDefault = DEFAULT_DESCRIPTIONS[field.type];
+                    const shouldAutoFill = newType in DEFAULT_DESCRIPTIONS && (!field.description || field.description === prevDefault);
+                    const updated = fields.map((f, j) =>
+                      j === i
+                        ? { ...f, type: newType, ...(shouldAutoFill ? { description: DEFAULT_DESCRIPTIONS[newType] } : {}) }
+                        : f
+                    );
+                    onChange(updated);
+                  }}
                 >
                   {FIELD_TYPES.map((ft) => (
                     <option key={ft.value} value={ft.value}>

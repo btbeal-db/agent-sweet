@@ -1,9 +1,37 @@
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from typing import Any
 
 from pydantic import BaseModel
+
+
+def resolve_state(state: dict[str, Any], path: str, default: Any = "") -> Any:
+    """Resolve a dot-path reference from state.
+
+    For flat keys (e.g. "input") this is just ``state.get(path)``.
+    For dot paths (e.g. "output.query_filters") it reads the top-level
+    field, parses it as JSON if needed, and extracts the nested key.
+    """
+    if "." not in path:
+        return state.get(path, default)
+
+    top, sub = path.split(".", 1)
+    raw = state.get(top, default)
+    if not raw:
+        return default
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return default
+
+    if isinstance(raw, dict):
+        return raw.get(sub, default)
+
+    return default
 
 
 class NodeConfigField(BaseModel):

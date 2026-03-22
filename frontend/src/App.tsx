@@ -31,7 +31,15 @@ export default function App() {
   const hasOpenedBuilder = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const stateVariableNames = stateFields.map((f) => f.name);
+  const stateVariableNames = stateFields.flatMap((f) => {
+    const paths = [f.name];
+    if ((f.type === "structured" || f.type === "vector_search_filter") && f.sub_fields?.length) {
+      for (const sf of f.sub_fields) {
+        if (sf.name) paths.push(`${f.name}.${sf.name}`);
+      }
+    }
+    return paths;
+  });
   const stateFieldsRef = useRef(stateFields);
   stateFieldsRef.current = stateFields;
 

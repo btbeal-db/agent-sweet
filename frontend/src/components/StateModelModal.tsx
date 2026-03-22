@@ -42,15 +42,18 @@ const FIELD_TYPES = [
   { value: "bool", label: "True / False" },
   { value: "list[str]", label: "List of Text" },
   { value: "structured", label: "Structured" },
+  { value: "vector_search_filter", label: "Vector Search Filter" },
 ];
 
-const SUB_FIELD_TYPES = [
-  { value: "str", label: "Text" },
-  { value: "int", label: "Integer" },
-  { value: "float", label: "Number" },
-  { value: "bool", label: "True / False" },
-  { value: "list[str]", label: "List of Text" },
-];
+const DEFAULT_DESCRIPTIONS: Record<string, string> = {
+  vector_search_filter:
+    'JSON filter for Vector Search. Exact match uses just the column name: {"department": "cardiology"}. ' +
+    'Comparison operators go in the key: {"year >=": 2020, "id NOT": 5}. ' +
+    'Multiple values: {"department": ["cardiology", "neurology"]}. ' +
+    'Return {} if no filters are needed.',
+};
+
+const SUB_FIELD_TYPES = FIELD_TYPES.filter((ft) => ft.value !== "structured");
 
 interface Props {
   fields: StateFieldDef[];
@@ -177,9 +180,12 @@ export default function StateModelModal({ fields, onChange, onClose }: Props) {
                       value={field.type}
                       onChange={(e) => {
                         const newType = e.target.value;
+                        const prevDefault = DEFAULT_DESCRIPTIONS[field.type];
+                        const shouldAutoFill = newType in DEFAULT_DESCRIPTIONS && (!field.description || field.description === prevDefault);
                         updateField(i, {
                           type: newType,
                           sub_fields: newType === "structured" ? field.sub_fields : [],
+                          ...(shouldAutoFill ? { description: DEFAULT_DESCRIPTIONS[newType] } : {}),
                         });
                       }}
                     >
@@ -219,7 +225,15 @@ export default function StateModelModal({ fields, onChange, onClose }: Props) {
                         <select
                           className="modal-sub-type"
                           value={sf.type}
-                          onChange={(e) => updateSubField(i, si, { type: e.target.value })}
+                          onChange={(e) => {
+                            const newType = e.target.value;
+                            const prevDefault = DEFAULT_DESCRIPTIONS[sf.type];
+                            const shouldAutoFill = newType in DEFAULT_DESCRIPTIONS && (!sf.description || sf.description === prevDefault);
+                            updateSubField(i, si, {
+                              type: newType,
+                              ...(shouldAutoFill ? { description: DEFAULT_DESCRIPTIONS[newType] } : {}),
+                            });
+                          }}
                         >
                           {SUB_FIELD_TYPES.map((ft) => (
                             <option key={ft.value} value={ft.value}>{ft.label}</option>
@@ -259,7 +273,13 @@ export default function StateModelModal({ fields, onChange, onClose }: Props) {
               <select
                 className="modal-field-type"
                 value={newType}
-                onChange={(e) => setNewType(e.target.value)}
+                onChange={(e) => {
+                  const t = e.target.value;
+                  setNewType(t);
+                  if (t in DEFAULT_DESCRIPTIONS && (!newDesc || newDesc === DEFAULT_DESCRIPTIONS[newType])) {
+                    setNewDesc(DEFAULT_DESCRIPTIONS[t]);
+                  }
+                }}
               >
                 {FIELD_TYPES.map((ft) => (
                   <option key={ft.value} value={ft.value}>{ft.label}</option>

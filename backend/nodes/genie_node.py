@@ -6,7 +6,7 @@ from typing import Any
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.dashboards import MessageStatus
 
-from .base import BaseNode, NodeConfigField
+from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,7 @@ class GenieNode(BaseNode):
 
     def execute(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         writes_to = config.get("_writes_to", "")
-        query = state.get(config.get("question_from", "input"), "")
+        query = resolve_state(state, config.get("question_from", "input"))
         space_id = config.get("room_id", "")
 
         if not space_id:
