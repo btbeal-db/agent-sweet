@@ -38,6 +38,19 @@ function preflight(graphGetter: (() => GraphDef) | null, stateFields: StateField
   return null;
 }
 
+/** Check if any LLM node has conversational mode enabled. */
+function hasConversationalNode(graphGetter: (() => GraphDef) | null): boolean {
+  if (!graphGetter) return false;
+  try {
+    const graph = graphGetter();
+    return graph.nodes.some(
+      (n) => n.type === "llm" && String(n.config.conversational).toLowerCase() === "true"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Props) {
   const [modelName, setModelName] = useState("");
   const [experimentPath, setExperimentPath] = useState("");
@@ -46,6 +59,8 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
   const [endpointUrl, setEndpointUrl] = useState("");
   const [modelVersion, setModelVersion] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+
+  const needsLakebase = hasConversationalNode(graphGetter) && !lakebaseConnString;
 
   const handleDeploy = useCallback(async () => {
     const stateFields = stateFieldsRef.current ?? [];
@@ -144,6 +159,13 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
                 <span className="deploy-hint">
                   Optional. Enables multi-turn conversation memory.
                 </span>
+                {needsLakebase && (
+                  <span className="deploy-warning">
+                    Your graph has conversational LLM nodes. Without a Lakebase
+                    connection, conversation history will not persist between
+                    requests on Model Serving.
+                  </span>
+                )}
               </label>
             </div>
 

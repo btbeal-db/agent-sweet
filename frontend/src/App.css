@@ -1696,6 +1696,13 @@ code, pre, .mono {
   color: var(--text-muted);
 }
 
+.deploy-warning {
+  display: block;
+  font-size: 0.72rem;
+  color: #f59e0b;
+  margin-top: 4px;
+}
+
 .deploy-actions {
   display: flex;
   justify-content: flex-end;
