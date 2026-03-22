@@ -33,7 +33,7 @@ class GraphDef(BaseModel):
     nodes: list[NodeDef]
     edges: list[EdgeDef]
     state_fields: list[StateFieldDef] = [
-        StateFieldDef(name="user_input", type="str", description="The user's initial message")
+        StateFieldDef(name="input", type="str", description="The initial input")
     ]
 
     @property
@@ -50,6 +50,8 @@ class GraphDef(BaseModel):
 class PreviewRequest(BaseModel):
     graph: GraphDef
     input_message: str
+    thread_id: str | None = None
+    resume_value: str | None = None
 
 
 class PreviewResponse(BaseModel):
@@ -58,6 +60,8 @@ class PreviewResponse(BaseModel):
     error: str | None = None
     execution_trace: list[dict[str, Any]] = []
     state: dict[str, Any] = {}
+    thread_id: str | None = None
+    interrupt: str | None = None
 
 
 class ExportResponse(BaseModel):

@@ -1,5 +1,6 @@
-import { Handle, Position, useReactFlow } from "@xyflow/react";
+import { Handle, Position, useReactFlow, useUpdateNodeInternals } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStateVars } from "../../StateContext";
 import { NodeIcon } from "../NodeIcon";
 
@@ -20,13 +21,16 @@ function parseRoutes(config: Record<string, unknown>): RouteEntry[] {
   return [];
 }
 
-function routeHandleId(route: RouteEntry): string {
-  return route.match_value || route.label || "default";
+function routeHandleId(route: RouteEntry, index: number): string {
+  return route.match_value || route.label || `route_${index}`;
 }
 
 export default function AgentNode({ id, data, selected }: NodeProps) {
   const { setNodes } = useReactFlow();
   const stateVarNames = useStateVars();
+  const updateNodeInternals = useUpdateNodeInternals();
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const color = (data.color as string) ?? "#6366f1";
   const iconKey = (data.icon as string) ?? "puzzle";
@@ -36,6 +40,44 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
 
   const config = (data.config ?? {}) as Record<string, unknown>;
   const routes = isRouter ? parseRoutes(config) : [];
+
+  const handleKey = useMemo(
+    () => routes.map((r, i) => routeHandleId(r, i)).join("|"),
+    [routes]
+  );
+
+  // Measure row positions to align handles with labels
+  const [handleTops, setHandleTops] = useState<number[]>([]);
+
+  useEffect(() => {
+    if (!isRouter || !nodeRef.current) return;
+
+    const measure = () => {
+      const nodeRect = nodeRef.current!.getBoundingClientRect();
+      const nodeHeight = nodeRect.height;
+      if (nodeHeight === 0) return;
+
+      const tops = rowRefs.current.map((row) => {
+        if (!row) return 50;
+        const rowRect = row.getBoundingClientRect();
+        const rowCenter = rowRect.top + rowRect.height / 2 - nodeRect.top;
+        return (rowCenter / nodeHeight) * 100;
+      });
+      setHandleTops(tops);
+    };
+
+    // Measure after layout settles
+    const timer = setTimeout(measure, 20);
+    return () => clearTimeout(timer);
+  }, [isRouter, handleKey]);
+
+  // Force React Flow to recalculate handle bounds after positions update
+  useEffect(() => {
+    if (isRouter && handleTops.length > 0) {
+      const timer = setTimeout(() => updateNodeInternals(id), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [id, isRouter, handleTops, updateNodeInternals]);
 
   const handleWritesToChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     e.stopPropagation();
@@ -47,7 +89,10 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
   };
 
   return (
-    <div className={`agent-node${selected ? " selected" : ""}${isRouter ? " agent-node-router" : ""}`}>
+    <div
+      ref={nodeRef}
+      className={`agent-node${selected ? " selected" : ""}${isRouter ? " agent-node-router" : ""}`}
+    >
       <Handle type="target" position={Position.Top} />
 
       <div className="agent-node-header" style={{ background: color }}>
@@ -66,7 +111,7 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
               onClick={(e) => e.stopPropagation()}
             >
               <option value="">select field...</option>
-              {stateVarNames.filter((v) => v !== "user_input").map((v) => (
+              {stateVarNames.map((v) => (
                 <option key={v} value={v}>{v}</option>
               ))}
             </select>
@@ -76,24 +121,38 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
         {isRouter && routes.length > 0 && (
           <div className="router-outputs">
             {routes.map((route, i) => {
+              const handleId = routeHandleId(route, i);
               const isFallback = i === routes.length - 1 && routes.length > 1 && !route.match_value;
               return (
-                <div key={routeHandleId(route)} className="router-output-row">
+                <div
+                  key={handleId}
+                  className="router-output-row"
+                  ref={(el) => { rowRefs.current[i] = el; }}
+                >
                   <span className={`router-output-label${isFallback ? " router-output-fallback" : ""}`}>
-                    {route.label || route.match_value || "?"}{isFallback ? " (fallback)" : ""}
+                    {route.label || route.match_value || handleId}{isFallback ? " (fallback)" : ""}
                   </span>
-                  <Handle
-                    type="source"
-                    position={Position.Right}
-                    id={routeHandleId(route)}
-                    className="router-output-handle"
-                  />
                 </div>
               );
             })}
           </div>
         )}
       </div>
+
+      {/* Router source handles — positioned to align with their label rows */}
+      {isRouter && routes.map((route, i) => {
+        const handleId = routeHandleId(route, i);
+        const top = handleTops[i] ?? ((i + 1) / (routes.length + 1)) * 100;
+        return (
+          <Handle
+            key={`${handleKey}-${i}`}
+            type="source"
+            position={Position.Right}
+            id={handleId}
+            style={{ top: `${top}%` }}
+          />
+        );
+      })}
 
       {!isRouter && <Handle type="source" position={Position.Bottom} />}
     </div>

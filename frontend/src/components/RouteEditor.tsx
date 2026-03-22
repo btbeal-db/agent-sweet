@@ -84,9 +84,10 @@ export default function RouteEditor({
   const addRoute = () => {
     // Insert before the fallback (last route)
     const fallback = routes[routes.length - 1];
+    const newLabel = `route_${routes.length}`;
     onChange([
       ...routes.slice(0, -1),
-      { label: "", match_value: "" },
+      { label: newLabel, match_value: "" },
       fallback,
     ]);
   };

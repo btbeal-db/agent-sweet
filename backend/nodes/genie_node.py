@@ -92,7 +92,7 @@ class GenieNode(BaseNode):
                 name="question_from",
                 label="Question from",
                 field_type="state_variable",
-                default="user_input",
+                default="input",
             ),
             NodeConfigField(
                 name="room_id",
@@ -104,7 +104,7 @@ class GenieNode(BaseNode):
 
     def execute(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         writes_to = config.get("_writes_to", "")
-        query = state.get(config.get("question_from", "user_input"), "")
+        query = state.get(config.get("question_from", "input"), "")
         space_id = config.get("room_id", "")
 
         if not space_id:

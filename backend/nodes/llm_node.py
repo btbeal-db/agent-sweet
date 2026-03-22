@@ -157,7 +157,7 @@ class LLMNode(BaseNode):
             structured_llm = llm.with_structured_output(model_cls)
             result = structured_llm.invoke([
                 SystemMessage(content=system_prompt),
-                HumanMessage(content=state_context or state.get("user_input", "")),
+                HumanMessage(content=state_context or state.get("input", "")),
             ])
 
             result_dict = result.model_dump()
@@ -173,7 +173,7 @@ class LLMNode(BaseNode):
         # Plain text path
         response = llm.invoke([
             SystemMessage(content=system_prompt),
-            HumanMessage(content=state_context or state.get("user_input", "")),
+            HumanMessage(content=state_context or state.get("input", "")),
         ])
         response_text = response.content
 

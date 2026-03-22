@@ -53,7 +53,7 @@ def _extract_user_message(request: ResponsesAgentRequest) -> str:
 def _build_initial_state(graph_def: GraphDef, user_message: str) -> dict:
     """Build the initial state dict for graph invocation."""
     state = {f.name: "" for f in graph_def.state_fields}
-    state["user_input"] = user_message
+    state["input"] = user_message
     state["messages"] = [
         {"role": "user", "content": user_message, "node": "_start"},
     ]
@@ -124,7 +124,7 @@ class AgentGraphModel(ResponsesAgent):
 
         result = self.compiled_graph.invoke(initial_state, config=config)
 
-        output = result.get("output", result.get("user_input", ""))
+        output = result.get("output", result.get("input", ""))
         for msg in reversed(result.get("messages", [])):
             if isinstance(msg, dict) and msg.get("role") == "assistant":
                 output = msg.get("content", output)

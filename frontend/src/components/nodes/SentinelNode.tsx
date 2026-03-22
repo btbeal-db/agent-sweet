@@ -15,7 +15,7 @@ export default function SentinelNode({ data }: NodeProps) {
 
       {isStart ? (
         <div className="sentinel-fields">
-          <span className="sentinel-field">user_input</span>
+          <span className="sentinel-field">input</span>
         </div>
       ) : (
         <div className="sentinel-fields">

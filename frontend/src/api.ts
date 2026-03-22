@@ -19,12 +19,19 @@ export async function validateGraph(graph: GraphDef) {
 
 export async function previewGraph(
   graph: GraphDef,
-  inputMessage: string
+  inputMessage: string,
+  threadId?: string | null,
+  resumeValue?: string | null,
 ): Promise<PreviewResponse> {
   const res = await fetch(`${BASE}/graph/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ graph, input_message: inputMessage }),
+    body: JSON.stringify({
+      graph,
+      input_message: inputMessage,
+      thread_id: threadId ?? null,
+      resume_value: resumeValue ?? null,
+    }),
   });
   return res.json();
 }

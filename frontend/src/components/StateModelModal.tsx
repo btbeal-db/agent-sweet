@@ -11,7 +11,7 @@ const PRESETS: Preset[] = [
   {
     label: "Joke Agent",
     fields: [
-      { name: "user_input", type: "str", description: "The user's initial message", sub_fields: [] },
+      { name: "input", type: "str", description: "The initial input", sub_fields: [] },
       { name: "is_funny", type: "bool", description: "Whether the joke is genuinely funny", sub_fields: [] },
       {
         name: "verdict",
@@ -77,7 +77,7 @@ export default function StateModelModal({ fields, onChange, onClose }: Props) {
   };
 
   const removeField = (index: number) => {
-    if (fields[index].name === "user_input") return;
+    if (fields[index].name === "input") return;
     onChange(fields.filter((_, i) => i !== index));
   };
 
@@ -157,7 +157,7 @@ export default function StateModelModal({ fields, onChange, onClose }: Props) {
               <div key={i} className="modal-field-group">
                 <div className="modal-field-row">
                   <div className="modal-col-name">
-                    {field.name === "user_input" ? (
+                    {field.name === "input" ? (
                       <span className="modal-field-name locked">{field.name}</span>
                     ) : (
                       <input
@@ -197,7 +197,7 @@ export default function StateModelModal({ fields, onChange, onClose }: Props) {
                     />
                   </div>
                   <div className="modal-col-action">
-                    {field.name !== "user_input" && (
+                    {field.name !== "input" && (
                       <button className="modal-field-remove" onClick={() => removeField(i)}>
                         &times;
                       </button>

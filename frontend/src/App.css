@@ -1067,7 +1067,7 @@ code, pre, .mono {
   border: 1.5px solid var(--border-strong);
   border-radius: var(--radius-lg);
   min-width: 160px;
-  overflow: hidden;
+  overflow: visible;
   box-shadow: var(--shadow-md);
   transition: border-color 0.15s, box-shadow 0.15s;
 }
@@ -1082,6 +1082,7 @@ code, pre, .mono {
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   font-size: 0.8rem;
   font-weight: 600;
   color: white;
@@ -1365,7 +1366,7 @@ code, pre, .mono {
   align-items: center;
   justify-content: flex-end;
   gap: 0.4rem;
-  padding: 0.2rem 0.4rem;
+  padding: 0.2rem 0.75rem 0.2rem 0.4rem;
   position: relative;
 }
 
@@ -1382,13 +1383,12 @@ code, pre, .mono {
   color: var(--text-muted);
 }
 
-.router-output-handle {
+.agent-node-router > .react-flow__handle-right {
   width: 10px !important;
   height: 10px !important;
   background: #f87171 !important;
   border: 2px solid var(--bg-surface) !important;
-  right: -5px !important;
-  position: absolute !important;
+  z-index: 5;
 }
 
 /* ── Schema editor (structured output) ────────────────────────── */

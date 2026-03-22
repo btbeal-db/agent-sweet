@@ -21,7 +21,7 @@ export default function App() {
   const [exportedCode, setExportedCode] = useState<string>("");
   const [showExport, setShowExport] = useState(false);
   const [stateFields, setStateFields] = useState<StateFieldDef[]>([
-    { name: "user_input", type: "str", description: "The user's initial message", sub_fields: [] },
+    { name: "input", type: "str", description: "The initial input", sub_fields: [] },
   ]);
   const [showStateModal, setShowStateModal] = useState(false);
   const [showChat, setShowChat] = useState(false);

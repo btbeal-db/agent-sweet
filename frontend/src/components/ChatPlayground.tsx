@@ -61,6 +61,8 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [threadId, setThreadId] = useState<string | null>(null);
+  const [pendingInterrupt, setPendingInterrupt] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -75,6 +77,12 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
       error,
     };
     setMessages((prev) => [...prev, errMsg]);
+  }, []);
+
+  const clearConversation = useCallback(() => {
+    setMessages([]);
+    setThreadId(null);
+    setPendingInterrupt(false);
   }, []);
 
   const handleSend = useCallback(async () => {
@@ -128,11 +136,25 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
         return;
       }
 
-      const result = await previewGraph(graph, userInput);
+      // Branch: resume from interrupt vs. normal invocation
+      const result = pendingInterrupt
+        ? await previewGraph(graph, "", threadId, userInput)
+        : await previewGraph(graph, userInput, threadId);
 
       if (!result.success) {
         updatePlaceholder({ content: "", error: result.error ?? "The agent returned an error." });
+        setPendingInterrupt(false);
+      } else if (result.interrupt) {
+        // Graph paused at a HumanInput node — show the prompt
+        setThreadId(result.thread_id);
+        setPendingInterrupt(true);
+        updatePlaceholder({
+          content: result.interrupt,
+        });
       } else {
+        // Normal completion
+        setThreadId(result.thread_id);
+        setPendingInterrupt(false);
         updatePlaceholder({
           content: result.output || "(empty)",
           execution_trace: result.execution_trace,
@@ -146,10 +168,11 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
         content: "",
         error: `Something went wrong: ${message}`,
       });
+      setPendingInterrupt(false);
     } finally {
       setIsLoading(false);
     }
-  }, [input, graphGetter, stateFieldsRef, isLoading, addErrorMessage]);
+  }, [input, graphGetter, stateFieldsRef, isLoading, addErrorMessage, threadId, pendingInterrupt]);
 
   return (
     <div className="chat-overlay" onClick={onClose}>
@@ -157,7 +180,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
         <div className="chat-header">
           <h2>Chat Playground</h2>
           <div className="chat-header-actions">
-            <button className="btn btn-sm" onClick={() => setMessages([])}>
+            <button className="btn btn-sm" onClick={clearConversation}>
               Clear
             </button>
             <button className="btn btn-sm" onClick={onClose}>
@@ -225,7 +248,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
           <input
             type="text"
             value={input}
-            placeholder="Type a message..."
+            placeholder={pendingInterrupt ? "Type your response..." : "Type a message..."}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSend()}
             disabled={isLoading}
@@ -235,7 +258,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
             onClick={handleSend}
             disabled={isLoading || !input.trim()}
           >
-            {isLoading ? "..." : "Send"}
+            {isLoading ? "..." : pendingInterrupt ? "Reply" : "Send"}
           </button>
         </div>
       </div>

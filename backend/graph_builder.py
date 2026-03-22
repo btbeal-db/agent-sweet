@@ -5,9 +5,13 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
 
 from .nodes import get_node
 from .schema import GraphDef, StateFieldDef
+
+# Maps visual canvas IDs to LangGraph constants
+_SENTINEL = {"__start__": START, "__end__": END}
 
 
 def _build_state_type(state_fields: list[StateFieldDef]) -> type:
@@ -54,6 +58,11 @@ def _make_router_fn(node_impl, config: dict[str, Any]):
     return fn
 
 
+def _resolve(node_id: str) -> str:
+    """Map a canvas node ID to a LangGraph node reference."""
+    return _SENTINEL.get(node_id, node_id)
+
+
 def build_graph(graph_def: GraphDef, checkpointer=None):
     """Build a compiled LangGraph StateGraph from a GraphDef."""
 
@@ -62,30 +71,20 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
 
     node_map = {n.id: n for n in graph_def.nodes}
 
-    start_edges = [e for e in graph_def.edges if e.source == "__start__"]
-    end_edges = [e for e in graph_def.edges if e.target == "__end__"]
-    regular_edges = [
-        e for e in graph_def.edges
-        if e.source != "__start__" and e.target != "__end__"
-    ]
+    # Validate that START and END are connected
+    entry_edges = [e for e in graph_def.edges if e.source == "__start__"]
+    exit_edges = [e for e in graph_def.edges if e.target == "__end__"]
 
-    entry_nodes = [e.target for e in start_edges]
-    exit_nodes = [e.source for e in end_edges]
-
-    if not entry_nodes:
+    if not entry_edges:
         raise ValueError("Connect the START node to at least one node.")
-    if not exit_nodes:
+    if not exit_edges:
         raise ValueError("Connect at least one node to the END node.")
 
-    outgoing: dict[str, list] = {n.id: [] for n in graph_def.nodes}
-    for edge in regular_edges:
-        outgoing[edge.source].append(edge)
-
-    router_nodes = set()
+    # Register all nodes and identify routers
+    router_nodes: set[str] = set()
     for node_def in graph_def.nodes:
         node_impl = get_node(node_def.type)
-        is_router = getattr(node_impl, "is_router", False)
-        if is_router:
+        if getattr(node_impl, "is_router", False):
             router_nodes.add(node_def.id)
 
         target_field = graph_def.get_state_field(node_def.writes_to)
@@ -94,30 +93,36 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
             _make_node_fn(node_impl, node_def.config, node_def.writes_to, target_field),
         )
 
-    for nid in entry_nodes:
-        builder.add_edge(START, nid)
-
-    for node_id, edges in outgoing.items():
-        if not edges:
+    # Group all outgoing edges by source (excluding __start__)
+    outgoing: dict[str, list] = {}
+    for edge in graph_def.edges:
+        if edge.source == "__start__":
             continue
-        if node_id in router_nodes:
-            node_def = node_map[node_id]
+        outgoing.setdefault(edge.source, []).append(edge)
+
+    # Wire START → entry nodes
+    for edge in entry_edges:
+        builder.add_edge(START, edge.target)
+
+    # Wire all other edges
+    for source_id, edges in outgoing.items():
+        if source_id in router_nodes:
+            # Router: all outgoing edges (including → END) go in the route map
+            node_def = node_map[source_id]
             node_impl = get_node(node_def.type)
-            route_map: dict[str, str] = {}
-            for edge in edges:
-                handle = edge.source_handle or "default"
-                route_map[handle] = edge.target
+            route_map = {
+                (e.source_handle or "default"): _resolve(e.target)
+                for e in edges
+            }
             builder.add_conditional_edges(
-                node_id,
+                source_id,
                 _make_router_fn(node_impl, node_def.config),
                 route_map,
             )
         else:
+            # Regular node: direct edges
             for edge in edges:
-                builder.add_edge(node_id, edge.target)
-
-    for nid in exit_nodes:
-        builder.add_edge(nid, END)
+                builder.add_edge(source_id, _resolve(edge.target))
 
     return builder.compile(checkpointer=checkpointer)
 
@@ -127,23 +132,31 @@ def run_graph(
     input_message: str,
     checkpointer=None,
     thread_id: str | None = None,
+    resume_value: str | None = None,
 ) -> dict[str, Any]:
-    """Build and invoke the graph with a user message."""
-    compiled = build_graph(graph_def, checkpointer=checkpointer)
+    """Build and invoke the graph with a user message.
 
-    initial_state: dict[str, Any] = {
-        f.name: "" for f in graph_def.state_fields
-    }
-    initial_state["user_input"] = input_message
-    initial_state["messages"] = [
-        {"role": "user", "content": input_message, "node": "_start"},
-    ]
+    When *resume_value* is provided the graph is resumed from an interrupt
+    using ``Command(resume=...)``.  Otherwise a fresh invocation is started.
+    """
+    compiled = build_graph(graph_def, checkpointer=checkpointer)
 
     config: dict[str, Any] = {}
     if thread_id is not None:
         config["configurable"] = {"thread_id": thread_id}
 
-    result = compiled.invoke(initial_state, config=config if config else None)
+    if resume_value is not None:
+        result = compiled.invoke(Command(resume=resume_value), config=config)
+    else:
+        initial_state: dict[str, Any] = {
+            f.name: "" for f in graph_def.state_fields
+        }
+        initial_state["input"] = input_message
+        initial_state["messages"] = [
+            {"role": "user", "content": input_message, "node": "_start"},
+        ]
+        result = compiled.invoke(initial_state, config=config if config else None)
+
     return result
 
 
@@ -187,24 +200,10 @@ def generate_code(graph_def: GraphDef) -> str:
         lines.append(f'    builder.add_node("{node_def.id}", node_{node_def.id})')
     lines.append("")
 
-    start_edges = [e for e in graph_def.edges if e.source == "__start__"]
-    end_edges = [e for e in graph_def.edges if e.target == "__end__"]
-    regular_edges = [
-        e for e in graph_def.edges
-        if e.source != "__start__" and e.target != "__end__"
-    ]
-
-    outgoing: dict[str, list] = {n.id: [] for n in graph_def.nodes}
-    for edge in regular_edges:
-        outgoing[edge.source].append(edge)
-
-    for e in start_edges:
-        lines.append(f'    builder.add_edge(START, "{e.target}")')
-    for node_id, edges in outgoing.items():
-        for edge in edges:
-            lines.append(f'    builder.add_edge("{edge.source}", "{edge.target}")')
-    for e in end_edges:
-        lines.append(f'    builder.add_edge("{e.source}", END)')
+    for edge in graph_def.edges:
+        src = 'START' if edge.source == '__start__' else f'"{edge.source}"'
+        tgt = 'END' if edge.target == '__end__' else f'"{edge.target}"'
+        lines.append(f'    builder.add_edge({src}, {tgt})')
 
     lines.append("")
     lines.append("    return builder.compile()")

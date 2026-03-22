@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import tempfile
+import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -20,6 +21,8 @@ from databricks.sdk.service.serving import (
     EndpointCoreConfigInput,
     ServedEntityInput,
 )
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphInterrupt
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -108,6 +111,10 @@ app.add_middleware(
 )
 
 
+# ── Preview session store (in-memory, per-process) ────────────────────────────
+
+_preview_sessions: dict[str, InMemorySaver] = {}
+
 # ── API routes ────────────────────────────────────────────────────────────────
 
 
@@ -147,18 +154,59 @@ def validate_graph(graph: GraphDef):
 
 @app.post("/api/graph/preview", response_model=PreviewResponse)
 def preview_graph(req: PreviewRequest):
-    """Build the graph and run it with a test message."""
+    """Build the graph and run it with a test message.
+
+    Supports multi-turn conversations (via *thread_id*) and human-in-the-loop
+    interrupts (via *resume_value*).
+    """
+    thread_id = req.thread_id or str(uuid.uuid4())
+    if thread_id not in _preview_sessions:
+        _preview_sessions[thread_id] = InMemorySaver()
+
     try:
-        result = run_graph(req.graph, req.input_message)
-        # Return all user-defined state variables (exclude messages)
+        result = run_graph(
+            req.graph,
+            req.input_message,
+            checkpointer=_preview_sessions[thread_id],
+            thread_id=thread_id,
+            resume_value=req.resume_value,
+        )
+
+        # Check for interrupt in the returned state (LangGraph embeds it
+        # as __interrupt__ rather than raising GraphInterrupt when a
+        # checkpointer is present).
+        interrupts = result.get("__interrupt__")
+        if interrupts:
+            prompt = interrupts[0].get("value", "Input needed") if isinstance(interrupts[0], dict) else str(interrupts[0].value)
+            state_snapshot = {
+                k: v for k, v in result.items()
+                if k not in ("messages", "__interrupt__")
+            }
+            return PreviewResponse(
+                success=True,
+                interrupt=str(prompt),
+                thread_id=thread_id,
+                execution_trace=result.get("messages", []),
+                state=state_snapshot,
+            )
+
         state_snapshot = {
-            k: v for k, v in result.items() if k != "messages"
+            k: v for k, v in result.items()
+            if k not in ("messages", "__interrupt__")
         }
         return PreviewResponse(
             success=True,
-            output=str(result.get("output", result.get("user_input", ""))),
+            output=str(result.get("output", result.get("input", ""))),
             execution_trace=result.get("messages", []),
             state=state_snapshot,
+            thread_id=thread_id,
+        )
+    except GraphInterrupt as gi:
+        prompt = gi.interrupts[0].value if gi.interrupts else "Input needed"
+        return PreviewResponse(
+            success=True,
+            interrupt=str(prompt),
+            thread_id=thread_id,
         )
     except Exception as e:
         return PreviewResponse(success=False, error=str(e))

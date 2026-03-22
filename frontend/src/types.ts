@@ -59,6 +59,8 @@ export interface PreviewResponse {
   error: string | null;
   execution_trace: Array<{ role: string; content: string; node?: string }>;
   state: Record<string, string>;
+  thread_id: string | null;
+  interrupt: string | null;
 }
 
 export interface ExportResponse {

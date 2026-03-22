@@ -39,7 +39,7 @@ class VectorSearchNode(BaseNode):
                 name="query_from",
                 label="Query from",
                 field_type="state_variable",
-                default="user_input",
+                default="input",
             ),
             NodeConfigField(
                 name="index_name",
@@ -68,7 +68,7 @@ class VectorSearchNode(BaseNode):
 
     def execute(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         writes_to = config.get("_writes_to", "")
-        query = state.get(config.get("query_from", "user_input"), "")
+        query = state.get(config.get("query_from", "input"), "")
         num_results = int(config.get("num_results", 3))
         index_name = config.get("index_name", "?")
 

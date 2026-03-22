@@ -74,7 +74,7 @@ class RouterNode(BaseNode):
                 name="evaluates",
                 label="Evaluates",
                 field_type="state_variable",
-                default="user_input",
+                default="input",
             ),
             NodeConfigField(
                 name="routes_json",
@@ -98,7 +98,7 @@ class RouterNode(BaseNode):
         ]
 
     def execute(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
-        eval_var = config.get("evaluates", "user_input")
+        eval_var = config.get("evaluates", "input")
         sub_field = config.get("_route_sub_field", "")
         value = _resolve_value(state, eval_var, sub_field)
         routes = _parse_routes(config)

@@ -230,7 +230,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
 
       const defaultWritesTo = meta.type === "router"
         ? ""
-        : stateVariableNames.find((v) => v !== "user_input") ?? "";
+        : stateVariableNames.find((v) => v !== "input") ?? "";
 
       const newNode: Node = {
         id: `node_${++nodeIdCounter}`,
@@ -265,6 +265,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        connectOnClick={false}
         onNodeClick={onNodeClick}
         onPaneClick={onPaneClick}
         onDragOver={onDragOver}
