@@ -1473,8 +1473,18 @@ code, pre, .mono {
 }
 
 .react-flow__edge-path {
-  stroke: rgba(148, 163, 184, 0.15) !important;
-  stroke-width: 1.5 !important;
+  stroke: rgba(148, 163, 184, 0.4) !important;
+  stroke-width: 2 !important;
+  transition: stroke 0.15s, stroke-width 0.15s;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--accent) !important;
+  stroke-width: 2.5 !important;
+}
+
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: rgba(148, 163, 184, 0.7) !important;
 }
 
 .react-flow__handle {

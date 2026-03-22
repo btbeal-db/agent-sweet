@@ -2,8 +2,6 @@ import { useCallback, useRef, useEffect, useMemo, useState } from "react";
 import {
   ReactFlow,
   Background,
-  Controls,
-  MiniMap,
   addEdge,
   useNodesState,
   useEdgesState,
@@ -275,11 +273,6 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
         defaultEdgeOptions={{ type: "smoothstep" }}
       >
         <Background />
-        <Controls />
-        <MiniMap
-          style={{ background: "#12151c" }}
-          maskColor="rgba(0,0,0,0.4)"
-        />
       </ReactFlow>
 
       {/* Floating config popover */}
