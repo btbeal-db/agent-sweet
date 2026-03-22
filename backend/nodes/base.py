@@ -20,6 +20,7 @@ class NodeConfigField(BaseModel):
     default: Any = None
     options: list[str] | None = None
     placeholder: str = ""
+    help_text: str = ""
 
 
 class BaseNode(ABC):

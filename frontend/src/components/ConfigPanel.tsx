@@ -224,6 +224,9 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
                 }
               />
             )}
+            {field.help_text && (
+              <span className="config-hint">{field.help_text}</span>
+            )}
           </div>
         );
       })}

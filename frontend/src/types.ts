@@ -19,6 +19,7 @@ export interface NodeConfigField {
   default: unknown;
   options: string[] | null;
   placeholder: string;
+  help_text: string;
 }
 
 export interface NodeTypeMetadata {
