@@ -86,7 +86,7 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
 
         // State variable — dropdown populated from user-defined state vars
         if (field.field_type === "state_variable") {
-          const val = (config[field.name] as string) ?? (field.default as string) ?? stateVariables[0] ?? "";
+          const val = (config[field.name] as string) ?? (field.default as string) ?? (field.required ? stateVariables[0] : "") ?? "";
           return (
             <div key={field.name} className="config-field">
               <label>{field.label}</label>
@@ -102,10 +102,14 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
                   }
                 }}
               >
+                {!field.required && <option value="">— None —</option>}
                 {stateVariables.map((v) => (
                   <option key={v} value={v}>{v}</option>
                 ))}
               </select>
+              {field.help_text && (
+                <span className="config-hint">{field.help_text}</span>
+              )}
             </div>
           );
         }
