@@ -86,6 +86,10 @@ class GenieNode(BaseNode):
         return "#f59e0b"
 
     @property
+    def tool_compatible(self) -> bool:
+        return True
+
+    @property
     def config_fields(self) -> list[NodeConfigField]:
         return [
             NodeConfigField(

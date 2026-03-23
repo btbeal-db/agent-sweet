@@ -1121,6 +1121,96 @@ code, pre, .mono {
   color: var(--text-secondary);
 }
 
+/* ── Tools drop zone (LLM nodes) ─────────────────────────────────────────── */
+
+.tools-zone {
+  border-top: 1px dashed var(--border);
+  padding: 0.35rem 0.5rem;
+  min-height: 28px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.tools-zone-active {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: var(--accent);
+}
+
+.tools-zone-hint {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  font-style: italic;
+  width: 100%;
+  text-align: center;
+}
+
+.tools-zone-hint-active {
+  color: var(--accent);
+  font-style: normal;
+  font-weight: 500;
+}
+
+.agent-node-with-tools {
+  min-width: 180px;
+}
+
+/* ── Tool chips ───────────────────────────────────────────────────────────── */
+
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.tool-chip:hover {
+  border-color: var(--accent);
+}
+
+.tool-chip-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  flex-shrink: 0;
+}
+
+.tool-chip-label {
+  font-size: 0.6rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.tool-chip-remove {
+  all: unset;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.tool-chip-remove:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
 /* Writes-to selector on nodes */
 .agent-node-writes-to {
   display: flex;

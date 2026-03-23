@@ -30,6 +30,16 @@ export interface NodeTypeMetadata {
   icon: string;
   color: string;
   config_fields: NodeConfigField[];
+  tool_compatible: boolean;
+}
+
+export interface AttachedTool {
+  id: string;
+  type: string;          // "uc_function" | "vector_search" | "genie"
+  display_name: string;
+  icon: string;
+  color: string;
+  config: Record<string, unknown>;
 }
 
 export interface GraphNode {

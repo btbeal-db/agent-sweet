@@ -40,6 +40,10 @@ class VectorSearchNode(BaseNode):
         return "#06b6d4"
 
     @property
+    def tool_compatible(self) -> bool:
+        return True
+
+    @property
     def config_fields(self) -> list[NodeConfigField]:
         return [
             NodeConfigField(

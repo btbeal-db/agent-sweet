@@ -1,8 +1,10 @@
 import { Handle, Position, useReactFlow, useUpdateNodeInternals } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useStateVars } from "../../StateContext";
 import { NodeIcon } from "../NodeIcon";
+import ToolChip from "./ToolChip";
+import type { AttachedTool } from "../../types";
 
 interface RouteEntry {
   label: string;
@@ -36,10 +38,12 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
   const iconKey = (data.icon as string) ?? "puzzle";
   const displayName = (data.display_name as string) ?? "Node";
   const isRouter = (data.is_router as boolean) ?? false;
+  const isLlm = (data.nodeType as string) === "llm";
   const writesTo = (data.writes_to as string) ?? "";
 
   const config = (data.config ?? {}) as Record<string, unknown>;
   const routes = isRouter ? parseRoutes(config) : [];
+  const tools = (data.tools ?? []) as AttachedTool[];
 
   const handleKey = useMemo(
     () => routes.map((r, i) => routeHandleId(r, i)).join("|"),
@@ -88,10 +92,79 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
     );
   };
 
+  const removeTool = useCallback(
+    (toolId: string) => {
+      setNodes((nds) =>
+        nds.map((n) => {
+          if (n.id !== id) return n;
+          const updatedTools = ((n.data.tools ?? []) as AttachedTool[]).filter(
+            (t) => t.id !== toolId
+          );
+          return {
+            ...n,
+            data: { ...n.data, tools: updatedTools },
+          };
+        })
+      );
+    },
+    [id, setNodes]
+  );
+
+  const onToolClick = useCallback(
+    (toolId: string) => {
+      // Dispatch a custom event so the parent Canvas can open the tool config
+      window.dispatchEvent(
+        new CustomEvent("tool-chip-click", { detail: { nodeId: id, toolId } })
+      );
+    },
+    [id]
+  );
+
+  // Tool drop zone handlers (for dropping tools from palette onto the LLM)
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleToolDragOver = useCallback((e: React.DragEvent) => {
+    const nodeType = e.dataTransfer.types.includes("application/agentbuilder-tool");
+    if (!nodeType) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(true);
+  }, []);
+
+  const handleToolDragLeave = useCallback(() => {
+    setDragOver(false);
+  }, []);
+
+  const handleToolDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOver(false);
+
+      const toolData = e.dataTransfer.getData("application/agentbuilder-tool");
+      if (!toolData) return;
+
+      try {
+        const tool = JSON.parse(toolData) as AttachedTool;
+        setNodes((nds) =>
+          nds.map((n) => {
+            if (n.id !== id) return n;
+            const existing = (n.data.tools ?? []) as AttachedTool[];
+            return {
+              ...n,
+              data: { ...n.data, tools: [...existing, tool] },
+            };
+          })
+        );
+      } catch { /* ignore bad data */ }
+    },
+    [id, setNodes]
+  );
+
   return (
     <div
       ref={nodeRef}
-      className={`agent-node${selected ? " selected" : ""}${isRouter ? " agent-node-router" : ""}`}
+      className={`agent-node${selected ? " selected" : ""}${isRouter ? " agent-node-router" : ""}${isLlm && tools.length > 0 ? " agent-node-with-tools" : ""}`}
     >
       <Handle type="target" position={Position.Top} />
 
@@ -138,6 +211,31 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
           </div>
         )}
       </div>
+
+      {/* Tools drop zone — only for LLM nodes */}
+      {isLlm && (
+        <div
+          className={`tools-zone${dragOver ? " tools-zone-active" : ""}${tools.length > 0 ? " tools-zone-has-tools" : ""}`}
+          onDragOver={handleToolDragOver}
+          onDragLeave={handleToolDragLeave}
+          onDrop={handleToolDrop}
+        >
+          {tools.length === 0 && !dragOver && (
+            <span className="tools-zone-hint">Drop tools here</span>
+          )}
+          {dragOver && (
+            <span className="tools-zone-hint tools-zone-hint-active">Release to attach</span>
+          )}
+          {tools.map((tool) => (
+            <ToolChip
+              key={tool.id}
+              tool={tool}
+              onClick={() => onToolClick(tool.id)}
+              onRemove={() => removeTool(tool.id)}
+            />
+          ))}
+        </div>
+      )}
 
       {/* Router source handles — positioned to align with their label rows */}
       {isRouter && routes.map((route, i) => {

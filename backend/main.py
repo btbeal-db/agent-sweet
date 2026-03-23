@@ -95,7 +95,6 @@ def _extract_resources(graph: GraphDef) -> list:
             value = node.config.get(config_key)
             if value and (config_key, value) not in seen:
                 seen.add((config_key, value))
-                # Each resource class takes a single positional arg for its identifier
                 init_param = {
                     DatabricksServingEndpoint: "endpoint_name",
                     DatabricksVectorSearchIndex: "index_name",
@@ -196,9 +195,6 @@ def preview_graph(req: PreviewRequest):
             resume_value=req.resume_value,
         )
 
-        # Check for interrupt in the returned state (LangGraph embeds it
-        # as __interrupt__ rather than raising GraphInterrupt when a
-        # checkpointer is present).
         messages = _serialize_messages(result.get("messages", []))
 
         interrupts = result.get("__interrupt__")

@@ -5,9 +5,26 @@ interface Props {
   nodeTypes: NodeTypeMetadata[];
 }
 
+let toolIdCounter = 0;
+
 export default function NodePalette({ nodeTypes }: Props) {
-  const onDragStart = (e: React.DragEvent, nodeType: string) => {
-    e.dataTransfer.setData("application/agentbuilder-node", nodeType);
+  const onDragStart = (e: React.DragEvent, nt: NodeTypeMetadata) => {
+    // Always set the standard node type for canvas drops
+    e.dataTransfer.setData("application/agentbuilder-node", nt.type);
+
+    // If tool-compatible, also set tool data so the LLM drop zone can capture it
+    if (nt.tool_compatible) {
+      const toolData = JSON.stringify({
+        id: `tool_${++toolIdCounter}`,
+        type: nt.type,
+        display_name: nt.display_name,
+        icon: nt.icon,
+        color: nt.color,
+        config: {},
+      });
+      e.dataTransfer.setData("application/agentbuilder-tool", toolData);
+    }
+
     e.dataTransfer.effectAllowed = "move";
   };
 
@@ -31,7 +48,7 @@ export default function NodePalette({ nodeTypes }: Props) {
               key={nt.type}
               className="palette-item"
               draggable
-              onDragStart={(e) => onDragStart(e, nt.type)}
+              onDragStart={(e) => onDragStart(e, nt)}
             >
               <div
                 className="palette-icon"

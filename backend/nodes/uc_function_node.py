@@ -39,6 +39,10 @@ class UCFunctionNode(BaseNode):
         return "#8b5cf6"
 
     @property
+    def tool_compatible(self) -> bool:
+        return True
+
+    @property
     def config_fields(self) -> list[NodeConfigField]:
         return [
             NodeConfigField(

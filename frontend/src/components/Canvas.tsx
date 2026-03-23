@@ -10,6 +10,7 @@ import {
   type Edge,
   type Node,
   type NodeChange,
+  type XYPosition,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { X } from "lucide-react";
@@ -17,7 +18,8 @@ import { X } from "lucide-react";
 import AgentNode from "./nodes/AgentNode";
 import SentinelNode from "./nodes/SentinelNode";
 import ConfigPanel from "./ConfigPanel";
-import type { NodeTypeMetadata, GraphDef } from "../types";
+import ToolConfigPanel from "./ToolConfigPanel";
+import type { NodeTypeMetadata, GraphDef, AttachedTool } from "../types";
 
 const START_ID = "__start__";
 const END_ID = "__end__";
@@ -85,6 +87,8 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(INITIAL_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const { screenToFlowPosition } = useReactFlow();
+  const [selectedTool, setSelectedTool] = useState<{ nodeId: string; toolId: string } | null>(null);
 
   const customNodeTypes = useMemo(
     () => ({ agentNode: AgentNode, sentinelNode: SentinelNode }),
@@ -119,12 +123,14 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
       if (SENTINEL_IDS.has(node.id)) return;
+      setSelectedTool(null);
       onNodeSelect(node.id);
     },
     [onNodeSelect]
   );
 
   const onPaneClick = useCallback(() => {
+    setSelectedTool(null);
     onNodeSelect(null);
   }, [onNodeSelect]);
 
@@ -138,13 +144,25 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
     onGraphReady(() => {
       const graphNodes = nodesRef.current
         .filter((n) => n.id !== START_ID && n.id !== END_ID)
-        .map((n) => ({
-          id: n.id,
-          type: (n.data.nodeType as string) ?? "llm",
-          writes_to: (n.data.writes_to as string) ?? "",
-          config: (n.data.config as Record<string, unknown>) ?? {},
-          position: n.position,
-        }));
+        .map((n) => {
+          const config = { ...((n.data.config as Record<string, unknown>) ?? {}) };
+
+          // Serialize attached tools into tools_json for LLM nodes
+          const tools = (n.data.tools ?? []) as AttachedTool[];
+          if (tools.length > 0) {
+            config.tools_json = JSON.stringify(
+              tools.map((t) => ({ type: t.type, config: t.config }))
+            );
+          }
+
+          return {
+            id: n.id,
+            type: (n.data.nodeType as string) ?? "llm",
+            writes_to: (n.data.writes_to as string) ?? "",
+            config,
+            position: n.position,
+          };
+        });
       const graphEdges = edgesRef.current.map((e) => ({
         id: e.id,
         source: e.source,
@@ -163,6 +181,27 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
       for (const gn of graph.nodes) {
         const meta = nodeTypes.find((nt) => nt.type === gn.type);
         nodeIdCounter = Math.max(nodeIdCounter, parseInt(gn.id.replace(/\D/g, "") || "0", 10));
+
+        // Restore attached tools from tools_json for LLM nodes
+        let tools: AttachedTool[] = [];
+        const toolsJson = gn.config?.tools_json;
+        if (gn.type === "llm" && toolsJson && typeof toolsJson === "string") {
+          try {
+            const parsed = JSON.parse(toolsJson) as Array<{ type: string; config: Record<string, unknown> }>;
+            tools = parsed.map((tc, i) => {
+              const toolMeta = nodeTypes.find((nt) => nt.type === tc.type);
+              return {
+                id: `tool_${++toolIdCounter.current}`,
+                type: tc.type,
+                display_name: toolMeta?.display_name ?? tc.type,
+                icon: toolMeta?.icon ?? "puzzle",
+                color: toolMeta?.color ?? "#6366f1",
+                config: tc.config ?? {},
+              };
+            });
+          } catch { /* ignore bad JSON */ }
+        }
+
         newNodes.push({
           id: gn.id,
           type: "agentNode",
@@ -177,6 +216,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
             is_router: gn.type === "router",
             writes_to: gn.writes_to ?? "",
             config: gn.config ?? {},
+            tools,
           },
         });
       }
@@ -198,6 +238,26 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
     e.dataTransfer.dropEffect = "move";
   }, []);
 
+  /** Find an LLM node whose bounding box contains the given flow position. */
+  const findLlmNodeAtPosition = useCallback(
+    (flowPos: XYPosition): Node | undefined => {
+      return nodesRef.current.find((n) => {
+        if ((n.data.nodeType as string) !== "llm") return false;
+        const w = n.measured?.width ?? 160;
+        const h = n.measured?.height ?? 100;
+        return (
+          flowPos.x >= n.position.x &&
+          flowPos.x <= n.position.x + w &&
+          flowPos.y >= n.position.y &&
+          flowPos.y <= n.position.y + h
+        );
+      });
+    },
+    []
+  );
+
+  const toolIdCounter = useRef(0);
+
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
@@ -210,9 +270,38 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
       const wrapperBounds = reactFlowWrapper.current?.getBoundingClientRect();
       if (!wrapperBounds) return;
 
+      const flowPos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+
+      // If this is a tool-compatible node dropped onto an LLM node, attach it
+      if (meta.tool_compatible) {
+        const llmNode = findLlmNodeAtPosition(flowPos);
+        if (llmNode) {
+          const newTool: AttachedTool = {
+            id: `tool_${++toolIdCounter.current}`,
+            type: meta.type,
+            display_name: meta.display_name,
+            icon: meta.icon,
+            color: meta.color,
+            config: {},
+          };
+          setNodes((nds) =>
+            nds.map((n) => {
+              if (n.id !== llmNode.id) return n;
+              const existing = (n.data.tools ?? []) as AttachedTool[];
+              return {
+                ...n,
+                data: { ...n.data, tools: [...existing, newTool] },
+              };
+            })
+          );
+          return;
+        }
+      }
+
+      // Standard drop — create a new graph node
       const position = {
-        x: e.clientX - wrapperBounds.left - 80,
-        y: e.clientY - wrapperBounds.top - 20,
+        x: flowPos.x - 80,
+        y: flowPos.y - 20,
       };
 
       const defaultConfig: Record<string, unknown> = {};
@@ -249,8 +338,31 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
 
       setNodes((nds) => [...nds, newNode]);
     },
-    [nodeTypes, setNodes]
+    [nodeTypes, setNodes, findLlmNodeAtPosition, screenToFlowPosition, stateVariableNames]
   );
+
+  // ── Tool chip selection ──────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { nodeId, toolId } = (e as CustomEvent).detail;
+      setSelectedTool({ nodeId, toolId });
+      onNodeSelect(nodeId);  // anchor the popover to the parent LLM node
+    };
+    window.addEventListener("tool-chip-click", handler);
+    return () => window.removeEventListener("tool-chip-click", handler);
+  }, [onNodeSelect]);
+
+  // Clear tool selection when the main node selection changes externally
+  const prevSelectedRef = useRef(selectedNodeId);
+  useEffect(() => {
+    if (selectedNodeId !== prevSelectedRef.current) {
+      // Only clear tool selection if we navigated away from the parent node
+      if (selectedTool && selectedNodeId !== selectedTool.nodeId) {
+        setSelectedTool(null);
+      }
+      prevSelectedRef.current = selectedNodeId;
+    }
+  }, [selectedNodeId, selectedTool]);
 
   // Floating popover position
   const popoverPos = usePopoverPosition(selectedNodeId, reactFlowWrapper);
@@ -283,14 +395,31 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
           onKeyDown={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
-          <button className="config-popover-close" onClick={() => onNodeSelect(null)}>
+          <button
+            className="config-popover-close"
+            onClick={() => {
+              if (selectedTool) {
+                setSelectedTool(null);
+              } else {
+                onNodeSelect(null);
+              }
+            }}
+          >
             <X size={14} />
           </button>
-          <ConfigPanel
-            selectedNodeId={selectedNodeId}
-            nodeTypes={nodeTypes}
-            stateVariables={stateVariableNames}
-          />
+          {selectedTool && selectedTool.nodeId === selectedNodeId ? (
+            <ToolConfigPanel
+              parentNodeId={selectedTool.nodeId}
+              toolId={selectedTool.toolId}
+              nodeTypes={nodeTypes}
+            />
+          ) : (
+            <ConfigPanel
+              selectedNodeId={selectedNodeId}
+              nodeTypes={nodeTypes}
+              stateVariables={stateVariableNames}
+            />
+          )}
         </div>
       )}
     </div>

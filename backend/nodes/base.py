@@ -96,6 +96,11 @@ class BaseNode(ABC):
         """Hex color for the node header in the UI."""
         return "#6366f1"
 
+    @property
+    def tool_compatible(self) -> bool:
+        """Whether this node type can be attached as a tool to an LLM node."""
+        return False
+
     # -- execution ---------------------------------------------------------
 
     @abstractmethod
@@ -121,4 +126,5 @@ class BaseNode(ABC):
             "icon": self.icon,
             "color": self.color,
             "config_fields": [f.model_dump() for f in self.config_fields],
+            "tool_compatible": self.tool_compatible,
         }

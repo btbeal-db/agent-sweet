@@ -54,9 +54,7 @@ def _build_initial_state(graph_def: GraphDef, user_message: str) -> dict:
     """Build the initial state dict for the first graph invocation."""
     state = {f.name: "" for f in graph_def.state_fields}
     state["input"] = user_message
-    state["messages"] = [
-        {"role": "user", "content": user_message},
-    ]
+    state["messages"] = [{"role": "user", "content": user_message}]
     return state
 
 

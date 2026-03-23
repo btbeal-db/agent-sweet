@@ -194,6 +194,20 @@ class LLMNode(BaseNode):
 
         llm = ChatDatabricks(endpoint=endpoint, temperature=temperature)
 
+        # Bind tools if configured
+        tools_json_raw = config.get("tools_json", "")
+        tools = []
+        if tools_json_raw and str(tools_json_raw).strip():
+            try:
+                from ..tools import make_tools_from_json
+                tools = make_tools_from_json(str(tools_json_raw))
+                llm = llm.bind_tools(tools)
+            except Exception as exc:
+                return {
+                    writes_to: f"Error binding tools: {exc}",
+                    "messages": [{"role": "system", "content": f"LLM: tool binding error: {exc}", "node": "llm"}],
+                }
+
         # Auto-detect structured output from the state field definition
         is_structured = target_field is not None and getattr(target_field, "type", "") == "structured"
 
@@ -226,14 +240,62 @@ class LLMNode(BaseNode):
                 ],
             }
 
-        # Plain text path
-        response = llm.invoke([
+        # Plain text / tool-calling path
+        max_iterations = int(config.get("max_tool_iterations", 10) or 10)
+        messages_for_llm = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=state_context or state.get("input", "")),
-        ])
-        response_text = response.content
+        ]
+        trace_messages: list[dict[str, Any]] = []
 
+        for _iteration in range(max_iterations):
+            response = llm.invoke(messages_for_llm)
+
+            # If no tools or no tool calls, we have our final answer
+            if not tools or not hasattr(response, "tool_calls") or not response.tool_calls:
+                response_text = response.content
+                trace_messages.append({"role": "assistant", "content": response_text, "node": "llm"})
+                return {
+                    writes_to: response_text,
+                    "messages": trace_messages,
+                }
+
+            # LLM wants to call tools — execute them and loop
+            messages_for_llm.append(response)
+            trace_messages.append({
+                "role": "assistant",
+                "content": f"[Tool calls: {', '.join(tc['name'] for tc in response.tool_calls)}]",
+                "node": "llm",
+            })
+
+            tool_map = {t.name: t for t in tools}
+            for tool_call in response.tool_calls:
+                tool_name = tool_call.get("name", "")
+                tool_args = tool_call.get("args", {})
+                tool_id = tool_call.get("id", "")
+
+                tool_fn = tool_map.get(tool_name)
+                if not tool_fn:
+                    result_str = f"Unknown tool: {tool_name}"
+                else:
+                    try:
+                        result = tool_fn.invoke(tool_args)
+                        result_str = result if isinstance(result, str) else json.dumps(result, default=str)
+                    except Exception as exc:
+                        result_str = f"Error calling {tool_name}: {exc}"
+
+                from langchain_core.messages import ToolMessage
+                messages_for_llm.append(ToolMessage(content=result_str, tool_call_id=tool_id))
+                trace_messages.append({
+                    "role": "system",
+                    "content": f"[{tool_name}] {result_str}",
+                    "node": "tool",
+                })
+
+        # Max iterations reached — return whatever we have
+        response_text = "(max tool iterations reached)"
+        trace_messages.append({"role": "assistant", "content": response_text, "node": "llm"})
         return {
             writes_to: response_text,
-            "messages": [{"role": "assistant", "content": response_text, "node": "llm"}],
+            "messages": trace_messages,
         }
