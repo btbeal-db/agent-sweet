@@ -89,7 +89,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
     if (!input.trim() || isLoading) return;
 
     // ── Local preflight checks ──
-    const preflightError = preflight(graphGetter, stateFieldsRef.current);
+    const preflightError = preflight(graphGetter, stateFieldsRef.current!);
     if (preflightError) {
       const userMsg: ChatMessage = { id: `msg_${++msgId}`, role: "user", content: input.trim() };
       setMessages((prev) => [...prev, userMsg]);
@@ -125,7 +125,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
 
     try {
       const graph = graphGetter!();
-      graph.state_fields = stateFieldsRef.current;
+      graph.state_fields = stateFieldsRef.current!;
 
       const validation = await validateGraph(graph);
       if (!validation.valid) {
