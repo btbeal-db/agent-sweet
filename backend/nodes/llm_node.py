@@ -192,6 +192,8 @@ class LLMNode(BaseNode):
             if history_text:
                 state_context = f"{state_context}\n\nConversation History:\n{history_text}" if state_context else f"Conversation History:\n{history_text}"
 
+        # LLM calls use the SP credentials (default env vars). FMAPI's data-plane
+        # does not accept OBO tokens. Data-access nodes (VS, Genie, UC) use OBO.
         llm = ChatDatabricks(endpoint=endpoint, temperature=temperature)
 
         # Bind tools if configured

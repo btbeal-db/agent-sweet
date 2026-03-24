@@ -54,6 +54,15 @@ class PreviewRequest(BaseModel):
     resume_value: str | None = None
 
 
+class TraceSpan(BaseModel):
+    """A single span from an MLflow trace."""
+    name: str = ""
+    status: str = ""
+    start_time_ms: int = 0
+    end_time_ms: int = 0
+    inputs: Any = None
+    outputs: Any = None
+
 class PreviewResponse(BaseModel):
     success: bool
     output: str = ""
@@ -62,6 +71,7 @@ class PreviewResponse(BaseModel):
     state: dict[str, Any] = {}
     thread_id: str | None = None
     interrupt: str | None = None
+    mlflow_trace: list[dict[str, Any]] = []
 
 
 class ExportResponse(BaseModel):

@@ -4,8 +4,9 @@ import json
 import logging
 from typing import Any
 
-from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.vectorsearch import RerankerConfig, RerankerConfigRerankerParameters
+
+from ..auth import get_workspace_client
 
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
@@ -171,7 +172,7 @@ class VectorSearchNode(BaseNode):
                 parameters=RerankerConfigRerankerParameters(columns_to_rerank=rerank_cols),
             )
         try:
-            w = WorkspaceClient()
+            w = get_workspace_client()
             response = w.vector_search_indexes.query_index(
                 index_name=index_name,
                 columns=columns,
@@ -182,7 +183,12 @@ class VectorSearchNode(BaseNode):
                 reranker=reranker,
             )
         except Exception as exc:
-            logger.exception("Vector Search query failed")
+            from ..auth import get_user_token
+            has_obo = get_user_token() is not None
+            logger.exception(
+                "Vector Search query failed (OBO=%s, auth_type=%s, index=%s)",
+                has_obo, w.config.auth_type, index_name,
+            )
             return {
                 writes_to: f"Vector Search error: {exc}",
                 "messages": [{"role": "system", "content": f"Vector Search error: {exc}", "node": "vector_search"}],

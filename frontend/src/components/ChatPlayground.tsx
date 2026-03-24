@@ -69,6 +69,15 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const scrollOnToggle = useCallback((e: React.SyntheticEvent<HTMLDetailsElement>) => {
+    const details = e.currentTarget;
+    if (details.open) {
+      setTimeout(() => {
+        details.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }, 50);
+    }
+  }, []);
+
   const addErrorMessage = useCallback((error: string) => {
     const errMsg: ChatMessage = {
       id: `msg_${++msgId}`,
@@ -159,6 +168,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
           content: result.output || "(empty)",
           execution_trace: result.execution_trace,
           state: result.state,
+          mlflow_trace: result.mlflow_trace,
         });
       }
     } catch (err) {
@@ -211,7 +221,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
                   )}
 
                   {msg.execution_trace && msg.execution_trace.length > 0 && (
-                    <details className="result-details">
+                    <details className="result-details" onToggle={scrollOnToggle}>
                       <summary>Trace ({msg.execution_trace.length} steps)</summary>
                       <div className="trace">
                         {msg.execution_trace.map((step, i) => (
@@ -225,7 +235,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
                   )}
 
                   {msg.state && Object.keys(msg.state).length > 0 && (
-                    <details className="result-details">
+                    <details className="result-details" onToggle={scrollOnToggle}>
                       <summary>State</summary>
                       <div className="state-grid">
                         {Object.entries(msg.state).map(([key, val]) => (
@@ -233,6 +243,49 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
                             <span className="state-key">{key}</span>
                             <pre className="state-val">{val || "(empty)"}</pre>
                           </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+
+                  {msg.mlflow_trace && msg.mlflow_trace.length > 0 && (
+                    <details className="result-details" onToggle={scrollOnToggle}>
+                      <summary>MLflow Trace ({msg.mlflow_trace.length} spans)</summary>
+                      <div className="mlflow-trace">
+                        {msg.mlflow_trace.map((span, i) => (
+                          <details key={i} className="mlflow-span" onToggle={scrollOnToggle}>
+                            <summary className="mlflow-span-header">
+                              <span className={`mlflow-span-status mlflow-span-status-${span.status?.toLowerCase().replace(/[^a-z]/g, "")}`} />
+                              <span className="mlflow-span-name">{span.name}</span>
+                              {span.end_time_ms > 0 && span.start_time_ms > 0 && (
+                                <span className="mlflow-span-duration">
+                                  {span.end_time_ms - span.start_time_ms}ms
+                                </span>
+                              )}
+                            </summary>
+                            <div className="mlflow-span-body">
+                              {span.inputs != null && (
+                                <div className="mlflow-span-section">
+                                  <span className="mlflow-span-label">Inputs</span>
+                                  <pre className="mlflow-span-data">
+                                    {String(typeof span.inputs === "string"
+                                      ? span.inputs
+                                      : JSON.stringify(span.inputs, null, 2))}
+                                  </pre>
+                                </div>
+                              )}
+                              {span.outputs != null && (
+                                <div className="mlflow-span-section">
+                                  <span className="mlflow-span-label">Outputs</span>
+                                  <pre className="mlflow-span-data">
+                                    {String(typeof span.outputs === "string"
+                                      ? span.outputs
+                                      : JSON.stringify(span.outputs, null, 2))}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          </details>
                         ))}
                       </div>
                     </details>

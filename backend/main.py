@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import tempfile
 import uuid
 from pathlib import Path
@@ -13,7 +14,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import mlflow
-from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import ResourceAlreadyExists
 from databricks.sdk.service.serving import (
     AiGatewayConfig,
@@ -36,6 +36,7 @@ from mlflow.models.resources import (
 
 from langchain_core.messages import BaseMessage
 
+from .auth import set_user_token, get_workspace_client
 from .graph_builder import build_graph, generate_code, run_graph
 from .nodes import get_all_metadata
 from .schema import (
@@ -134,9 +135,36 @@ app.add_middleware(
 )
 
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+
+class OBOMiddleware(BaseHTTPMiddleware):
+    """Extract the user's OBO token from the x-forwarded-access-token header."""
+
+    async def dispatch(self, request: Request, call_next):
+        token = request.headers.get("x-forwarded-access-token")
+        set_user_token(token)
+        return await call_next(request)
+
+
+app.add_middleware(OBOMiddleware)
+
+
 # ── Preview session store (in-memory, per-process) ────────────────────────────
 
 _preview_sessions: dict[str, InMemorySaver] = {}
+
+# ── MLflow preview tracing setup ──────────────────────────────────────────────
+# When deployed: use Lakebase Postgres for durable trace storage.
+# When local:    use in-memory SQLite — traces live only for the process lifetime.
+_lakebase_trace_conn = os.environ.get("LAKEBASE_TRACE_CONN_STRING", "")
+if _lakebase_trace_conn:
+    _PREVIEW_TRACKING_URI = _lakebase_trace_conn
+    logger.info("MLflow playground traces → Lakebase")
+else:
+    _PREVIEW_TRACKING_URI = "sqlite:///:memory:"
+    logger.info("MLflow playground traces → in-memory (no persistence)")
 
 # ── API routes ────────────────────────────────────────────────────────────────
 
@@ -175,6 +203,52 @@ def validate_graph(graph: GraphDef):
     return {"valid": len(errors) == 0, "errors": errors}
 
 
+def _extract_trace() -> list[dict]:
+    """Grab the last MLflow trace and serialize its spans for the frontend."""
+    try:
+        trace_id = mlflow.get_last_active_trace_id()
+        if not trace_id:
+            return []
+        trace = mlflow.get_trace(trace_id)
+        if not trace:
+            return []
+        spans = []
+        for span in trace.data.spans:
+            entry: dict = {
+                "name": span.name,
+                "status": str(span.status),
+                "start_time_ms": span.start_time_ns // 1_000_000 if span.start_time_ns else 0,
+                "end_time_ms": span.end_time_ns // 1_000_000 if span.end_time_ns else 0,
+            }
+            # Include inputs/outputs but truncate large values
+            if span.inputs:
+                try:
+                    entry["inputs"] = _truncate(span.inputs)
+                except Exception:
+                    entry["inputs"] = str(span.inputs)[:500]
+            if span.outputs:
+                try:
+                    entry["outputs"] = _truncate(span.outputs)
+                except Exception:
+                    entry["outputs"] = str(span.outputs)[:500]
+            spans.append(entry)
+        return spans
+    except Exception as e:
+        logger.warning("Failed to extract MLflow trace: %s", e)
+        return []
+
+
+def _truncate(obj, max_str_len: int = 500):
+    """Truncate string values in a dict/list structure for safe serialization."""
+    if isinstance(obj, str):
+        return obj[:max_str_len] + "..." if len(obj) > max_str_len else obj
+    if isinstance(obj, dict):
+        return {k: _truncate(v, max_str_len) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_truncate(item, max_str_len) for item in obj[:20]]
+    return obj
+
+
 @app.post("/api/graph/preview", response_model=PreviewResponse)
 def preview_graph(req: PreviewRequest):
     """Build the graph and run it with a test message.
@@ -186,6 +260,13 @@ def preview_graph(req: PreviewRequest):
     if thread_id not in _preview_sessions:
         _preview_sessions[thread_id] = InMemorySaver()
 
+    # Enable MLflow tracing for playground — use a lightweight local SQLite DB
+    # so traces don't accumulate on disk or hit the workspace MLflow.
+    prev_tracking_uri = mlflow.get_tracking_uri()
+    mlflow.set_tracking_uri(_PREVIEW_TRACKING_URI)
+    mlflow.set_experiment("playground")
+    mlflow.langchain.autolog(log_traces=True)
+
     try:
         result = run_graph(
             req.graph,
@@ -196,6 +277,7 @@ def preview_graph(req: PreviewRequest):
         )
 
         messages = _serialize_messages(result.get("messages", []))
+        mlflow_trace = _extract_trace()
 
         interrupts = result.get("__interrupt__")
         if interrupts:
@@ -210,6 +292,7 @@ def preview_graph(req: PreviewRequest):
                 thread_id=thread_id,
                 execution_trace=messages,
                 state=state_snapshot,
+                mlflow_trace=mlflow_trace,
             )
 
         state_snapshot = {
@@ -222,16 +305,23 @@ def preview_graph(req: PreviewRequest):
             execution_trace=messages,
             state=state_snapshot,
             thread_id=thread_id,
+            mlflow_trace=mlflow_trace,
         )
     except GraphInterrupt as gi:
         prompt = gi.interrupts[0].value if gi.interrupts else "Input needed"
+        mlflow_trace = _extract_trace()
         return PreviewResponse(
             success=True,
             interrupt=str(prompt),
             thread_id=thread_id,
+            mlflow_trace=mlflow_trace,
         )
     except Exception as e:
+        logger.exception("Preview failed")
         return PreviewResponse(success=False, error=str(e))
+    finally:
+        # Restore previous tracking URI so deploy still points at Databricks
+        mlflow.set_tracking_uri(prev_tracking_uri)
 
 
 @app.post("/api/graph/export", response_model=ExportResponse)
@@ -289,7 +379,7 @@ def deploy_graph(req: DeployRequest):
             parts = req.model_name.split(".")
             if len(parts) == 3:
                 catalog, schema_name, _ = parts
-                w = WorkspaceClient()
+                w = get_workspace_client()
                 try:
                     w.schemas.get(f"{catalog}.{schema_name}")
                 except Exception:

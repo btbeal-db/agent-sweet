@@ -1,0 +1,24 @@
+# Demo setup scripts — not needed at runtime
+demo/
+
+# Dev dependencies — not needed at runtime
+frontend/node_modules/
+frontend/src/
+frontend/public/
+frontend/tsconfig*.json
+frontend/vite.config.ts
+frontend/package-lock.json
+
+# Local MLflow artifacts — not needed for the app
+backend/mlruns/
+backend/mlflow.db
+backend/*.db
+
+# Build/dev artifacts
+.databricks/
+.claude/
+.git/
+__pycache__/
+*.pyc
+.env
+.venv/

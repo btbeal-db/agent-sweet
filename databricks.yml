@@ -16,14 +16,20 @@ resources:
       name: agent-builder-${bundle.target}
       description: "Visual drag-and-drop LangGraph agent builder for Databricks"
       source_code_path: .
+      user_api_scopes:
+        - sql
+        - serving.serving-endpoints
+        - serving.serving-endpoints-data-plane
+        - vectorsearch.vector-search-endpoints
+        - vectorsearch.vector-search-indexes
 
 targets:
   dev:
     default: true
     workspace:
-      host: https://fe-vm-hls-amer.cloud.databricks.com/
-      profile: FEVM
+      host: https://adb-984752964297111.11.azuredatabricks.net/
+      profile: DEFAULT
   prod:
     workspace:
-      host: https://fe-vm-hls-amer.cloud.databricks.com/
-      profile: FEVM
+      host: https://adb-984752964297111.11.azuredatabricks.net/
+      profile: DEFAULT

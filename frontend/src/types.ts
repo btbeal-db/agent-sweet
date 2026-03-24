@@ -63,6 +63,15 @@ export interface GraphDef {
   state_fields: StateFieldDef[];
 }
 
+export interface TraceSpan {
+  name: string;
+  status: string;
+  start_time_ms: number;
+  end_time_ms: number;
+  inputs?: unknown;
+  outputs?: unknown;
+}
+
 export interface PreviewResponse {
   success: boolean;
   output: string;
@@ -71,6 +80,7 @@ export interface PreviewResponse {
   state: Record<string, string>;
   thread_id: string | null;
   interrupt: string | null;
+  mlflow_trace: TraceSpan[];
 }
 
 export interface ExportResponse {
@@ -100,5 +110,6 @@ export interface ChatMessage {
   error?: string | null;
   execution_trace?: PreviewResponse["execution_trace"];
   state?: Record<string, string>;
+  mlflow_trace?: TraceSpan[];
   loading?: boolean;
 }

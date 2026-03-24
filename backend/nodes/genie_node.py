@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.dashboards import MessageStatus
+
+from ..auth import get_workspace_client
 
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
@@ -123,7 +124,7 @@ class GenieNode(BaseNode):
             }
 
         try:
-            w = WorkspaceClient()
+            w = get_workspace_client()
             message = w.genie.start_conversation_and_wait(space_id, query)
         except Exception as exc:
             logger.exception("Genie API call failed")

@@ -10,8 +10,9 @@ import json
 import logging
 from typing import Any
 
-from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.dashboards import MessageStatus
+
+from .auth import get_workspace_client
 from databricks.sdk.service.vectorsearch import RerankerConfig, RerankerConfigRerankerParameters
 from databricks_langchain import UCFunctionToolkit
 from langchain_core.tools import BaseTool, tool
@@ -59,7 +60,7 @@ def _make_vector_search_tool(config: dict[str, Any]) -> BaseTool:
             except json.JSONDecodeError:
                 pass
 
-        w = WorkspaceClient()
+        w = get_workspace_client()
         response = w.vector_search_indexes.query_index(
             index_name=index_name,
             columns=columns,
@@ -104,7 +105,7 @@ def _make_genie_tool(config: dict[str, Any]) -> BaseTool:
     @tool
     def genie_query(question: str) -> str:
         """Ask a natural-language question to get structured data answers."""
-        w = WorkspaceClient()
+        w = get_workspace_client()
         message = w.genie.start_conversation_and_wait(room_id, question)
 
         if message.status == MessageStatus.FAILED:

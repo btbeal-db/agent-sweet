@@ -2056,6 +2056,108 @@ code, pre, .mono {
   line-height: 1.4;
 }
 
+/* ── MLflow trace ────────────────────────────────────────────── */
+.mlflow-trace {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mlflow-span {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.mlflow-span > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.75rem;
+  background: var(--bg-surface);
+  transition: background 0.12s ease;
+}
+
+.mlflow-span > summary:hover {
+  background: var(--bg-hover);
+}
+
+.mlflow-span-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+
+.mlflow-span-status-ok,
+.mlflow-span-status-statuscodeoK {
+  background: #22c55e;
+}
+
+.mlflow-span-status-error {
+  background: #ef4444;
+}
+
+.mlflow-span-name {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mlflow-span-duration {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.mlflow-span-body {
+  padding: 0.5rem 0.6rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.mlflow-span-section {
+  margin-bottom: 0.4rem;
+}
+
+.mlflow-span-section:last-child {
+  margin-bottom: 0;
+}
+
+.mlflow-span-label {
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 0.2rem;
+}
+
+.mlflow-span-data {
+  font-size: 0.68rem;
+  font-family: "JetBrains Mono", monospace;
+  color: var(--text-secondary);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.5rem;
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ── Route editor (config panel) ──────────────────────────────── */
 .route-editor-header {
   font-size: 0.68rem;
