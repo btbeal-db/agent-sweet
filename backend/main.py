@@ -324,6 +324,77 @@ def preview_graph(req: PreviewRequest):
         mlflow.set_tracking_uri(prev_tracking_uri)
 
 
+@app.get("/api/graph/load-from-run")
+def load_graph_from_run(run_id: str):
+    """Load a GraphDef from an MLflow run's artifacts.
+
+    Returns run metadata and the graph definition so the frontend can
+    show the user what was found before they accept.
+    """
+    try:
+        mlflow.set_tracking_uri("databricks")
+
+        # Fetch run metadata
+        run = mlflow.get_run(run_id)
+        run_name = run.info.run_name or run_id
+        experiment_id = run.info.experiment_id
+
+        import glob as _glob
+
+        search_paths = [
+            "agent/artifacts/graph_def",
+            "agent/artifacts",
+            "agent",
+            "",
+        ]
+        searched = []
+
+        for artifact_path in search_paths:
+            searched.append(artifact_path or "(root)")
+            try:
+                local_path = mlflow.artifacts.download_artifacts(
+                    run_id=run_id,
+                    artifact_path=artifact_path or None,
+                    tracking_uri="databricks",
+                )
+            except Exception:
+                continue
+
+            if Path(local_path).is_dir():
+                json_files = _glob.glob(f"{local_path}/*.json")
+            elif local_path.endswith(".json"):
+                json_files = [local_path]
+            else:
+                continue
+
+            for jf in json_files:
+                try:
+                    with open(jf) as f:
+                        graph_data = json.load(f)
+                    if "nodes" in graph_data and "edges" in graph_data:
+                        graph = GraphDef.model_validate(graph_data)
+                        return {
+                            "success": True,
+                            "graph": graph.model_dump(),
+                            "run_name": run_name,
+                            "experiment_id": experiment_id,
+                            "found_at": artifact_path or "(root)",
+                            "searched": searched,
+                        }
+                except (json.JSONDecodeError, Exception):
+                    continue
+
+        return {
+            "success": False,
+            "error": f"No graph definition found in run {run_id}.",
+            "run_name": run_name,
+            "searched": searched,
+        }
+    except Exception as e:
+        logger.exception("Failed to load graph from run %s", run_id)
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/graph/export", response_model=ExportResponse)
 def export_graph(graph: GraphDef):
     """Generate a standalone Python file for this graph."""

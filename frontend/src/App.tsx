@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { Home, Hammer, HelpCircle, Trash2 } from "lucide-react";
+import { Home, Hammer, HelpCircle, Trash2, CloudDownload } from "lucide-react";
 import Canvas from "./components/Canvas";
 import NodePalette from "./components/NodePalette";
 import StateModelModal from "./components/StateModelModal";
@@ -11,7 +11,7 @@ import HomePage from "./components/HomePage";
 import HelpPage from "./components/HelpPage";
 import BuilderWalkthrough from "./components/BuilderWalkthrough";
 import { StateProvider } from "./StateContext";
-import { fetchNodeTypes, exportGraph } from "./api";
+import { fetchNodeTypes, exportGraph, loadGraphFromRun } from "./api";
 import type { NodeTypeMetadata, GraphDef, StateFieldDef } from "./types";
 
 type AppView = "home" | "builder" | "help";
@@ -28,6 +28,17 @@ export default function App() {
   const [showStateModal, setShowStateModal] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showDeploy, setShowDeploy] = useState(false);
+  const [showRunIdPrompt, setShowRunIdPrompt] = useState(false);
+  const [runIdInput, setRunIdInput] = useState("");
+  const [runIdLoading, setRunIdLoading] = useState(false);
+  const [runIdError, setRunIdError] = useState("");
+  const [runIdResult, setRunIdResult] = useState<{
+    graph: GraphDef;
+    run_name: string;
+    experiment_id: string;
+    found_at: string;
+    searched: string[];
+  } | null>(null);
   const [graphImporter, setGraphImporter] = useState<((g: GraphDef) => void) | null>(null);
   const [view, setView] = useState<AppView>("home");
   const [showWalkthrough, setShowWalkthrough] = useState(false);
@@ -115,6 +126,39 @@ export default function App() {
     setSelectedNodeId(null);
   }, [graphImporter]);
 
+  const handleFetchRun = useCallback(async () => {
+    if (!runIdInput.trim()) return;
+    setRunIdLoading(true);
+    setRunIdError("");
+    setRunIdResult(null);
+    try {
+      const result = await loadGraphFromRun(runIdInput.trim());
+      if (result.success && result.graph) {
+        setRunIdResult(result as unknown as NonNullable<typeof runIdResult>);
+      } else {
+        setRunIdError(result.error || "Failed to load graph.");
+      }
+    } catch (err) {
+      setRunIdError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunIdLoading(false);
+    }
+  }, [runIdInput]);
+
+  const handleAcceptRun = useCallback(() => {
+    if (!runIdResult?.graph || !graphImporter) return;
+    const graph = runIdResult.graph as GraphDef;
+    if (graph.state_fields?.length) {
+      setStateFields(graph.state_fields);
+    }
+    graphImporter(graph);
+    hasOpenedBuilder.current = true;
+    setShowRunIdPrompt(false);
+    setRunIdInput("");
+    setRunIdResult(null);
+    setView("builder");
+  }, [graphImporter, runIdResult]);
+
   return (
     <ReactFlowProvider>
       <StateProvider value={{ names: stateVariableNames, fields: stateFields }}>
@@ -139,6 +183,10 @@ export default function App() {
                   style={{ display: "none" }}
                   onChange={handleLoadJson}
                 />
+                <button className="btn btn-ghost" onClick={() => setShowRunIdPrompt(true)} title="Load graph from an MLflow run">
+                  <CloudDownload size={14} />
+                  MLflow
+                </button>
                 <button className="btn btn-ghost" onClick={handleExport}>
                   Export
                 </button>
@@ -245,6 +293,106 @@ export default function App() {
           stateFieldsRef={stateFieldsRef}
           onClose={() => setShowDeploy(false)}
         />
+      )}
+
+      {/* Load from MLflow run modal */}
+      {showRunIdPrompt && (
+        <div className="modal-overlay" onClick={() => { setShowRunIdPrompt(false); setRunIdError(""); setRunIdResult(null); }}>
+          <div className="modal-card" style={{ width: runIdResult ? 600 : 440 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h1>Load from MLflow Run</h1>
+              {!runIdResult && (
+                <p>
+                  Enter the MLflow Run ID from a previously deployed graph. The
+                  graph definition is stored as an artifact during deployment.
+                </p>
+              )}
+            </div>
+            <div className="modal-body">
+              {!runIdResult ? (
+                <>
+                  <input
+                    className="preview-input"
+                    style={{ width: "100%" }}
+                    value={runIdInput}
+                    placeholder="e.g. a1b2c3d4e5f6..."
+                    onChange={(e) => setRunIdInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleFetchRun()}
+                    autoFocus
+                  />
+                  {runIdError && (
+                    <pre className="result-error" style={{ marginTop: "0.5rem", fontSize: "0.75rem" }}>
+                      {runIdError}
+                    </pre>
+                  )}
+                </>
+              ) : (
+                <div className="mlflow-load-preview">
+                  <div className="mlflow-load-success">Graph found</div>
+                  <div className="mlflow-load-meta">
+                    <div className="mlflow-load-row">
+                      <span className="mlflow-load-label">Run</span>
+                      <span>{runIdResult.run_name}</span>
+                    </div>
+                    <div className="mlflow-load-row">
+                      <span className="mlflow-load-label">Found at</span>
+                      <code>{runIdResult.found_at}</code>
+                    </div>
+                    <div className="mlflow-load-row">
+                      <span className="mlflow-load-label">Nodes</span>
+                      <span>{runIdResult.graph.nodes?.length ?? 0}</span>
+                    </div>
+                    <div className="mlflow-load-row">
+                      <span className="mlflow-load-label">State fields</span>
+                      <span>{runIdResult.graph.state_fields?.map((f: { name: string }) => f.name).join(", ")}</span>
+                    </div>
+                  </div>
+                  <details className="mlflow-load-json-details">
+                    <summary>Graph JSON</summary>
+                    <pre className="mlflow-load-json">
+                      {JSON.stringify(runIdResult.graph, null, 2)}
+                    </pre>
+                  </details>
+                  <div className="mlflow-load-hint">
+                    Older graphs may reference state fields or configs that have since
+                    been renamed. You can review the JSON above and fix any issues after importing.
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="modal-footer">
+              {!runIdResult ? (
+                <>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => { setShowRunIdPrompt(false); setRunIdError(""); }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleFetchRun}
+                    disabled={runIdLoading || !runIdInput.trim()}
+                  >
+                    {runIdLoading ? "Searching..." : "Find Graph"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => setRunIdResult(null)}
+                  >
+                    Back
+                  </button>
+                  <button className="btn btn-primary" onClick={handleAcceptRun}>
+                    Continue
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Export code modal */}
