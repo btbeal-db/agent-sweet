@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { Home, Hammer, HelpCircle, Trash2, CloudDownload } from "lucide-react";
+import { Home, Hammer, HelpCircle, Trash2, CloudDownload, Save, Upload, MessageSquare, Rocket } from "lucide-react";
 import Canvas from "./components/Canvas";
 import NodePalette from "./components/NodePalette";
 import StateModelModal from "./components/StateModelModal";
@@ -11,7 +11,7 @@ import HomePage from "./components/HomePage";
 import HelpPage from "./components/HelpPage";
 import BuilderWalkthrough from "./components/BuilderWalkthrough";
 import { StateProvider } from "./StateContext";
-import { fetchNodeTypes, exportGraph, loadGraphFromRun } from "./api";
+import { fetchNodeTypes, loadGraphFromRun } from "./api";
 import type { NodeTypeMetadata, GraphDef, StateFieldDef } from "./types";
 
 type AppView = "home" | "builder" | "help";
@@ -20,8 +20,6 @@ export default function App() {
   const [nodeTypes, setNodeTypes] = useState<NodeTypeMetadata[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [graphGetter, setGraphGetter] = useState<(() => GraphDef) | null>(null);
-  const [exportedCode, setExportedCode] = useState<string>("");
-  const [showExport, setShowExport] = useState(false);
   const [stateFields, setStateFields] = useState<StateFieldDef[]>([
     { name: "input", type: "str", description: "The initial input", sub_fields: [] },
   ]);
@@ -60,15 +58,6 @@ export default function App() {
   useEffect(() => {
     fetchNodeTypes().then(setNodeTypes).catch(console.error);
   }, []);
-
-  const handleExport = useCallback(async () => {
-    if (!graphGetter) return;
-    const graph = graphGetter();
-    graph.state_fields = stateFieldsRef.current;
-    const result = await exportGraph(graph);
-    setExportedCode(result.success ? result.code : `# Error: ${result.error}`);
-    setShowExport(true);
-  }, [graphGetter]);
 
   const handleSaveJson = useCallback(() => {
     if (!graphGetter) return;
@@ -170,10 +159,12 @@ export default function App() {
           {view === "builder" && (
             <div className="header-actions">
               <div className="header-group">
-                <button className="btn btn-ghost" onClick={handleSaveJson}>
+                <button className="btn btn-ghost btn-with-icon" onClick={handleSaveJson}>
+                  <Save size={14} />
                   Save
                 </button>
-                <button className="btn btn-ghost" onClick={() => fileInputRef.current?.click()}>
+                <button className="btn btn-ghost btn-with-icon" onClick={() => fileInputRef.current?.click()}>
+                  <Upload size={14} />
                   Load
                 </button>
                 <input
@@ -183,12 +174,9 @@ export default function App() {
                   style={{ display: "none" }}
                   onChange={handleLoadJson}
                 />
-                <button className="btn btn-ghost" onClick={() => setShowRunIdPrompt(true)} title="Load graph from an MLflow run">
+                <button className="btn btn-ghost btn-with-icon" onClick={() => setShowRunIdPrompt(true)} title="Load graph from an MLflow run">
                   <CloudDownload size={14} />
                   MLflow
-                </button>
-                <button className="btn btn-ghost" onClick={handleExport}>
-                  Export
                 </button>
                 <button className="btn btn-ghost btn-danger-ghost" onClick={handleClearAll}>
                   <Trash2 size={14} />
@@ -197,10 +185,12 @@ export default function App() {
               </div>
               <div className="header-divider" />
               <div className="header-group">
-                <button className="btn btn-primary" onClick={() => setShowChat(true)}>
+                <button className="btn btn-primary btn-with-icon" onClick={() => setShowChat(true)}>
+                  <MessageSquare size={14} />
                   Playground
                 </button>
-                <button className="btn btn-deploy" onClick={() => setShowDeploy(true)}>
+                <button className="btn btn-deploy btn-with-icon" onClick={() => setShowDeploy(true)}>
+                  <Rocket size={14} />
                   Deploy
                 </button>
               </div>
@@ -395,30 +385,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Export code modal */}
-      {showExport && (
-        <div className="modal-overlay" onClick={() => setShowExport(false)}>
-          <div className="modal-card" style={{ width: 640 }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h1>Exported Python</h1>
-            </div>
-            <div className="modal-body">
-              <pre className="export-code">{exportedCode}</pre>
-            </div>
-            <div className="modal-footer">
-              <button
-                className="btn btn-secondary"
-                onClick={() => { navigator.clipboard.writeText(exportedCode); }}
-              >
-                Copy
-              </button>
-              <button className="btn btn-primary" onClick={() => setShowExport(false)}>
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       </StateProvider>
     </ReactFlowProvider>
   );

@@ -37,12 +37,11 @@ from mlflow.models.resources import (
 from langchain_core.messages import BaseMessage
 
 from .auth import set_user_token, get_workspace_client
-from .graph_builder import build_graph, generate_code, run_graph
+from .graph_builder import build_graph, run_graph
 from .nodes import get_all_metadata
 from .schema import (
     DeployRequest,
     DeployResponse,
-    ExportResponse,
     GraphDef,
     PreviewRequest,
     PreviewResponse,
@@ -393,16 +392,6 @@ def load_graph_from_run(run_id: str):
     except Exception as e:
         logger.exception("Failed to load graph from run %s", run_id)
         return {"success": False, "error": str(e)}
-
-
-@app.post("/api/graph/export", response_model=ExportResponse)
-def export_graph(graph: GraphDef):
-    """Generate a standalone Python file for this graph."""
-    try:
-        code = generate_code(graph)
-        return ExportResponse(success=True, code=code)
-    except Exception as e:
-        return ExportResponse(success=False, error=str(e))
 
 
 @app.post("/api/graph/deploy", response_model=DeployResponse)

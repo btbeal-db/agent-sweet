@@ -1,4 +1,4 @@
-import type { NodeTypeMetadata, GraphDef, PreviewResponse, ExportResponse, DeployRequest, DeployResponse } from "./types";
+import type { NodeTypeMetadata, GraphDef, PreviewResponse, DeployRequest, DeployResponse } from "./types";
 
 const BASE = "/api";
 
@@ -38,15 +38,6 @@ export async function previewGraph(
 
 export async function loadGraphFromRun(runId: string): Promise<{ success: boolean; graph?: GraphDef; error?: string }> {
   const res = await fetch(`${BASE}/graph/load-from-run?run_id=${encodeURIComponent(runId)}`);
-  return res.json();
-}
-
-export async function exportGraph(graph: GraphDef): Promise<ExportResponse> {
-  const res = await fetch(`${BASE}/graph/export`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(graph),
-  });
   return res.json();
 }
 

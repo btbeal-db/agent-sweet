@@ -654,6 +654,12 @@ code, pre, .mono {
   color: var(--text);
 }
 
+.btn-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
 .btn-danger-ghost {
   display: inline-flex;
   align-items: center;
