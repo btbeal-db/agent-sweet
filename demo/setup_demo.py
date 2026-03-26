@@ -136,7 +136,7 @@ PATIENT_METRICS_COMMENTS = [
 
 def run_sql(w: WorkspaceClient, wh_id: str, sql: str) -> object:
     result = w.statement_execution.execute_statement(
-        warehouse_id=wh_id, statement=sql, wait_timeout="60s",
+        warehouse_id=wh_id, statement=sql, wait_timeout="50s",
     )
     if str(result.status.state) not in ("SUCCEEDED", "StatementState.SUCCEEDED"):
         raise RuntimeError(f"SQL failed: {result.status}")
@@ -160,9 +160,15 @@ def setup_schema(w: WorkspaceClient, catalog: str, schema: str):
     try:
         w.schemas.get(f"{catalog}.{schema}")
         log.info("  Schema already exists")
-    except NotFound:
-        w.schemas.create(name=schema, catalog_name=catalog)
-        log.info("  Created schema")
+    except Exception:
+        try:
+            w.schemas.create(name=schema, catalog_name=catalog)
+            log.info("  Created schema")
+        except Exception as e:
+            if "already exists" in str(e).lower():
+                log.info("  Schema already exists")
+            else:
+                raise
 
 
 def setup_patient_notes(w: WorkspaceClient, wh_id: str, table: str):
@@ -190,14 +196,23 @@ def setup_patient_metrics(w: WorkspaceClient, wh_id: str, table: str):
 
 def setup_vs_endpoint(w: WorkspaceClient):
     log.info("\n4. Creating Vector Search endpoint '%s'...", VS_ENDPOINT_NAME)
+
+    # Check if endpoint already exists
     try:
-        w.vector_search_endpoints.create_endpoint(
-            name=VS_ENDPOINT_NAME,
-            endpoint_type=EndpointType.STANDARD,
-        )
-        log.info("  Endpoint creation initiated")
-    except ResourceAlreadyExists:
+        ep = w.vector_search_endpoints.get_endpoint(VS_ENDPOINT_NAME)
         log.info("  Endpoint already exists")
+    except (NotFound, Exception):
+        try:
+            w.vector_search_endpoints.create_endpoint(
+                name=VS_ENDPOINT_NAME,
+                endpoint_type=EndpointType.STANDARD,
+            )
+            log.info("  Endpoint creation initiated")
+        except Exception as e:
+            if "already exists" in str(e).lower():
+                log.info("  Endpoint already exists")
+            else:
+                raise
 
     log.info("  Waiting for ONLINE status...")
     for _ in range(90):
@@ -212,6 +227,17 @@ def setup_vs_endpoint(w: WorkspaceClient):
 
 def setup_vs_index(w: WorkspaceClient, wh_id: str, source_table: str, index_name: str):
     log.info("\n5. Creating Vector Search index '%s'...", index_name)
+
+    # Check if index already exists
+    try:
+        w.vector_search_indexes.get_index(index_name)
+        log.info("  Index already exists — skipping creation")
+        return
+    except (NotFound, Exception) as e:
+        if "does not exist" not in str(e).lower() and "not found" not in str(e).lower():
+            # Unexpected error — re-raise
+            if not isinstance(e, NotFound):
+                raise
 
     # Enable CDC
     run_sql(w, wh_id, f"ALTER TABLE {source_table} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
@@ -235,8 +261,11 @@ def setup_vs_index(w: WorkspaceClient, wh_id: str, source_table: str, index_name
             ),
         )
         log.info("  Index creation initiated (will sync in background)")
-    except ResourceAlreadyExists:
-        log.info("  Index already exists")
+    except Exception as e:
+        if "already exists" in str(e).lower():
+            log.info("  Index already exists")
+        else:
+            raise
 
 
 def setup_genie_space(w: WorkspaceClient, wh_id: str, metrics_table: str) -> str | None:
@@ -317,13 +346,28 @@ def main():
     log.info("Connected as: %s", user.user_name)
     log.info("Workspace:    %s", w.config.host)
 
-    # Auto-detect catalog: use the first managed catalog owned by the user
+    # Auto-detect catalog: prefer one owned by the current user, then any managed catalog
     catalog = args.catalog
     if not catalog:
+        user_name = user.user_name
+        managed = []
         for c in w.catalogs.list():
             if str(c.catalog_type) in ("MANAGED_CATALOG", "CatalogType.MANAGED_CATALOG"):
+                managed.append(c)
+        # First choice: catalog owned by the current user
+        for c in managed:
+            if c.owner == user_name:
                 catalog = c.name
                 break
+        # Second choice: first managed catalog that isn't a shared/system catalog
+        if not catalog:
+            for c in managed:
+                if "shared" not in c.name.lower() and "system" not in c.name.lower():
+                    catalog = c.name
+                    break
+        # Last resort: any managed catalog
+        if not catalog and managed:
+            catalog = managed[0].name
     if not catalog:
         log.error("No managed catalog found. Specify --catalog.")
         sys.exit(1)
