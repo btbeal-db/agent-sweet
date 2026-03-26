@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from httpx import Client, ASGITransport
+from starlette.testclient import TestClient
 
 from backend.main import app
 from backend.schema import GraphDef, StateFieldDef, NodeDef, EdgeDef
@@ -13,8 +13,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def client():
-    transport = ASGITransport(app=app)
-    return Client(transport=transport, base_url="http://test")
+    return TestClient(app)
 
 
 class TestPreviewIntegration:

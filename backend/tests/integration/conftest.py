@@ -85,7 +85,4 @@ def vs_endpoint_name() -> str:
 
 @pytest.fixture(scope="session")
 def genie_room_id() -> str:
-    room = _env("TEST_GENIE_ROOM_ID", "")
-    if not room:
-        pytest.skip("TEST_GENIE_ROOM_ID not set")
-    return room
+    return _env("TEST_GENIE_ROOM_ID", "01f127940d8719c3a222314e628d71a7")

@@ -3,17 +3,14 @@
 from __future__ import annotations
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from starlette.testclient import TestClient
 
 from backend.main import app
 
 
 @pytest.fixture
 def client():
-    """Synchronous test client using httpx."""
-    from httpx import Client
-    transport = ASGITransport(app=app)
-    return Client(transport=transport, base_url="http://test")
+    return TestClient(app)
 
 
 class TestListNodes:

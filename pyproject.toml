@@ -25,6 +25,7 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 markers = ["integration: requires a live Databricks workspace"]
+filterwarnings = ["ignore::pydantic.warnings.PydanticDeprecatedSince20"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["backend"]
@@ -32,3 +33,8 @@ packages = ["backend"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[[tool.uv.index]]
+name = "databricks-proxy"
+url = "https://pypi-proxy.dev.databricks.com/simple/"
+default = true

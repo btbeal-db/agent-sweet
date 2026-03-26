@@ -162,8 +162,17 @@ if _lakebase_trace_conn:
     _PREVIEW_TRACKING_URI = _lakebase_trace_conn
     logger.info("MLflow playground traces → Lakebase")
 else:
-    _PREVIEW_TRACKING_URI = "sqlite:///:memory:"
-    logger.info("MLflow playground traces → in-memory (no persistence)")
+    # Use a temp file DB instead of :memory: because in-memory SQLite is
+    # per-connection and MLflow opens multiple connections.
+    _preview_trace_db = Path(tempfile.mkdtemp()) / "preview_traces.db"
+    _PREVIEW_TRACKING_URI = f"sqlite:///{_preview_trace_db}"
+    logger.info("MLflow playground traces → temp DB (%s)", _preview_trace_db)
+
+# Initialize the preview tracking DB and experiment once at startup
+_prev_uri = mlflow.get_tracking_uri()
+mlflow.set_tracking_uri(_PREVIEW_TRACKING_URI)
+mlflow.set_experiment("playground")
+mlflow.set_tracking_uri(_prev_uri)
 
 # ── API routes ────────────────────────────────────────────────────────────────
 
@@ -259,8 +268,7 @@ def preview_graph(req: PreviewRequest):
     if thread_id not in _preview_sessions:
         _preview_sessions[thread_id] = InMemorySaver()
 
-    # Enable MLflow tracing for playground — use a lightweight local SQLite DB
-    # so traces don't accumulate on disk or hit the workspace MLflow.
+    # Enable MLflow tracing — swap to the preview tracking DB for this request.
     prev_tracking_uri = mlflow.get_tracking_uri()
     mlflow.set_tracking_uri(_PREVIEW_TRACKING_URI)
     mlflow.set_experiment("playground")

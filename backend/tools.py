@@ -194,7 +194,12 @@ def make_tools(tool_configs: list[dict[str, Any]]) -> list[BaseTool]:
 
 def make_tools_from_json(tools_json: str) -> list[BaseTool]:
     """Parse a JSON string of tool configs and return LangChain tools."""
-    tool_configs = json.loads(tools_json)
+    try:
+        tool_configs = json.loads(tools_json)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("Invalid tools_json: %s", tools_json[:100])
+        return []
     if not isinstance(tool_configs, list):
-        raise ValueError("tools_json must be a JSON array")
+        logger.warning("tools_json must be a JSON array, got %s", type(tool_configs))
+        return []
     return make_tools(tool_configs)

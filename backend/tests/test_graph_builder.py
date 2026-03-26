@@ -6,6 +6,7 @@ import pytest
 
 from backend.graph_builder import build_graph, generate_code, _build_state_type
 from backend.schema import GraphDef, StateFieldDef, NodeDef, EdgeDef
+from backend.tests.conftest import make_graph
 
 
 class TestBuildStateType:
@@ -38,7 +39,7 @@ class TestBuildGraph:
         compiled = build_graph(router_graph_def)
         assert compiled is not None
 
-    def test_missing_start_edge_raises(self, make_graph):
+    def test_missing_start_edge_raises(self):
         graph = make_graph(
             nodes=[{"id": "n1", "type": "llm", "writes_to": "output", "config": {}}],
             edges=[{"id": "e1", "source": "n1", "target": "__end__"}],
@@ -46,7 +47,7 @@ class TestBuildGraph:
         with pytest.raises(ValueError, match="START"):
             build_graph(graph)
 
-    def test_missing_end_edge_raises(self, make_graph):
+    def test_missing_end_edge_raises(self):
         graph = make_graph(
             nodes=[{"id": "n1", "type": "llm", "writes_to": "output", "config": {}}],
             edges=[{"id": "e1", "source": "__start__", "target": "n1"}],
@@ -54,7 +55,7 @@ class TestBuildGraph:
         with pytest.raises(ValueError, match="END"):
             build_graph(graph)
 
-    def test_multi_node_chain_compiles(self, make_graph):
+    def test_multi_node_chain_compiles(self):
         graph = make_graph(
             nodes=[
                 {"id": "n1", "type": "llm", "writes_to": "step1", "config": {"endpoint": "test"}},

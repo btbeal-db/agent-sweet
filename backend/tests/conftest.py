@@ -10,7 +10,7 @@ from backend.schema import GraphDef, StateFieldDef, NodeDef, EdgeDef
 # ── Graph fixtures ────────────────────────────────────────────────────────────
 
 
-def _make_graph(
+def make_graph(
     nodes: list[dict],
     edges: list[dict],
     state_fields: list[dict] | None = None,
@@ -27,15 +27,9 @@ def _make_graph(
 
 
 @pytest.fixture
-def make_graph():
-    """Factory fixture for building GraphDef from dicts."""
-    return _make_graph
-
-
-@pytest.fixture
 def simple_graph_def() -> GraphDef:
     """Minimal START → LLM → END graph."""
-    return _make_graph(
+    return make_graph(
         nodes=[
             {
                 "id": "llm_1",
@@ -62,7 +56,7 @@ def simple_graph_def() -> GraphDef:
 @pytest.fixture
 def rag_graph_def() -> GraphDef:
     """START → VectorSearch → LLM → END graph."""
-    return _make_graph(
+    return make_graph(
         nodes=[
             {
                 "id": "vs_1",
@@ -103,7 +97,7 @@ def rag_graph_def() -> GraphDef:
 @pytest.fixture
 def router_graph_def() -> GraphDef:
     """START → LLM → Router → (branch_a / branch_b) → END."""
-    return _make_graph(
+    return make_graph(
         nodes=[
             {
                 "id": "llm_1",
