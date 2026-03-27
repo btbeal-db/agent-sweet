@@ -1,4 +1,4 @@
-import type { NodeTypeMetadata, GraphDef, PreviewResponse, DeployRequest, DeployResponse } from "./types";
+import type { NodeTypeMetadata, GraphDef, PreviewResponse, DeployRequest, DeployEvent } from "./types";
 
 const BASE = "/api";
 
@@ -41,11 +41,40 @@ export async function loadGraphFromRun(runId: string): Promise<{ success: boolea
   return res.json();
 }
 
-export async function deployGraph(req: DeployRequest): Promise<DeployResponse> {
+export async function deployGraphStream(
+  req: DeployRequest,
+  onEvent: (event: DeployEvent) => void,
+): Promise<void> {
   const res = await fetch(`${BASE}/graph/deploy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
-  return res.json();
+
+  if (!res.ok) {
+    throw new Error(`Deploy request failed: ${res.status} ${res.statusText}`);
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n\n");
+    buffer = lines.pop()!;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) continue;
+      try {
+        onEvent(JSON.parse(trimmed.slice(6)) as DeployEvent);
+      } catch {
+        // skip malformed events
+      }
+    }
+  }
 }

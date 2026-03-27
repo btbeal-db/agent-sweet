@@ -89,18 +89,24 @@ export interface ExportResponse {
   error: string | null;
 }
 
+export type DeployMode = "log_only" | "log_and_register" | "full";
+
+export type DeployStepName = "validate" | "log_model" | "register_model" | "create_endpoint" | "complete";
+export type DeployStepStatus = "pending" | "running" | "done" | "error" | "skipped";
+
+export interface DeployEvent {
+  step: DeployStepName;
+  status: DeployStepStatus;
+  message: string;
+  data?: { endpoint_url?: string; model_version?: string; run_id?: string };
+}
+
 export interface DeployRequest {
   graph: GraphDef;
   model_name: string;
   experiment_path: string;
   lakebase_conn_string: string;
-}
-
-export interface DeployResponse {
-  success: boolean;
-  endpoint_url: string;
-  model_version: string;
-  error: string | null;
+  deploy_mode: DeployMode;
 }
 
 export interface ChatMessage {

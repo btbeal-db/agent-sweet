@@ -139,6 +139,7 @@ class AgentGraphModel(ResponsesAgent):
             if has_history
             else _build_initial_state(self.graph_def, user_message)
         )
+
         result = self.compiled_graph.invoke(invoke_state, config=config)
 
         output = result.get("output", result.get("input", ""))

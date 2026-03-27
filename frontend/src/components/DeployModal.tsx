@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
-import { validateGraph, deployGraph } from "../api";
-import type { GraphDef, StateFieldDef } from "../types";
+import { validateGraph, deployGraphStream } from "../api";
+import type { GraphDef, StateFieldDef, DeployMode, DeployStepName, DeployStepStatus, DeployEvent } from "../types";
 
 interface Props {
   graphGetter: (() => GraphDef) | null;
@@ -8,7 +8,21 @@ interface Props {
   onClose: () => void;
 }
 
-type DeployStage = "form" | "validating" | "logging" | "deploying" | "done" | "error";
+type Phase = "form" | "deploying" | "done" | "error";
+
+interface StepState {
+  status: DeployStepStatus;
+  message: string;
+}
+
+const STEP_NAMES: DeployStepName[] = ["validate", "log_model", "register_model", "create_endpoint"];
+
+const STEP_LABELS: Record<string, string> = {
+  validate: "Validate Graph",
+  log_model: "Log Model to MLflow",
+  register_model: "Register in Unity Catalog",
+  create_endpoint: "Create Serving Endpoint",
+};
 
 function preflight(graphGetter: (() => GraphDef) | null, stateFields: StateFieldDef[]): string | null {
   if (!graphGetter) return "The graph hasn't loaded yet.";
@@ -51,90 +65,141 @@ function hasConversationalNode(graphGetter: (() => GraphDef) | null): boolean {
   }
 }
 
+const MODE_LABELS: Record<DeployMode, string> = {
+  full: "Log, Register & Deploy",
+  log_and_register: "Log & Register Only",
+  log_only: "Log Only",
+};
+
+const MODE_DESCRIPTIONS: Record<DeployMode, string> = {
+  full: "Log model, register in Unity Catalog, and create a serving endpoint.",
+  log_and_register: "Log model and register in Unity Catalog. No serving endpoint.",
+  log_only: "Log model to MLflow experiment only. No registration or endpoint.",
+};
+
+function StepIcon({ status }: { status: DeployStepStatus }) {
+  switch (status) {
+    case "running":
+      return <span className="deploy-spinner-sm" />;
+    case "done":
+      return <span className="deploy-step-check">&#10003;</span>;
+    case "error":
+      return <span className="deploy-step-cross">&#10007;</span>;
+    case "skipped":
+      return <span className="deploy-step-dash">&mdash;</span>;
+    default:
+      return <span className="deploy-step-pending">&#9675;</span>;
+  }
+}
+
 export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Props) {
   const [modelName, setModelName] = useState("");
   const [experimentPath, setExperimentPath] = useState("");
   const [lakebaseConnString, setLakebaseConnString] = useState("");
-  const [stage, setStage] = useState<DeployStage>("form");
-  const [endpointUrl, setEndpointUrl] = useState("");
-  const [modelVersion, setModelVersion] = useState("");
+  const [deployMode, setDeployMode] = useState<DeployMode>("full");
+  const [phase, setPhase] = useState<Phase>("form");
+  const [steps, setSteps] = useState<Record<string, StepState>>({});
+  const [resultData, setResultData] = useState<DeployEvent["data"]>({});
   const [errorMsg, setErrorMsg] = useState("");
 
   const isConversational = hasConversationalNode(graphGetter);
-  const needsLakebase = isConversational && !lakebaseConnString.trim();
+  const needsLakebase = isConversational && !lakebaseConnString.trim() && deployMode === "full";
+  const needsModelName = deployMode !== "log_only";
 
   const handleDeploy = useCallback(async () => {
     const stateFields = stateFieldsRef.current ?? [];
     const err = preflight(graphGetter, stateFields);
     if (err) {
       setErrorMsg(err);
-      setStage("error");
+      setPhase("error");
       return;
     }
 
     const graph = graphGetter!();
     graph.state_fields = stateFields;
 
-    setStage("validating");
-    const validation = await validateGraph(graph);
-    if (!validation.valid) {
-      setErrorMsg(validation.errors.join("\n"));
-      setStage("error");
-      return;
+    // Initialize steps
+    const initial: Record<string, StepState> = {};
+    for (const name of STEP_NAMES) {
+      initial[name] = { status: "pending", message: "" };
     }
+    setSteps(initial);
+    setPhase("deploying");
+    setErrorMsg("");
 
-    setStage("logging");
+    let receivedTerminal = false;
 
     try {
-      const result = await deployGraph({
-        graph,
-        model_name: modelName,
-        experiment_path: experimentPath,
-        lakebase_conn_string: lakebaseConnString,
-      });
+      await deployGraphStream(
+        {
+          graph,
+          model_name: modelName,
+          experiment_path: experimentPath,
+          lakebase_conn_string: lakebaseConnString,
+          deploy_mode: deployMode,
+        },
+        (event: DeployEvent) => {
+          if (event.step === "complete") {
+            receivedTerminal = true;
+            setResultData(event.data ?? {});
+            setPhase("done");
+            return;
+          }
+          setSteps((prev) => ({
+            ...prev,
+            [event.step]: {
+              status: event.status as DeployStepStatus,
+              message: event.message,
+            },
+          }));
+          if (event.status === "error") {
+            receivedTerminal = true;
+            setErrorMsg(event.message);
+            setPhase("error");
+          }
+        },
+      );
 
-      if (result.success) {
-        setEndpointUrl(result.endpoint_url);
-        setModelVersion(result.model_version);
-        setStage("done");
-      } else {
-        setErrorMsg(result.error || "Deployment failed");
-        setStage("error");
+      // Stream ended without a terminal event — treat as unexpected error
+      if (!receivedTerminal) {
+        setErrorMsg("Connection to server closed unexpectedly.");
+        setPhase("error");
       }
     } catch (e: unknown) {
-      setErrorMsg(e instanceof Error ? e.message : "Unexpected error");
-      setStage("error");
+      setErrorMsg(e instanceof Error ? e.message : "Connection error");
+      setPhase("error");
     }
-  }, [graphGetter, stateFieldsRef, modelName, experimentPath, lakebaseConnString]);
+  }, [graphGetter, stateFieldsRef, modelName, experimentPath, lakebaseConnString, deployMode]);
 
-  const stageLabel: Record<string, string> = {
-    validating: "Validating graph...",
-    logging: "Logging model & creating endpoint...",
-    deploying: "Creating serving endpoint...",
-  };
-
-  const isWorking = stage === "validating" || stage === "logging" || stage === "deploying";
+  const doneMessage = deployMode === "full"
+    ? "Agent deployed successfully!"
+    : deployMode === "log_and_register"
+      ? "Model registered successfully!"
+      : "Model logged successfully!";
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-card deploy-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h1>Deploy Agent</h1>
-          <p>Package your graph as an MLflow model and deploy to a Databricks serving endpoint.</p>
+          <p>Package your graph as an MLflow model and optionally register and deploy it.</p>
         </div>
 
-        {stage === "form" && (
+        {phase === "form" && (
           <div className="modal-body">
             <div className="deploy-form">
               <label className="deploy-label">
-                Model Name (Unity Catalog)
-                <input
-                  type="text"
+                Deploy Mode
+                <select
                   className="deploy-input"
-                  placeholder="catalog.schema.model_name"
-                  value={modelName}
-                  onChange={(e) => setModelName(e.target.value)}
-                />
+                  value={deployMode}
+                  onChange={(e) => setDeployMode(e.target.value as DeployMode)}
+                >
+                  {(Object.keys(MODE_LABELS) as DeployMode[]).map((mode) => (
+                    <option key={mode} value={mode}>{MODE_LABELS[mode]}</option>
+                  ))}
+                </select>
+                <span className="deploy-hint">{MODE_DESCRIPTIONS[deployMode]}</span>
               </label>
 
               <label className="deploy-label">
@@ -148,86 +213,165 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
                 />
               </label>
 
-              <label className="deploy-label">
-                Lakebase Connection String
-                <input
-                  type="text"
-                  className="deploy-input"
-                  placeholder="postgresql://user:pass@host:port/db"
-                  value={lakebaseConnString}
-                  onChange={(e) => setLakebaseConnString(e.target.value)}
-                />
-                <span className="deploy-hint">
-                  {isConversational
-                    ? "Required — your graph has conversational LLM nodes."
-                    : "Optional. Enables multi-turn conversation memory."}
-                </span>
-                {needsLakebase && (
-                  <span className="deploy-error-hint">
-                    Conversational agents require a Lakebase connection to persist
-                    conversation history. Model Serving is stateless — without it,
-                    multi-turn will not work.
+              {needsModelName && (
+                <label className="deploy-label">
+                  Model Name (Unity Catalog)
+                  <input
+                    type="text"
+                    className="deploy-input"
+                    placeholder="catalog.schema.model_name"
+                    value={modelName}
+                    onChange={(e) => setModelName(e.target.value)}
+                  />
+                </label>
+              )}
+
+              {deployMode === "full" && (
+                <label className="deploy-label">
+                  Lakebase Connection String
+                  <input
+                    type="text"
+                    className="deploy-input"
+                    placeholder="postgresql://user:pass@host:port/db"
+                    value={lakebaseConnString}
+                    onChange={(e) => setLakebaseConnString(e.target.value)}
+                  />
+                  <span className="deploy-hint">
+                    {isConversational
+                      ? "Required — your graph has conversational LLM nodes."
+                      : "Optional. Enables multi-turn conversation memory."}
                   </span>
-                )}
-              </label>
+                  {needsLakebase && (
+                    <span className="deploy-error-hint">
+                      Conversational agents require a Lakebase connection to persist
+                      conversation history. Model Serving is stateless — without it,
+                      multi-turn will not work.
+                    </span>
+                  )}
+                </label>
+              )}
             </div>
 
             <div className="deploy-actions">
               <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
               <button
                 className="btn btn-primary"
-                disabled={!modelName || !experimentPath || needsLakebase}
+                disabled={
+                  !experimentPath ||
+                  (needsModelName && !modelName) ||
+                  needsLakebase
+                }
                 onClick={handleDeploy}
               >
-                Deploy
+                {MODE_LABELS[deployMode]}
               </button>
             </div>
           </div>
         )}
 
-        {isWorking && (
-          <div className="modal-body deploy-status">
-            <div className="deploy-spinner" />
-            <p>{stageLabel[stage]}</p>
+        {phase === "deploying" && (
+          <div className="modal-body">
+            <div className="deploy-stepper">
+              {STEP_NAMES.map((name) => {
+                const s = steps[name];
+                if (!s) return null;
+                return (
+                  <div key={name} className={`deploy-step deploy-step--${s.status}`}>
+                    <span className="deploy-step-icon">
+                      <StepIcon status={s.status} />
+                    </span>
+                    <div className="deploy-step-text">
+                      <span className="deploy-step-label">{STEP_LABELS[name]}</span>
+                      {s.message && <span className="deploy-step-msg">{s.message}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
 
-        {stage === "done" && (
+        {phase === "done" && (
           <div className="modal-body">
+            <div className="deploy-stepper">
+              {STEP_NAMES.map((name) => {
+                const s = steps[name];
+                if (!s) return null;
+                return (
+                  <div key={name} className={`deploy-step deploy-step--${s.status}`}>
+                    <span className="deploy-step-icon">
+                      <StepIcon status={s.status} />
+                    </span>
+                    <div className="deploy-step-text">
+                      <span className="deploy-step-label">{STEP_LABELS[name]}</span>
+                      {s.message && <span className="deploy-step-msg">{s.message}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
             <div className="deploy-success">
-              <p>Agent deployed successfully!</p>
-              <label className="deploy-label">
-                Endpoint URL
-                <input
-                  type="text"
-                  className="deploy-input"
-                  readOnly
-                  value={endpointUrl}
-                  onClick={(e) => (e.target as HTMLInputElement).select()}
-                />
-              </label>
-              <p className="deploy-meta">Model version: {modelVersion}</p>
+              <p>{doneMessage}</p>
+              {resultData?.endpoint_url && (
+                <label className="deploy-label">
+                  Endpoint URL
+                  <input
+                    type="text"
+                    className="deploy-input"
+                    readOnly
+                    value={resultData.endpoint_url}
+                    onClick={(e) => (e.target as HTMLInputElement).select()}
+                  />
+                </label>
+              )}
+              {resultData?.model_version && (
+                <p className="deploy-meta">Model version: {resultData.model_version}</p>
+              )}
+              {resultData?.run_id && (
+                <p className="deploy-meta">MLflow run: {resultData.run_id}</p>
+              )}
             </div>
             <div className="deploy-actions">
-              <button
-                className="btn btn-secondary"
-                onClick={() => navigator.clipboard.writeText(endpointUrl)}
-              >
-                Copy URL
-              </button>
+              {resultData?.endpoint_url && (
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => navigator.clipboard.writeText(resultData.endpoint_url!)}
+                >
+                  Copy URL
+                </button>
+              )}
               <button className="btn btn-primary" onClick={onClose}>Done</button>
             </div>
           </div>
         )}
 
-        {stage === "error" && (
+        {phase === "error" && (
           <div className="modal-body">
+            <div className="deploy-stepper">
+              {STEP_NAMES.map((name) => {
+                const s = steps[name];
+                if (!s) return null;
+                return (
+                  <div key={name} className={`deploy-step deploy-step--${s.status}`}>
+                    <span className="deploy-step-icon">
+                      <StepIcon status={s.status} />
+                    </span>
+                    <div className="deploy-step-text">
+                      <span className="deploy-step-label">{STEP_LABELS[name]}</span>
+                      {s.message && <span className="deploy-step-msg">{s.message}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
             <div className="deploy-error">
               <p>Deployment failed</p>
               <pre>{errorMsg}</pre>
             </div>
             <div className="deploy-actions">
-              <button className="btn btn-secondary" onClick={() => setStage("form")}>Back</button>
+              <button className="btn btn-secondary" onClick={() => setPhase("form")}>Back</button>
               <button className="btn btn-primary" onClick={onClose}>Close</button>
             </div>
           </div>

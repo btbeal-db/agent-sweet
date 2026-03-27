@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel
@@ -80,11 +81,32 @@ class ExportResponse(BaseModel):
     error: str | None = None
 
 
+class DeployMode(str, Enum):
+    LOG_ONLY = "log_only"
+    LOG_AND_REGISTER = "log_and_register"
+    FULL = "full"
+
+
+class DeployStepStatus(str, Enum):
+    RUNNING = "running"
+    DONE = "done"
+    ERROR = "error"
+    SKIPPED = "skipped"
+
+
+class DeployEvent(BaseModel):
+    step: str
+    status: DeployStepStatus
+    message: str
+    data: dict[str, str] | None = None
+
+
 class DeployRequest(BaseModel):
     graph: GraphDef
-    model_name: str  # Unity Catalog path: catalog.schema.model_name
+    model_name: str = ""  # Unity Catalog path: catalog.schema.model_name
     experiment_path: str  # MLflow experiment: /Users/email/experiment
     lakebase_conn_string: str = ""  # Lakebase Postgres connection URL
+    deploy_mode: DeployMode = DeployMode.FULL
 
 
 class DeployResponse(BaseModel):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, TypedDict
 
+import mlflow
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
@@ -31,6 +32,7 @@ def _make_node_fn(node_impl, config: dict[str, Any], writes_to: str, target_fiel
     Returns only the state *updates* — LangGraph merges them into state.
     """
 
+    @mlflow.trace(name=f"node_{writes_to or node_impl.node_type}")
     def fn(state: dict[str, Any]) -> dict[str, Any]:
         enriched_config = {
             **config,
@@ -47,6 +49,7 @@ def _make_node_fn(node_impl, config: dict[str, Any], writes_to: str, target_fiel
 def _make_router_fn(node_impl, config: dict[str, Any]):
     """Create a routing function that returns the chosen route key."""
 
+    @mlflow.trace(name=f"router_{node_impl.node_type}")
     def fn(state: dict[str, Any]) -> str:
         result = node_impl.execute(state, config)
         return result.get("_route", "default")

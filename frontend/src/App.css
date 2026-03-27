@@ -2924,6 +2924,95 @@ code, pre, .mono {
   font-family: "JetBrains Mono", monospace;
 }
 
+/* ── Deploy stepper ──────────────────────────────────────────── */
+.deploy-stepper {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0 1rem;
+}
+
+.deploy-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+
+.deploy-step--running {
+  background: var(--accent-subtle);
+}
+
+.deploy-step--error {
+  background: var(--danger-subtle);
+}
+
+.deploy-step-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  margin-top: 1px;
+}
+
+.deploy-step-check {
+  color: var(--success);
+}
+
+.deploy-step-cross {
+  color: var(--danger);
+}
+
+.deploy-step-dash {
+  color: var(--text-muted);
+}
+
+.deploy-step-pending {
+  color: var(--text-muted);
+}
+
+.deploy-spinner-sm {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.deploy-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.deploy-step-label {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.deploy-step--skipped .deploy-step-label {
+  color: var(--text-muted);
+}
+
+.deploy-step-msg {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.deploy-step--error .deploy-step-msg {
+  color: var(--danger);
+}
+
 /* ── Scrollbar ───────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
