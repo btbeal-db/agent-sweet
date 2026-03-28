@@ -37,9 +37,13 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
   const color = (data.color as string) ?? "#6366f1";
   const iconKey = (data.icon as string) ?? "puzzle";
   const displayName = (data.display_name as string) ?? "Node";
+  const customName = (data.name as string) ?? "";
   const isRouter = (data.is_router as boolean) ?? false;
   const isLlm = (data.nodeType as string) === "llm";
   const writesTo = (data.writes_to as string) ?? "";
+
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(customName || displayName);
 
   const config = (data.config ?? {}) as Record<string, unknown>;
   const routes = isRouter ? parseRoutes(config) : [];
@@ -88,6 +92,16 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
     setNodes((nds) =>
       nds.map((n) =>
         n.id === id ? { ...n, data: { ...n.data, writes_to: e.target.value } } : n
+      )
+    );
+  };
+
+  const commitName = () => {
+    const trimmed = editValue.trim();
+    setEditing(false);
+    setNodes((nds) =>
+      nds.map((n) =>
+        n.id === id ? { ...n, data: { ...n.data, name: trimmed || "" } } : n
       )
     );
   };
@@ -170,7 +184,24 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
 
       <div className="agent-node-header" style={{ background: color }}>
         <NodeIcon name={iconKey} size={15} />
-        <span>{displayName}</span>
+        {editing ? (
+          <input
+            className="agent-node-name-input"
+            value={editValue}
+            autoFocus
+            onChange={(e) => setEditValue(e.target.value)}
+            onBlur={commitName}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitName();
+              if (e.key === "Escape") { setEditValue(customName || displayName); setEditing(false); }
+            }}
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : (
+          <span onDoubleClick={() => { setEditValue(customName || displayName); setEditing(true); }}>
+            {customName || displayName}
+          </span>
+        )}
       </div>
 
       <div className="agent-node-body">

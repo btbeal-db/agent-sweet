@@ -168,6 +168,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
           return {
             id: n.id,
             type: (n.data.nodeType as string) ?? "llm",
+            name: (n.data.name as string) ?? "",
             writes_to: (n.data.writes_to as string) ?? "",
             config,
             position: n.position,
@@ -218,6 +219,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
           position: gn.position ?? { x: 250, y: 200 },
           data: {
             nodeType: gn.type,
+            name: gn.name ?? "",
             display_name: meta?.display_name ?? gn.type,
             description: meta?.description ?? "",
             icon: meta?.icon ?? "",

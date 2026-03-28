@@ -18,6 +18,7 @@ class StateFieldDef(BaseModel):
 class NodeDef(BaseModel):
     id: str
     type: str
+    name: str = ""  # user-facing label, used as LangGraph node name
     writes_to: str = ""  # which state field this node updates
     config: dict[str, Any] = {}
     position: dict[str, float] = {}

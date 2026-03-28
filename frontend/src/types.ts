@@ -45,6 +45,7 @@ export interface AttachedTool {
 export interface GraphNode {
   id: string;
   type: string;
+  name: string;
   writes_to: string;
   config: Record<string, unknown>;
   position: { x: number; y: number };

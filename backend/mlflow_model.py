@@ -91,6 +91,8 @@ class AgentGraphModel(ResponsesAgent):
 
     def load_context(self, context: mlflow.pyfunc.PythonModelContext) -> None:
         """Load the graph definition and compile with optional checkpointer."""
+        mlflow.langchain.autolog(log_traces=True)
+
         graph_def_path = context.artifacts["graph_def"]
         with open(graph_def_path) as f:
             raw = json.load(f)

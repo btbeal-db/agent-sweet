@@ -2081,6 +2081,19 @@ code, pre, .mono {
   letter-spacing: -0.01em;
 }
 
+.agent-node-name-input {
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 3px;
+  color: white;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0 0.25rem;
+  outline: none;
+  width: 100%;
+  min-width: 40px;
+}
+
 .agent-node-body {
   padding: 0.4rem 0.75rem 0.55rem;
   font-size: 0.7rem;

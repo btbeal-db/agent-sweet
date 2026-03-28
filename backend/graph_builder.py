@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Annotated, Any, TypedDict
 
-import mlflow
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
@@ -32,7 +31,6 @@ def _make_node_fn(node_impl, config: dict[str, Any], writes_to: str, target_fiel
     Returns only the state *updates* — LangGraph merges them into state.
     """
 
-    @mlflow.trace(name=f"node_{writes_to or node_impl.node_type}")
     def fn(state: dict[str, Any]) -> dict[str, Any]:
         enriched_config = {
             **config,
@@ -49,7 +47,6 @@ def _make_node_fn(node_impl, config: dict[str, Any], writes_to: str, target_fiel
 def _make_router_fn(node_impl, config: dict[str, Any]):
     """Create a routing function that returns the chosen route key."""
 
-    @mlflow.trace(name=f"router_{node_impl.node_type}")
     def fn(state: dict[str, Any]) -> str:
         result = node_impl.execute(state, config)
         return result.get("_route", "default")
@@ -63,6 +60,11 @@ def _resolve(node_id: str) -> str:
     return _SENTINEL.get(node_id, node_id)
 
 
+def _graph_name(node_def) -> str:
+    """Return the LangGraph node name: user-set name if present, otherwise the canvas ID."""
+    return node_def.name.strip() if node_def.name and node_def.name.strip() else node_def.id
+
+
 def build_graph(graph_def: GraphDef, checkpointer=None):
     """Build a compiled LangGraph StateGraph from a GraphDef."""
 
@@ -70,6 +72,9 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
     builder = StateGraph(state_type)
 
     node_map = {n.id: n for n in graph_def.nodes}
+
+    # Map canvas IDs to LangGraph node names (user name or fallback to ID)
+    name_of: dict[str, str] = {n.id: _graph_name(n) for n in graph_def.nodes}
 
     # Validate that START and END are connected
     entry_edges = [e for e in graph_def.edges if e.source == "__start__"]
@@ -84,14 +89,22 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
     router_nodes: set[str] = set()
     for node_def in graph_def.nodes:
         node_impl = get_node(node_def.type)
+        gname = name_of[node_def.id]
         if getattr(node_impl, "is_router", False):
             router_nodes.add(node_def.id)
 
         target_field = graph_def.get_state_field(node_def.writes_to)
         builder.add_node(
-            node_def.id,
+            gname,
             _make_node_fn(node_impl, node_def.config, node_def.writes_to, target_field),
         )
+
+    def _resolve_named(node_id: str) -> str:
+        """Map a canvas ID to its LangGraph name, handling sentinels."""
+        sentinel = _SENTINEL.get(node_id)
+        if sentinel is not None:
+            return sentinel
+        return name_of.get(node_id, node_id)
 
     # Group all outgoing edges by source (excluding __start__)
     outgoing: dict[str, list] = {}
@@ -102,27 +115,26 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
 
     # Wire START → entry nodes
     for edge in entry_edges:
-        builder.add_edge(START, edge.target)
+        builder.add_edge(START, _resolve_named(edge.target))
 
     # Wire all other edges
     for source_id, edges in outgoing.items():
+        src_name = name_of.get(source_id, source_id)
         if source_id in router_nodes:
-            # Router: all outgoing edges (including → END) go in the route map
             node_def = node_map[source_id]
             node_impl = get_node(node_def.type)
             route_map = {
-                (e.source_handle or "default"): _resolve(e.target)
+                (e.source_handle or "default"): _resolve_named(e.target)
                 for e in edges
             }
             builder.add_conditional_edges(
-                source_id,
+                src_name,
                 _make_router_fn(node_impl, node_def.config),
                 route_map,
             )
         else:
-            # Regular node: direct edges
             for edge in edges:
-                builder.add_edge(source_id, _resolve(edge.target))
+                builder.add_edge(src_name, _resolve_named(edge.target))
 
     return builder.compile(checkpointer=checkpointer)
 
