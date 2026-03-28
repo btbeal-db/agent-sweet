@@ -238,7 +238,7 @@ class LLMNode(BaseNode):
             return {
                 writes_to: response_text,
                 "messages": [
-                    {"role": "assistant", "content": f"[LLM → {writes_to}] {response_text}", "node": "llm"},
+                    {"role": "assistant", "content": response_text, "node": "llm"},
                 ],
             }
 

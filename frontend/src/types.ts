@@ -62,6 +62,7 @@ export interface GraphDef {
   nodes: GraphNode[];
   edges: GraphEdge[];
   state_fields: StateFieldDef[];
+  output_fields: string[];
 }
 
 export interface TraceSpan {
@@ -116,7 +117,6 @@ export interface ChatMessage {
   content: string;
   error?: string | null;
   execution_trace?: PreviewResponse["execution_trace"];
-  state?: Record<string, string>;
   mlflow_trace?: TraceSpan[];
   loading?: boolean;
 }

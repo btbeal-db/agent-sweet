@@ -29,7 +29,7 @@ _parent_dir = os.path.dirname(_this_dir)
 if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
-from backend.graph_builder import build_graph
+from backend.graph_builder import build_graph, filter_output
 from backend.schema import GraphDef
 
 logger = logging.getLogger(__name__)
@@ -144,16 +144,18 @@ class AgentGraphModel(ResponsesAgent):
 
         result = self.compiled_graph.invoke(invoke_state, config=config)
 
-        output = result.get("output", result.get("input", ""))
-        messages = result.get("messages", [])
-        for msg in reversed(messages):
-            # Handle both dict messages and BaseMessage objects
-            if isinstance(msg, dict) and msg.get("role") == "assistant":
-                output = msg.get("content", output)
-                break
-            elif hasattr(msg, "type") and msg.type == "ai":
-                output = msg.content
-                break
+        output, _ = filter_output(result, self.graph_def)
+
+        # Fallback to last assistant message if filter returned empty
+        if not output:
+            messages = result.get("messages", [])
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "assistant":
+                    output = msg.get("content", "")
+                    break
+                elif hasattr(msg, "type") and msg.type == "ai":
+                    output = msg.content
+                    break
 
         return ResponsesAgentResponse(
             output=[

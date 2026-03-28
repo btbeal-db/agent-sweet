@@ -108,7 +108,7 @@ export default function App() {
 
   const handleClearAll = useCallback(() => {
     if (!graphImporter) return;
-    graphImporter({ nodes: [], edges: [], state_fields: [] });
+    graphImporter({ nodes: [], edges: [], state_fields: [], output_fields: [] });
     setStateFields([
       { name: "input", type: "str", description: "The initial input", sub_fields: [] },
     ]);

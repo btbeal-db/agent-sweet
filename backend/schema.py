@@ -37,6 +37,7 @@ class GraphDef(BaseModel):
     state_fields: list[StateFieldDef] = [
         StateFieldDef(name="input", type="str", description="The initial input")
     ]
+    output_fields: list[str] = []  # which state fields to include in output; empty = all
 
     @property
     def state_variable_names(self) -> list[str]:

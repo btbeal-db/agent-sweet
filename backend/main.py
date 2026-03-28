@@ -38,7 +38,7 @@ from mlflow.models.resources import (
 from langchain_core.messages import BaseMessage
 
 from .auth import set_user_token, get_workspace_client
-from .graph_builder import build_graph, run_graph
+from .graph_builder import build_graph, filter_output, run_graph
 from .nodes import get_all_metadata
 from .schema import (
     DeployEvent,
@@ -288,7 +288,20 @@ def preview_graph(req: PreviewRequest):
             resume_value=req.resume_value,
         )
 
-        messages = _serialize_messages(result.get("messages", []))
+        # Only return messages from the current turn.
+        # Walk backwards from the end to find the last user message — that's
+        # the boundary of this turn.
+        all_messages = result.get("messages", [])
+        turn_start = 0
+        for i in range(len(all_messages) - 1, -1, -1):
+            msg = all_messages[i]
+            is_user = (isinstance(msg, dict) and msg.get("role") == "user") or (
+                hasattr(msg, "type") and msg.type == "human"
+            )
+            if is_user:
+                turn_start = i
+                break
+        messages = _serialize_messages(all_messages[turn_start:])
         mlflow_trace = _extract_trace()
 
         interrupts = result.get("__interrupt__")
@@ -307,13 +320,10 @@ def preview_graph(req: PreviewRequest):
                 mlflow_trace=mlflow_trace,
             )
 
-        state_snapshot = {
-            k: v for k, v in result.items()
-            if k not in ("messages", "__interrupt__")
-        }
+        output_text, state_snapshot = filter_output(result, req.graph)
         return PreviewResponse(
             success=True,
-            output=str(result.get("output", result.get("input", ""))),
+            output=output_text,
             execution_trace=messages,
             state=state_snapshot,
             thread_id=thread_id,

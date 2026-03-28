@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.graph_builder import build_graph, generate_code, _build_state_type
+from backend.graph_builder import build_graph, filter_output, generate_code, _build_state_type
 from backend.schema import GraphDef, StateFieldDef, NodeDef, EdgeDef
 from backend.tests.conftest import make_graph
 
@@ -93,3 +93,99 @@ class TestGenerateCode:
         code = generate_code(router_graph_def)
         compile(code, "<test>", "exec")
         assert "router" in code.lower() or "conditional" in code.lower()
+
+
+class TestFilterOutput:
+    def test_no_output_fields_returns_all_state_fields(self):
+        graph_def = GraphDef(
+            nodes=[], edges=[],
+            state_fields=[StateFieldDef(name="input"), StateFieldDef(name="output")],
+        )
+        result = {"input": "hello", "output": "world", "extra": "val", "messages": []}
+        output_text, state = filter_output(result, graph_def)
+        import json
+        parsed = json.loads(output_text)
+        assert parsed == {"input": "hello", "output": "world"}
+        # State always has everything
+        assert "extra" in state
+        assert "messages" not in state
+
+    def test_no_output_fields_single_state_field_unwrapped(self):
+        graph_def = GraphDef(
+            nodes=[], edges=[],
+            state_fields=[StateFieldDef(name="input")],
+        )
+        result = {"input": "hello", "messages": []}
+        output_text, state = filter_output(result, graph_def)
+        assert output_text == "hello"
+
+    def test_single_selected_field_unwrapped(self):
+        graph_def = GraphDef(
+            nodes=[], edges=[],
+            state_fields=[StateFieldDef(name="input"), StateFieldDef(name="summary")],
+            output_fields=["summary"],
+        )
+        result = {"input": "hello", "summary": "a summary", "messages": []}
+        output_text, state = filter_output(result, graph_def)
+        assert output_text == "a summary"
+        # State always returns everything (for debugging)
+        assert state == {"input": "hello", "summary": "a summary"}
+
+    def test_multiple_selected_fields_returns_json(self):
+        graph_def = GraphDef(
+            nodes=[], edges=[],
+            state_fields=[StateFieldDef(name="a"), StateFieldDef(name="b")],
+            output_fields=["a", "b"],
+        )
+        result = {"a": "first", "b": "second", "messages": []}
+        output_text, state = filter_output(result, graph_def)
+        import json
+        parsed = json.loads(output_text)
+        assert parsed == {"a": "first", "b": "second"}
+
+    def test_dotted_subfield_resolved(self):
+        graph_def = GraphDef(
+            nodes=[], edges=[],
+            state_fields=[StateFieldDef(name="verdict", type="structured")],
+            output_fields=["verdict.is_funny", "verdict.reasoning"],
+        )
+        result = {
+            "verdict": '{"is_funny": false, "reasoning": "not great"}',
+            "messages": [],
+        }
+        output_text, state = filter_output(result, graph_def)
+        import json
+        parsed = json.loads(output_text)
+        assert parsed == {"is_funny": False, "reasoning": "not great"}
+        assert state == {"verdict": '{"is_funny": false, "reasoning": "not great"}'}
+
+    def test_mixed_toplevel_and_subfield(self):
+        graph_def = GraphDef(
+            nodes=[], edges=[],
+            state_fields=[
+                StateFieldDef(name="verdict", type="structured"),
+                StateFieldDef(name="rewrite", type="structured"),
+            ],
+            output_fields=["verdict.is_funny", "rewrite"],
+        )
+        result = {
+            "verdict": '{"is_funny": true, "reasoning": "good one"}',
+            "rewrite": '{"critique": "meh", "rewritten_joke": "A better joke"}',
+            "messages": [],
+        }
+        output_text, state = filter_output(result, graph_def)
+        import json
+        parsed = json.loads(output_text)
+        assert parsed == {
+            "is_funny": True,
+            "rewrite": {"critique": "meh", "rewritten_joke": "A better joke"},
+        }
+
+    def test_empty_when_nothing_available(self):
+        graph_def = GraphDef(
+            nodes=[], edges=[],
+            output_fields=["missing"],
+        )
+        result = {"messages": []}
+        output_text, state = filter_output(result, graph_def)
+        assert output_text == ""

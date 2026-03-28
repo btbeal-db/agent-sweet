@@ -180,7 +180,9 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
         target: e.target,
         source_handle: e.sourceHandle ?? null,
       }));
-      return { nodes: graphNodes, edges: graphEdges, state_fields: [] } as GraphDef;
+      const endNode = nodesRef.current.find((n) => n.id === END_ID);
+      const outputFields = (endNode?.data?.output_fields as string[]) ?? [];
+      return { nodes: graphNodes, edges: graphEdges, state_fields: [], output_fields: outputFields } as GraphDef;
     });
   }, [onGraphReady]);
 
@@ -188,7 +190,12 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
   useEffect(() => {
     if (!onImportReady) return;
     onImportReady((graph: GraphDef) => {
-      const newNodes: Node[] = [...INITIAL_NODES];
+      const newNodes: Node[] = INITIAL_NODES.map((n) => {
+        if (n.id === END_ID && graph.output_fields?.length) {
+          return { ...n, data: { ...n.data, output_fields: graph.output_fields } };
+        }
+        return n;
+      });
       for (const gn of graph.nodes) {
         const meta = nodeTypes.find((nt) => nt.type === gn.type);
         nodeIdCounter = Math.max(nodeIdCounter, parseInt(gn.id.replace(/\D/g, "") || "0", 10));

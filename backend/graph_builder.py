@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -193,6 +194,70 @@ def run_graph(
             result = compiled.invoke(initial_state, config=config if config else None)
 
     return result
+
+
+def _resolve_field(result: dict[str, Any], field_path: str) -> tuple[str, Any]:
+    """Resolve a potentially dotted field path against the result dict.
+
+    Returns (short_key, value).  For ``"verdict.is_funny"`` the short key is
+    ``"is_funny"`` and the value is extracted from the JSON-encoded ``verdict``
+    field.  For a plain key like ``"rewrite"`` it returns ``("rewrite", value)``
+    with JSON strings automatically parsed into dicts.
+    """
+    if "." in field_path:
+        parent, child = field_path.split(".", 1)
+        raw = result.get(parent, "")
+        if isinstance(raw, str) and raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return child, parsed.get(child, "")
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return child, ""
+    val = result.get(field_path, "")
+    # Parse JSON strings so structured fields become real dicts
+    if isinstance(val, str) and val:
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, (dict, list)):
+                return field_path, parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return field_path, val
+
+
+def filter_output(result: dict[str, Any], graph_def: GraphDef) -> tuple[str, dict[str, Any]]:
+    """Select the output text and state snapshot based on output_fields config.
+
+    Returns (output_text, state_snapshot).
+    When output_fields is empty, all fields are included (backward compat).
+    """
+    selected = graph_def.output_fields
+    _INTERNAL_KEYS = {"messages", "__interrupt__"}
+
+    # State snapshot is always the full state (for debugging)
+    state = {k: v for k, v in result.items() if k not in _INTERNAL_KEYS}
+
+    # When nothing is selected, output all state fields
+    fields_to_output = selected or [f.name for f in graph_def.state_fields]
+
+    # Build output dict, resolving dotted sub-field paths and JSON strings
+    filtered: dict[str, Any] = {}
+    for field_path in fields_to_output:
+        key, val = _resolve_field(result, field_path)
+        if val != "":
+            filtered[key] = val
+
+    # Output text: single value unwrapped, multiple as JSON dict
+    if len(filtered) == 1:
+        output = str(next(iter(filtered.values())))
+    elif filtered:
+        output = json.dumps(filtered, indent=2, default=str)
+    else:
+        output = ""
+
+    return output, state
 
 
 def generate_code(graph_def: GraphDef) -> str:

@@ -167,7 +167,6 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
         updatePlaceholder({
           content: result.output || "(empty)",
           execution_trace: result.execution_trace,
-          state: result.state,
           mlflow_trace: result.mlflow_trace,
         });
       }
@@ -213,7 +212,17 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
               ) : (
                 <>
                   {msg.content && (
-                    <div className="chat-msg-content">{msg.content}</div>
+                    <div className="chat-msg-content">
+                      {(() => {
+                        try {
+                          const parsed = JSON.parse(msg.content);
+                          if (typeof parsed === "object" && parsed !== null) {
+                            return <pre className="chat-json-output">{JSON.stringify(parsed, null, 2)}</pre>;
+                          }
+                        } catch { /* not JSON, render as text */ }
+                        return msg.content;
+                      })()}
+                    </div>
                   )}
 
                   {msg.error && (
@@ -228,20 +237,6 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
                           <div key={i} className="trace-step">
                             <span className="trace-badge">{step.node ?? step.role}</span>
                             <span className="trace-content">{step.content}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
-
-                  {msg.state && Object.keys(msg.state).length > 0 && (
-                    <details className="result-details" onToggle={scrollOnToggle}>
-                      <summary>State</summary>
-                      <div className="state-grid">
-                        {Object.entries(msg.state).map(([key, val]) => (
-                          <div key={key} className="state-entry">
-                            <span className="state-key">{key}</span>
-                            <pre className="state-val">{val || "(empty)"}</pre>
                           </div>
                         ))}
                       </div>
