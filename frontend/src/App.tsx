@@ -159,29 +159,6 @@ export default function App() {
           <div className="header-left">
             <span className="header-logo">Agent Builder</span>
           </div>
-          <div className="ai-chat-wrapper" ref={aiChatWrapperRef}>
-            <button
-              className={`btn btn-ghost btn-with-icon${showAIChat ? " btn-active" : ""}`}
-              onClick={() => setShowAIChat((v) => !v)}
-            >
-              <Sparkles size={14} />
-              AI Chat
-            </button>
-            {showAIChat && (
-              <AIChatDropdown
-                graphGetter={graphGetter}
-                graphImporter={graphImporter}
-                stateFields={stateFields}
-                setStateFields={setStateFields}
-                onSwitchToBuilder={() => {
-                  setView("builder");
-                  hasOpenedBuilder.current = true;
-                }}
-                onClose={() => setShowAIChat(false)}
-                wrapperRef={aiChatWrapperRef}
-              />
-            )}
-          </div>
           {view === "builder" && (
             <div className="header-actions">
               <div className="header-group">
@@ -211,6 +188,29 @@ export default function App() {
               </div>
               <div className="header-divider" />
               <div className="header-group">
+                <div className="ai-chat-wrapper" ref={aiChatWrapperRef}>
+                  <button
+                    className={`btn btn-ai-chat btn-with-icon${showAIChat ? " btn-active" : ""}`}
+                    onClick={() => setShowAIChat((v) => !v)}
+                  >
+                    <Sparkles size={14} />
+                    AI Chat
+                  </button>
+                  {showAIChat && (
+                    <AIChatDropdown
+                      graphGetter={graphGetter}
+                      graphImporter={graphImporter}
+                      stateFields={stateFields}
+                      setStateFields={setStateFields}
+                      onSwitchToBuilder={() => {
+                        setView("builder");
+                        hasOpenedBuilder.current = true;
+                      }}
+                      onClose={() => setShowAIChat(false)}
+                      wrapperRef={aiChatWrapperRef}
+                    />
+                  )}
+                </div>
                 <button className="btn btn-primary btn-with-icon" onClick={() => setShowChat(true)}>
                   <MessageSquare size={14} />
                   Playground

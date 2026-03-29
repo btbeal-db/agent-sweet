@@ -686,6 +686,22 @@ code, pre, .mono {
   color: var(--text-secondary);
 }
 
+.btn-ai-chat {
+  background: #8b5cf6;
+  color: white;
+  box-shadow: var(--shadow-sm), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.btn-ai-chat:hover {
+  background: #7c3aed;
+  transform: translateY(-0.5px);
+  box-shadow: var(--shadow-md), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+}
+
+.btn-ai-chat.btn-active {
+  background: #7c3aed;
+}
+
 .btn-deploy {
   background: var(--success);
   color: #0c0f1a;
