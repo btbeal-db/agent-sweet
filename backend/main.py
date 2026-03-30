@@ -23,6 +23,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from mlflow.models.auth_policy import AuthPolicy, SystemAuthPolicy, UserAuthPolicy
 from mlflow.models.resources import (
     DatabricksFunction,
     DatabricksGenieSpace,
@@ -43,6 +44,7 @@ from .schema import (
     DeployRequest,
     DeployStepStatus,
     GraphDef,
+    ServingAuthMode,
     PreviewRequest,
     PreviewResponse,
 )
@@ -109,6 +111,55 @@ def _extract_resources(graph: GraphDef) -> list:
                 resources.append(resource_cls(**{init_param: value}))
 
     return resources
+
+
+# Config field → OAuth API scope for OBO user auth policy.
+_SCOPE_MAP: dict[str, str] = {
+    "endpoint": "serving.serving-endpoints",
+    "endpoint_name": "serving.serving-endpoints",
+    "index_name": "vectorsearch.vector-search-indexes",
+    "room_id": "genie",
+    "table_name": "sql",
+    "function_name": "sql",
+}
+
+
+def _extract_auth_policy(graph: GraphDef) -> AuthPolicy:
+    """Build an AuthPolicy for OBO deployment.
+
+    LLM serving endpoints go into ``SystemAuthPolicy`` (they don't support
+    user-token auth).  All other resources become ``UserAuthPolicy`` scopes
+    so the end-user's identity is used at query time.
+    """
+    system_resources = []
+    user_scopes: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+
+    for node in graph.nodes:
+        for config_key in _SCOPE_MAP:
+            value = node.config.get(config_key)
+            if not value or (config_key, value) in seen:
+                continue
+            seen.add((config_key, value))
+
+            # LLM endpoints → system auth (SP credentials)
+            if config_key == "endpoint":
+                system_resources.append(
+                    DatabricksServingEndpoint(endpoint_name=value)
+                )
+            else:
+                user_scopes.add(_SCOPE_MAP[config_key])
+
+    return AuthPolicy(
+        system_auth_policy=(
+            SystemAuthPolicy(resources=system_resources)
+            if system_resources else None
+        ),
+        user_auth_policy=(
+            UserAuthPolicy(api_scopes=sorted(user_scopes))
+            if user_scopes else None
+        ),
+    )
 
 
 def _collect_code_paths() -> list[str]:
@@ -466,8 +517,6 @@ def deploy_graph(req: DeployRequest):
                 f.write(req.graph.model_dump_json())
                 graph_def_path = f.name
 
-            resources = _extract_resources(req.graph)
-
             requirements_path = _BACKEND_DIR.parent / "requirements-serving.txt"
             if not requirements_path.exists():
                 raise FileNotFoundError(
@@ -475,6 +524,14 @@ def deploy_graph(req: DeployRequest):
                     "uv pip compile pyproject.toml -o requirements-serving.txt "
                     "--python-version 3.11"
                 )
+
+            # Build auth args based on serving auth mode
+            if req.serving_auth_mode == ServingAuthMode.OBO:
+                auth_policy = _extract_auth_policy(req.graph)
+                auth_kwargs = {"auth_policy": auth_policy}
+            else:
+                resources = _extract_resources(req.graph)
+                auth_kwargs = {"resources": resources if resources else None}
 
             # Use explicit start/end so we can yield between steps
             run = mlflow.start_run()
@@ -485,7 +542,7 @@ def deploy_graph(req: DeployRequest):
                     artifacts={"graph_def": graph_def_path},
                     code_paths=_collect_code_paths(),
                     pip_requirements=str(requirements_path),
-                    resources=resources if resources else None,
+                    **auth_kwargs,
                 )
             except Exception:
                 mlflow.end_run()
@@ -574,6 +631,7 @@ def deploy_graph(req: DeployRequest):
             env_vars = {
                 "ENABLE_MLFLOW_TRACING": "true",
                 "MLFLOW_EXPERIMENT_ID": result_data.get("experiment_id", ""),
+                "SERVING_AUTH_MODE": req.serving_auth_mode.value,
             }
             if req.lakebase_conn_string:
                 env_vars["LAKEBASE_CONN_STRING"] = req.lakebase_conn_string

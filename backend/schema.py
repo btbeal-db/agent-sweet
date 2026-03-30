@@ -89,6 +89,16 @@ class DeployMode(str, Enum):
     FULL = "full"
 
 
+class ServingAuthMode(str, Enum):
+    """Authentication mode for the deployed model on Model Serving.
+
+    This controls how the *served model* authenticates to Databricks resources,
+    NOT how the Agent Builder app itself authenticates.
+    """
+    PASSTHROUGH = "passthrough"  # Automatic auth passthrough (declare resources)
+    OBO = "obo"                  # On-behalf-of user (declare auth_policy + api_scopes)
+
+
 class DeployStepStatus(str, Enum):
     RUNNING = "running"
     DONE = "done"
@@ -109,6 +119,7 @@ class DeployRequest(BaseModel):
     experiment_path: str  # MLflow experiment: /Users/email/experiment
     lakebase_conn_string: str = ""  # Lakebase Postgres connection URL
     deploy_mode: DeployMode = DeployMode.FULL
+    serving_auth_mode: ServingAuthMode = ServingAuthMode.PASSTHROUGH
 
 
 class DeployResponse(BaseModel):

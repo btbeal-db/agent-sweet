@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 import { validateGraph, deployGraphStream } from "../api";
-import type { GraphDef, StateFieldDef, DeployMode, DeployStepName, DeployStepStatus, DeployEvent } from "../types";
+import type { GraphDef, StateFieldDef, DeployMode, ServingAuthMode, DeployStepName, DeployStepStatus, DeployEvent } from "../types";
 
 interface Props {
   graphGetter: (() => GraphDef) | null;
@@ -77,6 +77,16 @@ const MODE_DESCRIPTIONS: Record<DeployMode, string> = {
   log_only: "Log model to MLflow experiment only. No registration or endpoint.",
 };
 
+const AUTH_MODE_LABELS: Record<ServingAuthMode, string> = {
+  passthrough: "Automatic Passthrough",
+  obo: "On-Behalf-Of User (OBO)",
+};
+
+const AUTH_MODE_DESCRIPTIONS: Record<ServingAuthMode, string> = {
+  passthrough: "Model runs with the deployer's permissions. Databricks provisions scoped credentials per resource.",
+  obo: "Model runs as the end-user making the query. Requires workspace admin to enable OBO.",
+};
+
 function StepIcon({ status }: { status: DeployStepStatus }) {
   switch (status) {
     case "running":
@@ -97,6 +107,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
   const [experimentPath, setExperimentPath] = useState("");
   const [lakebaseConnString, setLakebaseConnString] = useState("");
   const [deployMode, setDeployMode] = useState<DeployMode>("full");
+  const [servingAuthMode, setServingAuthMode] = useState<ServingAuthMode>("passthrough");
   const [phase, setPhase] = useState<Phase>("form");
   const [steps, setSteps] = useState<Record<string, StepState>>({});
   const [resultData, setResultData] = useState<DeployEvent["data"]>({});
@@ -137,6 +148,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
           experiment_path: experimentPath,
           lakebase_conn_string: lakebaseConnString,
           deploy_mode: deployMode,
+          serving_auth_mode: servingAuthMode,
         },
         (event: DeployEvent) => {
           if (event.step === "complete") {
@@ -169,7 +181,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
       setErrorMsg(e instanceof Error ? e.message : "Connection error");
       setPhase("error");
     }
-  }, [graphGetter, stateFieldsRef, modelName, experimentPath, lakebaseConnString, deployMode]);
+  }, [graphGetter, stateFieldsRef, modelName, experimentPath, lakebaseConnString, deployMode, servingAuthMode]);
 
   const doneMessage = deployMode === "full"
     ? "Agent deployed successfully!"
@@ -200,6 +212,20 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
                   ))}
                 </select>
                 <span className="deploy-hint">{MODE_DESCRIPTIONS[deployMode]}</span>
+              </label>
+
+              <label className="deploy-label">
+                Serving Authentication
+                <select
+                  className="deploy-input"
+                  value={servingAuthMode}
+                  onChange={(e) => setServingAuthMode(e.target.value as ServingAuthMode)}
+                >
+                  {(Object.keys(AUTH_MODE_LABELS) as ServingAuthMode[]).map((mode) => (
+                    <option key={mode} value={mode}>{AUTH_MODE_LABELS[mode]}</option>
+                  ))}
+                </select>
+                <span className="deploy-hint">{AUTH_MODE_DESCRIPTIONS[servingAuthMode]}</span>
               </label>
 
               <label className="deploy-label">

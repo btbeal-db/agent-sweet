@@ -86,6 +86,30 @@ def _make_msg_id() -> str:
     return f"msg_{uuid.uuid4().hex[:24]}"
 
 
+def _init_obo_credentials() -> None:
+    """Set up OBO user credentials for the current request.
+
+    When SERVING_AUTH_MODE=obo, the end-user's identity is forwarded by
+    Model Serving.  We obtain a user-scoped WorkspaceClient and store
+    its token via the existing ``set_user_token`` contextvar so that all
+    downstream nodes (Vector Search, Genie, UC Functions) automatically
+    use the caller's identity.
+
+    Must be called inside ``predict`` / ``predict_stream`` — the user
+    identity is only known at request time.
+    """
+    if os.environ.get("SERVING_AUTH_MODE") != "obo":
+        return
+    from databricks_ai_bridge import ModelServingUserCredentials
+    from databricks.sdk import WorkspaceClient
+    from backend.auth import set_user_token
+
+    user_client = WorkspaceClient(
+        credentials_strategy=ModelServingUserCredentials()
+    )
+    set_user_token(user_client.config.token)
+
+
 class AgentGraphModel(ResponsesAgent):
     """Wraps a compiled LangGraph agent as an MLflow ResponsesAgent for serving."""
 
@@ -113,6 +137,7 @@ class AgentGraphModel(ResponsesAgent):
 
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         """Run the agent graph synchronously and return the full response."""
+        _init_obo_credentials()
         user_message = _extract_user_message(request)
         if not user_message:
             return ResponsesAgentResponse(
@@ -172,6 +197,7 @@ class AgentGraphModel(ResponsesAgent):
         self, request: ResponsesAgentRequest
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
         """Stream the agent graph execution, yielding events as each node completes."""
+        _init_obo_credentials()
         user_message = _extract_user_message(request)
         if not user_message:
             yield ResponsesAgentStreamEvent(

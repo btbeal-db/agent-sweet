@@ -93,6 +93,9 @@ export interface ExportResponse {
 
 export type DeployMode = "log_only" | "log_and_register" | "full";
 
+/** Authentication mode for the deployed model on Model Serving. */
+export type ServingAuthMode = "passthrough" | "obo";
+
 export type DeployStepName = "validate" | "log_model" | "register_model" | "create_endpoint" | "complete";
 export type DeployStepStatus = "pending" | "running" | "done" | "error" | "skipped";
 
@@ -109,6 +112,7 @@ export interface DeployRequest {
   experiment_path: string;
   lakebase_conn_string: string;
   deploy_mode: DeployMode;
+  serving_auth_mode: ServingAuthMode;
 }
 
 export interface ChatMessage {
