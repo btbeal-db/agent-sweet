@@ -20,7 +20,7 @@ resources:
         - catalog.catalogs:read
         - catalog.schemas:read
         - catalog.tables:read
-        - genie
+        - dashboards.genie
         - serving.serving-endpoints
         - serving.serving-endpoints-data-plane
         - sql

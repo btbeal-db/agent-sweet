@@ -34,7 +34,7 @@ from mlflow.models.resources import (
 
 from langchain_core.messages import BaseMessage
 
-from .auth import set_user_token, get_workspace_client
+from .auth import set_user_token, get_workspace_client, obo_env
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
 from .graph_builder import build_graph, filter_output, run_graph
 from .nodes import get_all_metadata
@@ -118,7 +118,7 @@ _SCOPE_MAP: dict[str, str] = {
     "endpoint": "serving.serving-endpoints",
     "endpoint_name": "serving.serving-endpoints",
     "index_name": "vectorsearch.vector-search-indexes",
-    "room_id": "genie",
+    "room_id": "dashboards.genie",
     "table_name": "sql",
     "function_name": "sql",
 }
@@ -693,8 +693,13 @@ def deploy_graph(req: DeployRequest):
         yield _emit("complete", DeployStepStatus.DONE,
                      "Deployment complete!", result_data)
 
+    def _generate_as_user():
+        """Wrap _generate so MLflow calls run under the OBO user identity."""
+        with obo_env():
+            yield from _generate()
+
     return StreamingResponse(
-        _generate(),
+        _generate_as_user(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
