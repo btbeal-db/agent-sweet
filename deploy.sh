@@ -79,6 +79,22 @@ fi
 echo "── Syncing bundle..."
 databricks bundle deploy -t "$TARGET"
 
+# 3b. Set user_api_scopes via REST API (SDK/CLI doesn't propagate these yet)
+echo "── Setting user API scopes..."
+databricks api patch /api/2.0/apps/"$APP_NAME" --json '{
+  "user_api_scopes": [
+    "catalog.catalogs:read",
+    "catalog.schemas:read",
+    "catalog.tables:read",
+    "dashboards.genie",
+    "serving.serving-endpoints",
+    "serving.serving-endpoints-data-plane",
+    "sql",
+    "vectorsearch.vector-search-endpoints",
+    "vectorsearch.vector-search-indexes"
+  ]
+}' > /dev/null 2>&1 || echo "  ⚠ Could not set scopes (app may not exist yet — they'll be set on next deploy)"
+
 # 4. Trigger app redeployment
 BUNDLE_PATH=$(databricks bundle summary -t "$TARGET" 2>&1 | grep "Path:" | awk '{print $2}')
 SOURCE_PATH="${BUNDLE_PATH}/files"
