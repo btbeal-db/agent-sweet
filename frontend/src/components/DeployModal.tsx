@@ -58,7 +58,9 @@ function hasConversationalNode(graphGetter: (() => GraphDef) | null): boolean {
   try {
     const graph = graphGetter();
     return graph.nodes.some(
-      (n) => n.type === "llm" && String(n.config.conversational).toLowerCase() === "true"
+      (n) => n.type === "llm" && (
+        String(n.config.include_message_history ?? n.config.conversational ?? "false").toLowerCase() === "true"
+      )
     );
   } catch {
     return false;

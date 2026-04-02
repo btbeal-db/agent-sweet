@@ -21,6 +21,7 @@ resources:
         - catalog.schemas:read
         - catalog.tables:read
         - dashboards.genie
+        - mlflow
         - serving.serving-endpoints
         - serving.serving-endpoints-data-plane
         - sql

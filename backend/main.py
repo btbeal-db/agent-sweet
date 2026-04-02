@@ -34,7 +34,7 @@ from mlflow.models.resources import (
 
 from langchain_core.messages import BaseMessage
 
-from .auth import set_user_token, get_workspace_client, obo_env
+from .auth import set_user_token, get_workspace_client
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
 from .graph_builder import build_graph, filter_output, run_graph
 from .nodes import get_all_metadata
@@ -508,8 +508,20 @@ def deploy_graph(req: DeployRequest):
         try:
             mlflow.set_tracking_uri("databricks")
             mlflow.set_registry_uri("databricks-uc")
-            experiment = mlflow.set_experiment(req.experiment_path)
-            result_data["experiment_id"] = experiment.experiment_id
+
+            # Create or get the experiment as the user (OBO), then use its
+            # ID with MLflow under SP credentials.  The user's token has
+            # workspace permissions to create experiments in their directory,
+            # but the ``mlflow`` OAuth scope is not available for Apps.
+            w = get_workspace_client()
+            try:
+                exp = w.experiments.get_by_name(req.experiment_path)
+                experiment_id = exp.experiment.experiment_id
+            except Exception:
+                exp = w.experiments.create_experiment(name=req.experiment_path)
+                experiment_id = exp.experiment_id
+            result_data["experiment_id"] = experiment_id
+            mlflow.set_experiment(experiment_id=experiment_id)
 
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".json", delete=False
@@ -693,13 +705,8 @@ def deploy_graph(req: DeployRequest):
         yield _emit("complete", DeployStepStatus.DONE,
                      "Deployment complete!", result_data)
 
-    def _generate_as_user():
-        """Wrap _generate so MLflow calls run under the OBO user identity."""
-        with obo_env():
-            yield from _generate()
-
     return StreamingResponse(
-        _generate_as_user(),
+        _generate(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
