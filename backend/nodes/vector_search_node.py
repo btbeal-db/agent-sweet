@@ -173,7 +173,27 @@ class VectorSearchNode(BaseNode):
                     parameters=RerankerConfigRerankerParameters(columns_to_rerank=rerank_cols),
                 )
         try:
-            w = get_workspace_client()
+            # DEBUG: bypass middleware — build client directly from token
+            import os
+            from databricks.sdk import WorkspaceClient
+            from ..auth import get_user_token
+            token = get_user_token()
+            host = os.environ.get("DATABRICKS_HOST", "")
+            if token and host:
+                logger.info("VS DEBUG: using OBO token directly (len=%d, host=%s)", len(token), host)
+                # Mask SP creds to avoid dual-auth conflict
+                masked = {}
+                for k in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
+                    if k in os.environ:
+                        masked[k] = os.environ.pop(k)
+                try:
+                    w = WorkspaceClient(host=host, token=token)
+                finally:
+                    os.environ.update(masked)
+            else:
+                logger.info("VS DEBUG: no OBO token, falling back to default client")
+                w = get_workspace_client()
+
             response = w.vector_search_indexes.query_index(
                 index_name=index_name,
                 columns=columns,
@@ -184,11 +204,11 @@ class VectorSearchNode(BaseNode):
                 reranker=reranker,
             )
         except Exception as exc:
-            from ..auth import get_user_token
-            has_obo = get_user_token() is not None
+            from ..auth import get_user_token as _gut
+            has_obo = _gut() is not None
             logger.exception(
-                "Vector Search query failed (OBO=%s, auth_type=%s, index=%s)",
-                has_obo, w.config.auth_type, index_name,
+                "Vector Search query failed (OBO=%s, index=%s)",
+                has_obo, index_name,
             )
             return {
                 writes_to: f"Vector Search error: {exc}",
