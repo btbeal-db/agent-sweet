@@ -508,20 +508,8 @@ def deploy_graph(req: DeployRequest):
         try:
             mlflow.set_tracking_uri("databricks")
             mlflow.set_registry_uri("databricks-uc")
-
-            # Create or get the experiment as the user (OBO), then use its
-            # ID with MLflow under SP credentials.  The user's token has
-            # workspace permissions to create experiments in their directory,
-            # but the ``mlflow`` OAuth scope is not available for Apps.
-            w = get_workspace_client()
-            try:
-                exp = w.experiments.get_by_name(req.experiment_path)
-                experiment_id = exp.experiment.experiment_id
-            except Exception:
-                exp = w.experiments.create_experiment(name=req.experiment_path)
-                experiment_id = exp.experiment_id
-            result_data["experiment_id"] = experiment_id
-            mlflow.set_experiment(experiment_id=experiment_id)
+            experiment = mlflow.set_experiment(req.experiment_path)
+            result_data["experiment_id"] = experiment.experiment_id
 
             with tempfile.NamedTemporaryFile(
                 mode="w", suffix=".json", delete=False
