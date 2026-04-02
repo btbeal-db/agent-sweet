@@ -601,11 +601,15 @@ def deploy_graph(req: DeployRequest):
                         f"could not be created: {schema_err}"
                     )
 
-            mv = mlflow.register_model(
-                model_uri=model_info.model_uri,
+            # Register via workspace SDK (OBO) so the model is created
+            # under the user's identity.  mlflow.register_model() would use
+            # SP credentials, which lack catalog permissions.
+            mv = w.model_registry.create_model_version(
                 name=req.model_name,
+                source=model_info.model_uri,
+                run_id=run.info.run_id,
             )
-            result_data["model_version"] = str(mv.version)
+            result_data["model_version"] = str(mv.model_version.version)
         except Exception as e:
             mlflow.end_run()
             yield _emit("register_model", DeployStepStatus.ERROR,
