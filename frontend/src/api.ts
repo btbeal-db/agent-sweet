@@ -1,6 +1,12 @@
-import type { NodeTypeMetadata, GraphDef, PreviewResponse, DeployRequest, DeployEvent } from "./types";
+import type { NodeTypeMetadata, GraphDef, PreviewResponse, DeployRequest, DeployEvent, AppConfig } from "./types";
 
 const BASE = "/api";
+
+export async function fetchAppConfig(): Promise<AppConfig> {
+  const res = await fetch(`${BASE}/config`);
+  if (!res.ok) throw new Error("Failed to fetch app config");
+  return res.json();
+}
 
 export async function fetchNodeTypes(): Promise<NodeTypeMetadata[]> {
   const res = await fetch(`${BASE}/nodes`);

@@ -91,8 +91,6 @@ export interface ExportResponse {
   error: string | null;
 }
 
-export type DeployMode = "log_only" | "log_and_register" | "full";
-
 export type DeployStepName = "validate" | "log_model" | "register_model" | "create_endpoint" | "complete";
 export type DeployStepStatus = "pending" | "running" | "done" | "error" | "skipped";
 
@@ -106,9 +104,13 @@ export interface DeployEvent {
 export interface DeployRequest {
   graph: GraphDef;
   model_name: string;
-  experiment_path: string;
   lakebase_conn_string: string;
-  deploy_mode: DeployMode;
+}
+
+export interface AppConfig {
+  catalog: string;
+  schema_name: string;
+  experiment_base: string;
 }
 
 export interface ChatMessage {

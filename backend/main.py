@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import mlflow
+from databricks.sdk import WorkspaceClient
 from databricks.sdk.errors import ResourceAlreadyExists
 from databricks.sdk.service.serving import (
     AiGatewayConfig,
@@ -38,8 +39,8 @@ from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
 from .graph_builder import build_graph, filter_output, run_graph
 from .nodes import get_all_metadata
 from .schema import (
+    AppConfig,
     DeployEvent,
-    DeployMode,
     DeployRequest,
     DeployStepStatus,
     GraphDef,
@@ -154,6 +155,30 @@ class OBOMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(OBOMiddleware)
+
+
+# ── App deployment config ────────────────────────────────────────────────────
+# These env vars are set by the app admin to configure where models are
+# registered and experiments are stored.  The SP must have access to the
+# catalog/schema (add them as App Resources in the Databricks Apps UI).
+
+_DEPLOY_CATALOG = os.environ.get("DEPLOY_CATALOG", "")
+_DEPLOY_SCHEMA = os.environ.get("DEPLOY_SCHEMA", "")
+_EXPERIMENT_BASE = os.environ.get("EXPERIMENT_BASE", "/Shared/agent-builder")
+
+
+def _get_app_config() -> AppConfig:
+    return AppConfig(
+        catalog=_DEPLOY_CATALOG,
+        schema_name=_DEPLOY_SCHEMA,
+        experiment_base=_EXPERIMENT_BASE,
+    )
+
+
+@app.get("/api/config")
+def get_config() -> AppConfig:
+    """Return the app's deployment configuration for the frontend."""
+    return _get_app_config()
 
 
 # ── Preview session store (in-memory, per-process) ────────────────────────────
@@ -426,10 +451,28 @@ def load_graph_from_run(run_id: str):
 
 @app.post("/api/graph/deploy")
 def deploy_graph(req: DeployRequest):
-    """Log the graph as an MLflow model and optionally register + deploy.
+    """Log, register, and deploy the graph as a Model Serving endpoint.
+
+    All MLflow and registration operations use the app's service principal.
+    The catalog/schema and experiment path are configured via env vars
+    (DEPLOY_CATALOG, DEPLOY_SCHEMA, EXPERIMENT_BASE).
 
     Streams SSE events so the frontend can show step-by-step progress.
     """
+    cfg = _get_app_config()
+
+    if not cfg.catalog or not cfg.schema_name:
+        return StreamingResponse(
+            iter([
+                f"data: {DeployEvent(step='validate', status=DeployStepStatus.ERROR, message='App not configured: DEPLOY_CATALOG and DEPLOY_SCHEMA env vars are required. Ask the app admin to set them.').model_dump_json()}\n\n"
+            ]),
+            media_type="text/event-stream",
+        )
+
+    # Build fully-qualified names from user's model name + configured catalog/schema
+    fq_model_name = f"{cfg.catalog}.{cfg.schema_name}.{req.model_name}"
+    experiment_path = f"{cfg.experiment_base}/{req.model_name}"
+    endpoint_name = req.model_name.replace("_", "-")
 
     def _emit(step: str, status: DeployStepStatus, message: str,
               data: dict[str, str] | None = None) -> str:
@@ -438,8 +481,6 @@ def deploy_graph(req: DeployRequest):
 
     def _generate():
         result_data: dict[str, str] = {}
-        needs_register = req.deploy_mode in (DeployMode.LOG_AND_REGISTER, DeployMode.FULL)
-        needs_endpoint = req.deploy_mode == DeployMode.FULL
 
         # ── Step 1: Validate ──────────────────────────────────────────
         yield _emit("validate", DeployStepStatus.RUNNING, "Compiling graph...")
@@ -452,12 +493,12 @@ def deploy_graph(req: DeployRequest):
 
         # ── Step 2: Log model to MLflow ───────────────────────────────
         yield _emit("log_model", DeployStepStatus.RUNNING,
-                     f"Logging model to experiment {req.experiment_path}...")
+                     f"Logging model to {experiment_path}...")
         model_info = None
         try:
             mlflow.set_tracking_uri("databricks")
             mlflow.set_registry_uri("databricks-uc")
-            experiment = mlflow.set_experiment(req.experiment_path)
+            experiment = mlflow.set_experiment(experiment_path)
             result_data["experiment_id"] = experiment.experiment_id
 
             with tempfile.NamedTemporaryFile(
@@ -476,7 +517,6 @@ def deploy_graph(req: DeployRequest):
                     "--python-version 3.11"
                 )
 
-            # Use explicit start/end so we can yield between steps
             run = mlflow.start_run()
             try:
                 model_info = mlflow.pyfunc.log_model(
@@ -500,53 +540,12 @@ def deploy_graph(req: DeployRequest):
                      f"Model logged (run: {run.info.run_id})")
 
         # ── Step 3: Register model in Unity Catalog ───────────────────
-        if not needs_register:
-            mlflow.end_run()
-            yield _emit("register_model", DeployStepStatus.SKIPPED,
-                        "Skipped (Log Only mode)")
-            yield _emit("create_endpoint", DeployStepStatus.SKIPPED,
-                        "Skipped (Log Only mode)")
-            yield _emit("complete", DeployStepStatus.DONE,
-                        "Model logged successfully", result_data)
-            return
-
         yield _emit("register_model", DeployStepStatus.RUNNING,
-                     f"Registering {req.model_name} in Unity Catalog...")
+                     f"Registering {fq_model_name}...")
         try:
-            parts = req.model_name.split(".")
-            if len(parts) != 3:
-                raise ValueError(
-                    f"Model name must be catalog.schema.model_name format, "
-                    f"got '{req.model_name}'"
-                )
-            catalog, schema_name, _ = parts
-
-            w = get_workspace_client()
-            # Pre-validate catalog exists
-            try:
-                w.catalogs.get(catalog)
-            except Exception:
-                raise ValueError(
-                    f"Catalog '{catalog}' does not exist or you don't have "
-                    f"access to it. Verify the catalog name and your permissions."
-                )
-
-            # Pre-validate or create schema
-            try:
-                w.schemas.get(f"{catalog}.{schema_name}")
-            except Exception:
-                try:
-                    w.schemas.create(name=schema_name, catalog_name=catalog)
-                    logger.info("Created schema %s.%s", catalog, schema_name)
-                except Exception as schema_err:
-                    raise ValueError(
-                        f"Schema '{catalog}.{schema_name}' does not exist and "
-                        f"could not be created: {schema_err}"
-                    )
-
             mv = mlflow.register_model(
                 model_uri=model_info.model_uri,
-                name=req.model_name,
+                name=fq_model_name,
             )
             result_data["model_version"] = str(mv.version)
         except Exception as e:
@@ -556,21 +555,12 @@ def deploy_graph(req: DeployRequest):
             return
         mlflow.end_run()
         yield _emit("register_model", DeployStepStatus.DONE,
-                     f"Registered as {req.model_name} v{mv.version}")
+                     f"Registered as {fq_model_name} v{mv.version}")
 
         # ── Step 4: Create / update serving endpoint ──────────────────
-        if not needs_endpoint:
-            yield _emit("create_endpoint", DeployStepStatus.SKIPPED,
-                        "Skipped (Log & Register mode)")
-            yield _emit("complete", DeployStepStatus.DONE,
-                        "Model registered successfully", result_data)
-            return
-
         yield _emit("create_endpoint", DeployStepStatus.RUNNING,
                      "Creating serving endpoint...")
         try:
-            endpoint_name = req.model_name.split(".")[-1].replace("_", "-")
-
             env_vars = {
                 "ENABLE_MLFLOW_TRACING": "true",
                 "MLFLOW_EXPERIMENT_ID": result_data.get("experiment_id", ""),
@@ -579,23 +569,23 @@ def deploy_graph(req: DeployRequest):
                 env_vars["LAKEBASE_CONN_STRING"] = req.lakebase_conn_string
 
             served_entity = ServedEntityInput(
-                entity_name=req.model_name,
+                entity_name=fq_model_name,
                 entity_version=result_data["model_version"],
                 environment_vars=env_vars if env_vars else None,
                 scale_to_zero_enabled=True,
                 workload_size="Small",
             )
 
-            parts = req.model_name.split(".")
             ai_gateway = AiGatewayConfig(
                 inference_table_config=AiGatewayInferenceTableConfig(
-                    catalog_name=parts[0],
-                    schema_name=parts[1],
+                    catalog_name=cfg.catalog,
+                    schema_name=cfg.schema_name,
                     table_name_prefix=endpoint_name,
                     enabled=True,
                 ),
             )
 
+            w = WorkspaceClient()  # SP credentials
             try:
                 w.serving_endpoints.create(
                     name=endpoint_name,
@@ -613,8 +603,8 @@ def deploy_graph(req: DeployRequest):
                 w.serving_endpoints.put_ai_gateway(
                     name=endpoint_name,
                     inference_table_config=AiGatewayInferenceTableConfig(
-                        catalog_name=parts[0],
-                        schema_name=parts[1],
+                        catalog_name=cfg.catalog,
+                        schema_name=cfg.schema_name,
                         table_name_prefix=endpoint_name,
                         enabled=True,
                     ),

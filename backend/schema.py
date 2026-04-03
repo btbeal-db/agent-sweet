@@ -105,10 +105,8 @@ class DeployEvent(BaseModel):
 
 class DeployRequest(BaseModel):
     graph: GraphDef
-    model_name: str = ""  # Unity Catalog path: catalog.schema.model_name
-    experiment_path: str  # MLflow experiment: /Users/email/experiment
-    lakebase_conn_string: str = ""  # Lakebase Postgres connection URL
-    deploy_mode: DeployMode = DeployMode.FULL
+    model_name: str  # Just the model name (e.g., "my_agent")
+    lakebase_conn_string: str = ""
 
 
 class DeployResponse(BaseModel):
@@ -116,3 +114,10 @@ class DeployResponse(BaseModel):
     endpoint_url: str = ""
     model_version: str = ""
     error: str | None = None
+
+
+class AppConfig(BaseModel):
+    """Read-only app configuration exposed to the frontend."""
+    catalog: str = ""
+    schema_name: str = ""
+    experiment_base: str = "/Shared/agent-builder"
