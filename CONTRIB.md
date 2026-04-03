@@ -94,6 +94,26 @@ This is important to understand before contributing:
 
 - **Known limitation:** The `mlflow` OAuth scope is not available for Databricks Apps. All MLflow operations (log, register) must be done by the user in their own environment, not from the app. This is why deployment generates a notebook rather than deploying directly.
 
+## Pull Requests
+
+### Guidelines
+
+- **One feature per PR.** Don't bundle unrelated changes. A new node type, a bug fix, and a UI tweak should be three separate PRs.
+- **Keep diffs small.** If a feature touches many files, consider breaking it into stacked PRs (e.g., backend first, then frontend).
+- **Don't refactor while fixing.** If you notice nearby code that could be improved, open a separate PR for it.
+- **Test before opening.** Run the app locally and verify your change works in the preview canvas. If you're adding a node, test it with at least one graph that exercises it.
+- **Update CONTRIB.md** if your change adds new patterns, config field types, or resource declarations that other contributors need to know about.
+
+### Branch naming
+
+Use `your-name/short-description` — e.g., `brennan.beal/add-sql-warehouse-node`.
+
+### PR template
+
+The repo includes a PR template at `.github/pull_request_template.md`. Fill it out when opening a PR — don't delete sections, mark them N/A if they don't apply.
+
+---
+
 ## Adding a New Node Type
 
 The agent builder uses auto-discovery — drop a file in `backend/nodes/` and it appears in the UI automatically.
