@@ -2,14 +2,16 @@
 
 # COMMAND ----------
 
-# COMMAND ----------
+# Install the app package from Git (branch-aware)
+import subprocess, json
 
-import json, subprocess
 params = json.loads(dbutils.widgets.get("params_json"))  # noqa: F821
 git_ref = params.get("git_ref", "main")
-pkg = f"git+https://github.com/btbeal-db/agent-sweet.git@{git_ref}"
-print(f"Installing {pkg}")
+repo_url = params.get("repo_url", "https://github.com/btbeal-db/agent-sweet.git")
+pkg = f"git+{repo_url}@{git_ref}"
+print(f"Installing: {pkg}")
 subprocess.check_call(["pip", "install", pkg, "--upgrade", "--quiet"])
+
 dbutils.library.restartPython()  # noqa: F821
 
 # COMMAND ----------
@@ -34,6 +36,7 @@ from backend.schema import GraphDef
 # COMMAND ----------
 
 # Parse deployment config
+params = json.loads(dbutils.widgets.get("params_json"))  # noqa: F821
 graph_def = GraphDef.model_validate(json.loads(params["graph_json"]))
 model_name = params["model_name"]
 catalog = params["catalog"]
@@ -48,8 +51,8 @@ experiment_path = f"{experiment_base}/{model_name}"
 
 print(f"Model: {fq_model_name}")
 print(f"Experiment: {experiment_path}")
-print(f"Deployed by: {deployed_by}")
 print(f"Endpoint: {endpoint_name}")
+print(f"Deployed by: {deployed_by}")
 
 # COMMAND ----------
 
@@ -68,13 +71,10 @@ resources = extract_resources(graph_def)
 import backend
 backend_dir = Path(backend.__file__).parent
 python_model_path = str(backend_dir / "mlflow_model.py")
-
 code_paths = collect_code_paths()
-
 requirements_path = backend_dir.parent / "requirements-serving.txt"
 
 with mlflow.start_run() as run:
-    # Tag the run with provenance info
     mlflow.set_tag("deployed_by", deployed_by)
     mlflow.set_tag("agent_name", model_name)
     mlflow.set_tag("endpoint_name", endpoint_name)

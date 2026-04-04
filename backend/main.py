@@ -423,11 +423,14 @@ def deploy_graph(req: DeployRequest):
         # Resolve the git ref the app is running from so the Job
         # installs the same version of the package.
         git_ref = "main"
+        repo_url = ""
         try:
             app_info = w.apps.get(os.environ.get("DATABRICKS_APP_NAME", ""))
             git_source = app_info.active_deployment.git_source
             if git_source:
                 git_ref = git_source.branch or git_source.tag or git_ref
+                if git_source.git_repository:
+                    repo_url = git_source.git_repository.url or ""
         except Exception:
             pass
 
@@ -439,6 +442,7 @@ def deploy_graph(req: DeployRequest):
             "experiment_base": cfg.experiment_base,
             "lakebase_conn_string": req.lakebase_conn_string,
             "git_ref": git_ref,
+            "repo_url": repo_url,
             "deployed_by": deployed_by,
         })
         run_response = w.jobs.run_now(
