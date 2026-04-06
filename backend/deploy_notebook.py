@@ -79,15 +79,26 @@ with mlflow.start_run() as run:
     mlflow.set_tag("agent_name", model_name)
     mlflow.set_tag("endpoint_name", endpoint_name)
 
+    # Read requirements as a list, filtering out comments and the package itself.
+    # We must pass pip_requirements as a list to fully override MLflow's
+    # auto-detection, which would otherwise include agent-builder-app (the
+    # installed package) — that fails in the serving container since it's
+    # not published to PyPI.
+    pip_reqs = []
+    if requirements_path.exists():
+        for line in requirements_path.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and not line.startswith("-"):
+                pip_reqs.append(line)
+
     log_kwargs = dict(
         artifact_path="agent",
         python_model=python_model_path,
         artifacts={"graph_def": graph_def_path},
         code_paths=code_paths,
         resources=resources if resources else None,
+        pip_requirements=pip_reqs,
     )
-    if requirements_path.exists():
-        log_kwargs["pip_requirements"] = str(requirements_path)
 
     model_info = mlflow.pyfunc.log_model(**log_kwargs)
     run_id = run.info.run_id
