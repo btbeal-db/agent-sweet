@@ -104,12 +104,12 @@ export interface DeployEvent {
 export interface DeployRequest {
   graph: GraphDef;
   model_name: string;
+  catalog: string;
+  schema_name: string;
   lakebase_conn_string: string;
 }
 
 export interface AppConfig {
-  catalog: string;
-  schema_name: string;
   experiment_base: string;
   deploy_job_id: string;
 }

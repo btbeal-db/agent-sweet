@@ -106,6 +106,8 @@ class DeployEvent(BaseModel):
 class DeployRequest(BaseModel):
     graph: GraphDef
     model_name: str  # Just the model name (e.g., "my_agent")
+    catalog: str  # Unity Catalog catalog to register the model in
+    schema_name: str  # Unity Catalog schema to register the model in
     lakebase_conn_string: str = ""
 
 
@@ -118,7 +120,5 @@ class DeployResponse(BaseModel):
 
 class AppConfig(BaseModel):
     """Read-only app configuration exposed to the frontend."""
-    catalog: str = ""
-    schema_name: str = ""
     experiment_base: str = "/Shared/agent-builder"
     deploy_job_id: str = ""

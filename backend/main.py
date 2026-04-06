@@ -98,16 +98,12 @@ app.add_middleware(OBOMiddleware)
 # registered and experiments are stored.  The SP must have access to the
 # catalog/schema (add them as App Resources in the Databricks Apps UI).
 
-_DEPLOY_CATALOG = os.environ.get("DEPLOY_CATALOG", "")
-_DEPLOY_SCHEMA = os.environ.get("DEPLOY_SCHEMA", "")
 _EXPERIMENT_BASE = os.environ.get("EXPERIMENT_BASE", "/Shared/agent-builder")
 _DEPLOY_JOB_ID = os.environ.get("DEPLOY_JOB_ID", "")
 
 
 def _get_app_config() -> AppConfig:
     return AppConfig(
-        catalog=_DEPLOY_CATALOG,
-        schema_name=_DEPLOY_SCHEMA,
         experiment_base=_EXPERIMENT_BASE,
         deploy_job_id=_DEPLOY_JOB_ID,
     )
@@ -396,8 +392,8 @@ def deploy_graph(req: DeployRequest):
     """
     cfg = _get_app_config()
 
-    if not cfg.catalog or not cfg.schema_name:
-        raise HTTPException(400, "App not configured: set DEPLOY_CATALOG and DEPLOY_SCHEMA env vars.")
+    if not req.catalog or not req.schema_name:
+        raise HTTPException(400, "Catalog and schema are required.")
     if not cfg.deploy_job_id:
         raise HTTPException(400, "App not configured: set DEPLOY_JOB_ID env var.")
 
@@ -437,8 +433,8 @@ def deploy_graph(req: DeployRequest):
         params_json = json.dumps({
             "graph_json": req.graph.model_dump_json(),
             "model_name": req.model_name,
-            "catalog": cfg.catalog,
-            "schema_name": cfg.schema_name,
+            "catalog": req.catalog,
+            "schema_name": req.schema_name,
             "experiment_base": cfg.experiment_base,
             "lakebase_conn_string": req.lakebase_conn_string,
             "git_ref": git_ref,
@@ -452,7 +448,7 @@ def deploy_graph(req: DeployRequest):
     except Exception as e:
         raise HTTPException(500, f"Failed to submit deploy job: {e}")
 
-    fq_model_name = f"{cfg.catalog}.{cfg.schema_name}.{req.model_name}"
+    fq_model_name = f"{req.catalog}.{req.schema_name}.{req.model_name}"
     endpoint_name = req.model_name.replace("_", "-")
 
     return {

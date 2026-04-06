@@ -1,109 +1,92 @@
-# Agent Builder
+# Agent Sweet
 
-Visual drag-and-drop [LangGraph](https://langchain-ai.github.io/langgraph/) agent builder for Databricks. Build, preview, and deploy AI agents — no code required.
+Visual drag-and-drop [LangGraph](https://langchain-ai.github.io/langgraph/) suite of tools to build agents on Databricks with no code required.
 
 **Built-in node types:** LLM, Router, Vector Search, Genie, UC Function, Human Input
 
 ## Prerequisites
 
-- Databricks workspace with Unity Catalog enabled and [Apps user token passthrough](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/) enabled
-
-## Deploy from Git (recommended)
-
-The easiest way to deploy is directly from this GitHub repository — no local clone or build tools needed.
-
-1. In your Databricks workspace, go to **Compute → Apps**
-2. Click **Create App** and give it a name
-3. Under **Git repository**, paste this repo's URL and select your Git provider
-4. For private repos, click **Configure Git credential** to add access
-5. Click **Create app**
-6. On the app details page, click **Deploy → From Git**
-7. Set the **Git reference** to `main` and **Reference type** to `Branch`
-8. Click **Deploy**
-
-For more details, see [Deploy from a Git repository](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy/#deploy-from-a-git-repository).
-
-## Local Development (optional)
-
-If you want to run locally or contribute changes:
-
-### Prerequisites
-
+- Databricks workspace with Unity Catalog enabled
+- [Apps user token passthrough](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/) enabled
 - [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) v0.230+
-- Node.js 18+ and npm
-- Python 3.11 and [uv](https://docs.astral.sh/uv/)
 
-### Setup
+## One-Time Admin Setup
 
-```bash
-git clone <repo-url> && cd agent-builder-app
-databricks auth login --host https://your-workspace.cloud.databricks.com
-uv sync
-cd frontend && npm install && cd ..
-```
+A workspace admin must run `deploy.sh` once to create the app, deploy job, permissions, and API scopes. After this, users can build and deploy agents from the UI with no additional setup.
 
-### Run locally
+### 1. Authenticate the Databricks CLI
 
 ```bash
-# Terminal 1: backend
-uv run uvicorn backend.main:app --reload --port 8000
-
-# Terminal 2: frontend with hot reload
-cd frontend && npm run dev
+databricks auth login --host https://your-workspace.cloud.databricks.com --profile MY_PROFILE
 ```
 
-The frontend dev server proxies `/api` requests to the backend on port 8000.
-
-### Deploy via CLI
+### 2. Run the setup script
 
 ```bash
-# First time — creates the app and provisions compute (~2-3 min)
-./deploy.sh --profile DEFAULT --init
-
-# Subsequent deploys — syncs code + redeploys (~30 sec)
-./deploy.sh --profile DEFAULT
+./deploy.sh --profile MY_PROFILE
 ```
 
-Replace `DEFAULT` with the name of your Databricks CLI profile (run `databricks auth profiles` to list them).
+This single command:
 
-## Architecture
+1. **Creates the App** linked to the [Agent Sweet Git repo](https://github.com/btbeal-db/agent-sweet.git)
+2. **Uploads the deploy notebook** to `/Shared/agent-sweet/deploy_notebook`
+3. **Creates the deploy Job** that handles MLflow logging, UC registration, and endpoint creation
+4. **Wires the Job as an App resource** so the app can trigger it
+5. **Sets user API scopes** (Vector Search, Genie, Serving, SQL, Catalog read)
+6. **Deploys the App** from the `main` branch
 
+The script is idempotent — if the app or job already exists, it skips creation and updates the configuration.
+
+### 3. Grant the deploy Job permissions
+
+The deploy Job's service principal needs permissions on any catalog/schema that users will deploy models to. Users specify the target catalog and schema at deploy time in the UI.
+
+```sql
+-- Grant on each catalog/schema you want users to deploy to
+GRANT USE_CATALOG ON CATALOG my_catalog TO `job-sp-name`;
+GRANT USE_SCHEMA ON SCHEMA my_catalog.my_schema TO `job-sp-name`;
+GRANT CREATE_MODEL ON SCHEMA my_catalog.my_schema TO `job-sp-name`;
 ```
-frontend/              React/Vite UI (builds to backend/static/)
-backend/               FastAPI app + LangGraph agent engine
-  nodes/               Pluggable node types (auto-discovered)
-  mlflow_model.py      MLflow pyfunc wrapper for serving deployed agents
-demo/                  Optional: sample data setup script
-app.yaml               Databricks Apps runtime config
-databricks.yml         Databricks Asset Bundle definition
-deploy.sh              Build + deploy helper script
+
+The Job SP also needs permissions to create serving endpoints. The script does **not** create schemas — users must select an existing one.
+
+### 4. Verify
+
+Open the App URL printed at the end of the script. You should see the agent builder canvas. Try building a simple LLM node and running it in the playground to confirm OBO auth is working.
+
+### Updating the App
+
+After pushing code changes to Git, redeploy with:
+
+```bash
+./deploy.sh --profile MY_PROFILE --deploy-only
 ```
 
-When deployed as a **Databricks App**, the platform automatically injects workspace credentials and the user's identity token (OBO). The FastAPI backend serves both the API and the built frontend static files.
+Or deploy from the Databricks Apps UI: **App details → Deploy → From Git → Branch: `main`**.
 
-## Deploying Agents (from the UI)
+### Script Options
 
-The app lets you visually build agent graphs and deploy them as Model Serving endpoints. Deployment is handled by a background Databricks Job (configured during app setup) so that users don't need direct MLflow or catalog permissions.
+| Flag | Description |
+|---|---|
+| `--profile <name>` | Databricks CLI profile to use (required) |
+| `--branch <name>` | Git branch to deploy (default: `main`) |
+| `--app <name>` | App name (default: `agent-sweet`) |
+| `--repo <url>` | Override the Git repo URL |
+| `--deploy-only` | Skip setup, just deploy from Git |
 
-The deploy flow:
+## How Agent Deployment Works
 
-1. **Validate** — the app compiles the graph locally
-2. **Submit Job** — the app triggers a pre-configured Job that:
-   - Installs the app package (from the same Git branch the app is running)
+When a user clicks **Deploy** in the UI, the app doesn't deploy directly. Instead, it triggers a background Databricks Job so that users don't need MLflow, catalog, or serving permissions.
+
+The flow:
+
+1. **Validate** — the app compiles the graph locally to catch errors early
+2. **Submit Job** — the user specifies a catalog and schema, then the app triggers the deploy Job, which:
+   - Installs the app package from Git (same branch the app is running)
    - Logs the agent as an MLflow model with resource declarations
-   - Registers the model in the configured Unity Catalog schema
+   - Registers the model in the user-specified Unity Catalog schema
    - Creates a Model Serving endpoint with AI Gateway and inference tables
 3. **Poll** — the app polls the Job for completion and shows the result
-
-### Admin Setup
-
-Before users can deploy, a workspace admin must:
-
-1. Set `DEPLOY_CATALOG` and `DEPLOY_SCHEMA` in `app.yaml`
-2. Run `./deploy.sh --profile <name> --init` to create the Job and grant permissions
-3. Or configure manually: create a Job pointing to the deploy notebook, add it as an App Resource, and set `DEPLOY_JOB_ID` in `app.yaml`
-
-See [deploy.sh](deploy.sh) for the full automated setup.
 
 ## Authentication & Security Model
 
@@ -116,7 +99,7 @@ When users build and test agents in the browser, the app runs data-access calls 
 ### 2. Deploy Job
 
 The deploy Job runs as the **Job owner's service principal**, not the user. It needs:
-- `USE CATALOG` + `USE SCHEMA` + `CREATE MODEL` on the target catalog/schema
+- `USE CATALOG` + `USE SCHEMA` + `CREATE MODEL` on each catalog/schema users will deploy to
 - Permissions to create serving endpoints
 
 The deploying user's email is tagged on the MLflow run (`deployed_by`) for provenance tracking.
@@ -138,6 +121,52 @@ The deployed agent uses **automatic authentication passthrough** — Model Servi
 | Anyone can query a deployed endpoint | Secure endpoints using [endpoint permissions](https://docs.databricks.com/en/security/auth/tokens.html). Restrict who can query each endpoint. |
 | Provenance / audit | Each MLflow run is tagged with `deployed_by` (user email), `agent_name`, and `endpoint_name`. |
 
+## Local Development (optional)
+
+If you want to run locally or contribute changes:
+
+### Prerequisites
+
+- Node.js 18+ and npm
+- Python 3.11 and [uv](https://docs.astral.sh/uv/)
+
+### Setup
+
+```bash
+git clone https://github.com/btbeal-db/agent-sweet.git && cd agent-sweet
+databricks auth login --host https://your-workspace.cloud.databricks.com
+uv sync
+cd frontend && npm install && cd ..
+```
+
+### Run locally
+
+```bash
+# Terminal 1: backend
+DATABRICKS_CONFIG_PROFILE=MY_PROFILE uv run uvicorn backend.main:app --reload --port 8000
+
+# Terminal 2: frontend with hot reload
+cd frontend && npm run dev
+```
+
+The frontend dev server proxies `/api` requests to the backend on port 8000.
+
+## Architecture
+
+```
+frontend/              React/Vite UI (builds to backend/static/)
+backend/               FastAPI app + LangGraph agent engine
+  nodes/               Pluggable node types (auto-discovered)
+  deploy_notebook.py   Notebook run by the deploy Job
+  deploy_helpers.py    Resource extraction + code path helpers
+  mlflow_model.py      MLflow pyfunc wrapper for serving deployed agents
+demo/                  Optional: sample data setup script
+app.yaml               Databricks Apps runtime config
+deploy.sh              One-time admin setup + deploy script
+```
+
+When deployed as a **Databricks App**, the platform automatically injects workspace credentials and the user's identity token (OBO). The FastAPI backend serves both the API and the built frontend static files.
+
 ## Demo Data (optional)
 
 To set up sample vector search indexes and Genie rooms for testing:
@@ -156,9 +185,8 @@ See [CONTRIB.md](CONTRIB.md) for how to create and register new node types.
 
 | Issue | Fix |
 |---|---|
-| Deploy modal says "App not configured" | Set `DEPLOY_CATALOG`, `DEPLOY_SCHEMA`, and `DEPLOY_JOB_ID` in `app.yaml` |
-| Deploy Job fails with pip install error | Ensure the Git repo is public, or configure Git credentials on the Job cluster |
+| Deploy modal says "App not configured" | Set `DEPLOY_JOB_ID` in `app.yaml` |
+| Deploy Job fails with pip install error | Ensure the Git repo is accessible from the Job cluster (public repo, or configure Git credentials) |
 | Endpoint container build fails | Check `requirements-serving.txt` targets Python 3.10 (`uv pip compile pyproject.toml -o requirements-serving.txt --python-version 3.10`) |
-| Vector Search / Genie 403 errors in playground | Add missing scopes via `databricks api patch` — see `deploy.sh` for the full list |
+| Vector Search / Genie 403 errors in playground | Run `deploy.sh` again to set scopes, or add them manually via `databricks api patch` |
 | App deploy fails with "user token passthrough not enabled" | Ask your workspace admin to enable Apps user token passthrough |
-| Stale deployment state / workspace mismatch | Run `./deploy.sh dev --clean` to clear Terraform state |

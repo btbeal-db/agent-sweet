@@ -60,6 +60,8 @@ function hasConversationalNode(graphGetter: (() => GraphDef) | null): boolean {
 
 export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Props) {
   const [modelName, setModelName] = useState("");
+  const [catalog, setCatalog] = useState("");
+  const [schemaName, setSchemaName] = useState("");
   const [lakebaseConnString, setLakebaseConnString] = useState("");
   const [phase, setPhase] = useState<Phase>("loading");
   const [config, setConfig] = useState<AppConfig | null>(null);
@@ -117,6 +119,8 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
       const resp = await submitDeploy({
         graph,
         model_name: modelName,
+        catalog,
+        schema_name: schemaName,
         lakebase_conn_string: lakebaseConnString,
       });
 
@@ -148,9 +152,9 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
       setErrorMsg(e instanceof Error ? e.message : "Failed to submit deploy job");
       setPhase("error");
     }
-  }, [graphGetter, stateFieldsRef, modelName, lakebaseConnString]);
+  }, [graphGetter, stateFieldsRef, modelName, catalog, schemaName, lakebaseConnString]);
 
-  const configured = config && config.catalog && config.schema_name && config.deploy_job_id;
+  const configured = config && config.deploy_job_id;
 
   function StepIcon({ status }: { status: string }) {
     switch (status) {
@@ -191,16 +195,34 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
             {!configured && (
               <div className="deploy-error" style={{ marginBottom: "1rem" }}>
                 <p>App not configured for deployment</p>
-                <pre>The app admin needs to set DEPLOY_CATALOG, DEPLOY_SCHEMA, and DEPLOY_JOB_ID environment variables.</pre>
+                <pre>The app admin needs to set DEPLOY_JOB_ID environment variable.</pre>
               </div>
             )}
 
             <div className="deploy-form">
-              {configured && (
-                <div className="deploy-hint" style={{ marginBottom: "0.75rem", padding: "0.5rem 0.75rem", borderRadius: "6px", background: "rgba(255,255,255,0.05)" }}>
-                  Models will be registered to <strong>{config.catalog}.{config.schema_name}</strong>
-                </div>
-              )}
+              <label className="deploy-label">
+                Catalog
+                <input
+                  type="text"
+                  className="deploy-input"
+                  placeholder="my_catalog"
+                  value={catalog}
+                  onChange={(e) => setCatalog(e.target.value)}
+                />
+                <span className="deploy-hint">Unity Catalog catalog to register the model in.</span>
+              </label>
+
+              <label className="deploy-label">
+                Schema
+                <input
+                  type="text"
+                  className="deploy-input"
+                  placeholder="my_schema"
+                  value={schemaName}
+                  onChange={(e) => setSchemaName(e.target.value)}
+                />
+                <span className="deploy-hint">Unity Catalog schema to register the model in. Must already exist.</span>
+              </label>
 
               <label className="deploy-label">
                 Agent Name
@@ -212,8 +234,8 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
                   onChange={(e) => setModelName(e.target.value)}
                 />
                 <span className="deploy-hint">
-                  {configured
-                    ? `Registers as ${config.catalog}.${config.schema_name}.${modelName || "..."} and creates endpoint "${(modelName || "...").replace(/_/g, "-")}"`
+                  {catalog && schemaName
+                    ? `Registers as ${catalog}.${schemaName}.${modelName || "..."} and creates endpoint "${(modelName || "...").replace(/_/g, "-")}"`
                     : "Enter a name for your agent."}
                 </span>
               </label>
@@ -246,7 +268,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
               <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
               <button
                 className="btn btn-primary"
-                disabled={!modelName || !configured || needsLakebase}
+                disabled={!modelName || !catalog || !schemaName || !configured || needsLakebase}
                 onClick={handleDeploy}
               >
                 Deploy Agent
