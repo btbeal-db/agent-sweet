@@ -75,8 +75,8 @@ frontend/
     components/        UI components (canvas, panels, modals)
 
 app.yaml               Databricks Apps runtime config
-databricks.yml         Asset Bundle definition (app name, scopes)
-deploy.sh              Build + deploy helper script
+databricks.yml         DAB definition (Job, App resources, scopes)
+deploy.sh              One-time admin setup + deploy script
 pyproject.toml         Python package definition (hatchling)
 ```
 
@@ -92,7 +92,7 @@ This is important to understand before contributing:
 
 - **Data-access calls use OBO:** Vector Search, Genie, UC Function nodes all call `get_workspace_client()` which uses the user's token for per-user access control.
 
-- **Known limitation:** The `mlflow` OAuth scope is not available for Databricks Apps. All MLflow operations (log, register) must be done by the user in their own environment, not from the app. This is why deployment generates a notebook rather than deploying directly.
+- **Deploy Job:** MLflow operations (log, register, create endpoint) are handled by a background Databricks Job, not by the app directly. The Job runs as its service principal.
 
 ## Pull Requests
 
@@ -188,11 +188,10 @@ Unmapped icons fall back to the puzzle piece. Browse options at [lucide.dev](htt
 
 ### 3. Add resource declarations (if accessing Databricks resources)
 
-If your node references external resources (endpoints, tables, functions, etc.), update `backend/main.py` so Model Serving provisions credentials:
+If your node references external resources (endpoints, tables, functions, etc.), update `backend/deploy_helpers.py` so Model Serving provisions credentials:
 
-1. Add to `resource_map` in `_extract_resources()`
-2. Add to `init_param` mapping
-3. Add to `_RESOURCE_MAP` in `backend/notebook_gen.py` (for generated deploy notebooks)
+1. Add to `resource_map` in `extract_resources()`
+2. Ensure the config field name maps to the correct MLflow resource class
 
 Available resource classes:
 
@@ -258,23 +257,53 @@ It must return a dict with:
 - `writes_to: value` — the result to write into the target state field
 - `"messages": [...]` — list of message dicts for the execution trace (each with `role`, `content`, `node`)
 
+## Deployment Architecture
+
+The app has two independently deployed components:
+
+| Component | Source | Deployed via |
+|---|---|---|
+| **App** (FastAPI + frontend) | Git repo | `databricks apps deploy` from Git |
+| **Deploy Job notebook** | `backend/deploy_notebook.py` | `databricks bundle deploy` (uploads to workspace) |
+
+When you change files, consider which component is affected:
+
+- **UI or API changes** (anything in `frontend/`, `backend/main.py`, `backend/nodes/`, etc.) → push to Git + redeploy from Git
+- **Deploy notebook changes** (`backend/deploy_notebook.py`, `backend/deploy_helpers.py`, `requirements-serving.txt`) → must run `databricks bundle deploy` so the Job picks up the updated notebook
+- **Both** → run bundle deploy first, then git deploy
+
+The deploy notebook is installed from Git by the Job at runtime (`pip install git+<repo>@<branch>`), but the notebook **itself** is loaded from the workspace path set by the bundle. This means changes to the notebook code require a bundle redeploy, while changes to the importable package code (e.g., `deploy_helpers.py`) are picked up automatically since they're installed from Git.
+
+### Updating `requirements-serving.txt`
+
+When you add or change dependencies in `pyproject.toml`, regenerate the serving requirements:
+
+```bash
+uv pip compile pyproject.toml -o requirements-serving.txt --python-version 3.10
+```
+
+This file is used by the deploy notebook when logging models. It must target Python 3.10 (the Model Serving runtime). After regenerating, redeploy the bundle so the Job uses the updated file.
+
+**Important:** The requirements file must not include `agent-builder-app` itself. The deploy notebook passes requirements as an explicit list to `mlflow.pyfunc.log_model(pip_requirements=...)` to prevent MLflow from auto-detecting the installed package. If you see `agent-builder-app==X.Y.Z` in a serving endpoint's build logs, the notebook's requirements handling needs fixing.
+
 ## App Scopes
 
 When adding integrations that call new Databricks APIs via OBO, you may need to add OAuth scopes. Scopes must be added in **two** places:
 
-1. `databricks.yml` — for documentation (the SDK doesn't propagate these yet)
-2. `deploy.sh` — the API call that actually sets scopes on the app
+1. `databricks.yml` — declared in the app resource (for documentation; DABs doesn't reliably apply these)
+2. `deploy.sh` — the `apps update` call that actually sets scopes on the app
 
-Known valid scopes: `catalog.catalogs:read`, `catalog.schemas:read`, `catalog.tables:read`, `dashboards.genie`, `serving.serving-endpoints`, `serving.serving-endpoints-data-plane`, `sql`, `vectorsearch.vector-search-endpoints`, `vectorsearch.vector-search-indexes`
+Known valid scopes: `catalog.catalogs:read`, `catalog.schemas:read`, `catalog.tables:read`, `dashboards.genie`, `serving.serving-endpoints`, `sql`, `vectorsearch.vector-search-endpoints`, `vectorsearch.vector-search-indexes`
 
 If you get a 403 with "required scopes: X", add scope `X` to both places.
 
 ## Quick Reference
 
-| What | Where | Required? |
-|---|---|---|
-| Node class with `@register` | `backend/nodes/your_node.py` | Yes |
-| Icon mapping | `frontend/src/components/NodeIcon.tsx` | Only if new icon |
-| Resource declarations | `backend/main.py` + `backend/notebook_gen.py` | Only if external resources |
-| Tool factory | `backend/tools.py` | Only if tool-compatible |
-| OAuth scopes | `databricks.yml` + `deploy.sh` | Only if new API access |
+| What | Where | Required? | Redeploy |
+|---|---|---|---|
+| Node class with `@register` | `backend/nodes/your_node.py` | Yes | Git |
+| Icon mapping | `frontend/src/components/NodeIcon.tsx` | Only if new icon | Git |
+| Resource declarations | `backend/deploy_helpers.py` | Only if external resources | Bundle + Git |
+| Tool factory | `backend/tools.py` | Only if tool-compatible | Git |
+| OAuth scopes | `databricks.yml` + `deploy.sh` | Only if new API access | Bundle + re-run `deploy.sh` |
+| Serving requirements | `requirements-serving.txt` | Only if deps changed | Bundle |

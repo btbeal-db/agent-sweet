@@ -54,13 +54,20 @@ Open the App URL printed at the end of the script. You should see the agent buil
 
 ### Updating the App
 
-After pushing code changes to Git, redeploy with:
+There are two components that deploy independently:
+
+| Component | What it includes | How to update |
+|---|---|---|
+| **App** (git-backed) | FastAPI backend, frontend, `app.yaml` | Push to Git, then `./deploy.sh --profile MY_PROFILE --deploy-only` or deploy from the Apps UI |
+| **Deploy Job notebook** (bundle-backed) | `backend/deploy_notebook.py`, `deploy_helpers.py` | `databricks bundle deploy -t dev --profile MY_PROFILE` |
+
+If your change only touches the UI or API endpoints, a git deploy is enough. If it touches the deploy notebook or how models are logged/registered/served, you **must also re-deploy the bundle** so the Job picks up the new notebook:
 
 ```bash
+# Update both: bundle (notebook) + app (git)
+databricks bundle deploy -t dev --profile MY_PROFILE
 ./deploy.sh --profile MY_PROFILE --deploy-only
 ```
-
-Or deploy from the Databricks Apps UI: **App details → Deploy → From Git → Branch: `main`**.
 
 ### Script Options
 

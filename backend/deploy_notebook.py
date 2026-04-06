@@ -72,7 +72,7 @@ import backend
 backend_dir = Path(backend.__file__).parent
 python_model_path = str(backend_dir / "mlflow_model.py")
 code_paths = collect_code_paths()
-requirements_path = backend_dir.parent / "requirements-serving.txt"
+requirements_path = backend_dir / "requirements-serving.txt"
 
 with mlflow.start_run() as run:
     mlflow.set_tag("deployed_by", deployed_by)
