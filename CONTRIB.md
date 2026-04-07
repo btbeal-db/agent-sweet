@@ -276,13 +276,25 @@ The deploy notebook is installed from Git by the Job at runtime (`pip install gi
 
 ### Updating `requirements-serving.txt`
 
-When you add or change dependencies in `pyproject.toml`, regenerate the serving requirements:
+There are **two copies** of `requirements-serving.txt`:
+
+| File | Purpose |
+|---|---|
+| `requirements-serving.txt` (repo root) | Source of truth, used by `uv pip compile` |
+| `backend/requirements-serving.txt` | Copy bundled into the pip package so the deploy notebook can find it at runtime |
+
+The `backend/` copy exists because when the deploy Job installs the package via `pip install git+...`, the notebook resolves paths relative to `site-packages/backend/` — not the repo root. Without the copy, the file isn't found and models get logged with no dependencies.
+
+**These files do not update automatically.** When you add or change dependencies in `pyproject.toml`, you must regenerate and copy:
 
 ```bash
 uv pip compile pyproject.toml -o requirements-serving.txt --python-version 3.10
+cp requirements-serving.txt backend/requirements-serving.txt
 ```
 
-This file is used by the deploy notebook when logging models. It must target Python 3.10 (the Model Serving runtime). After regenerating, redeploy the bundle so the Job uses the updated file.
+Then commit both files, push, and redeploy the bundle (`databricks bundle deploy`).
+
+This must target Python 3.10 (the Model Serving runtime). If you forget the copy step, deployed agents will fail with `ModuleNotFoundError` because their conda.yaml will only contain `mlflow`.
 
 **Important:** The requirements file must not include `agent-builder-app` itself. The deploy notebook passes requirements as an explicit list to `mlflow.pyfunc.log_model(pip_requirements=...)` to prevent MLflow from auto-detecting the installed package. If you see `agent-builder-app==X.Y.Z` in a serving endpoint's build logs, the notebook's requirements handling needs fixing.
 
@@ -306,4 +318,4 @@ If you get a 403 with "required scopes: X", add scope `X` to both places.
 | Resource declarations | `backend/deploy_helpers.py` | Only if external resources | Bundle + Git |
 | Tool factory | `backend/tools.py` | Only if tool-compatible | Git |
 | OAuth scopes | `databricks.yml` + `deploy.sh` | Only if new API access | Bundle + re-run `deploy.sh` |
-| Serving requirements | `requirements-serving.txt` | Only if deps changed | Bundle |
+| Serving requirements | `requirements-serving.txt` + `backend/requirements-serving.txt` | Only if deps changed | Commit both + Bundle |
