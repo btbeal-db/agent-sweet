@@ -52,10 +52,10 @@ resources:
             value: "${var.sql_warehouse_id}"
       user_api_scopes:
         - sql
-        - unity-catalog
-        - model-serving
-        - mlflow
-        - vector-search
+        - serving.serving-endpoints
+        - serving.serving-endpoints-data-plane
+        - vectorsearch.vector-search-endpoints
+        - vectorsearch.vector-search-indexes
 
 targets:
   dev:
