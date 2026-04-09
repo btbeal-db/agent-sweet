@@ -160,22 +160,42 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
 
       {/* Completed state */}
       {isComplete && (
-        <div className="setup-card setup-success-card">
-          <CheckCircle size={32} />
-          <h2>Setup Complete</h2>
-          <p>Your MLflow experiment directory is configured and accessible.</p>
-          <div className="setup-field">
-            <label>Experiment Path</label>
-            <input type="text" className="deploy-input" readOnly value={experimentPath} />
+        <>
+          <div className="setup-card setup-success-card">
+            <CheckCircle size={32} />
+            <h2>Setup Complete</h2>
+            <p>Your MLflow experiment directory is configured and accessible.</p>
+            <div className="setup-field">
+              <label>Experiment Path</label>
+              <input type="text" className="deploy-input" readOnly value={experimentPath} />
+            </div>
+            <p className="setup-hint">
+              This path will be pre-filled when you deploy an agent. You can change it
+              in the Deploy modal if needed.
+            </p>
+            <button className="btn btn-ghost" onClick={handleReconfigure}>
+              Reconfigure
+            </button>
           </div>
-          <p className="setup-hint">
-            This path will be pre-filled when you deploy an agent. You can change it
-            in the Deploy modal if needed.
-          </p>
-          <button className="btn btn-ghost" onClick={handleReconfigure}>
-            Reconfigure
-          </button>
-        </div>
+
+          <div className="setup-card">
+            <h2>Unity Catalog Access</h2>
+            <p>
+              To register and deploy models, the app's service principal also needs
+              access to your target Unity Catalog and schema. Run these SQL commands
+              in a notebook or SQL editor:
+            </p>
+            <div className="setup-instructions-box">
+              <pre>{`GRANT USE CATALOG ON CATALOG <your_catalog> TO \`${info?.sp_id || "sp-client-id"}\`;
+GRANT USE SCHEMA ON SCHEMA <your_catalog>.<your_schema> TO \`${info?.sp_id || "sp-client-id"}\`;
+GRANT CREATE MODEL ON SCHEMA <your_catalog>.<your_schema> TO \`${info?.sp_id || "sp-client-id"}\`;`}</pre>
+            </div>
+            <p className="setup-hint">
+              Replace <code>&lt;your_catalog&gt;</code> and <code>&lt;your_schema&gt;</code> with
+              the catalog and schema you'll use when deploying models.
+            </p>
+          </div>
+        </>
       )}
 
       {/* Step 1: Create Folder */}

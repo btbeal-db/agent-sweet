@@ -165,7 +165,6 @@ def setup_status():
         )
     except HTTPException as e:
         if e.status_code == 503:
-            # Table not configured — setup not available (local dev)
             return SetupStatusResponse(
                 setup_complete=False,
                 user_email=email,
