@@ -96,7 +96,12 @@ function StepIcon({ status }: { status: DeployStepStatus }) {
 
 export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defaultExperimentPath, onGoToSetup }: Props) {
   const [modelName, setModelName] = useState("");
-  const [experimentPath, setExperimentPath] = useState(defaultExperimentPath || "");
+  const [experimentName, setExperimentName] = useState("");
+  // The full experiment path: base folder from setup + user-provided experiment name.
+  // If no setup folder, experimentName is the full path (fallback for manual entry).
+  const experimentPath = defaultExperimentPath
+    ? (experimentName ? `${defaultExperimentPath.replace(/\/+$/, "")}/${experimentName}` : "")
+    : experimentName;
   const [lakebaseConnString, setLakebaseConnString] = useState("");
   const [deployMode, setDeployMode] = useState<DeployMode>("full");
   const [phase, setPhase] = useState<Phase>("form");
@@ -206,22 +211,40 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
 
               <label className="deploy-label">
                 Experiment Path
-                <input
-                  type="text"
-                  className="deploy-input"
-                  placeholder="/Users/your.email@company.com/agent-experiment"
-                  value={experimentPath}
-                  onChange={(e) => setExperimentPath(e.target.value)}
-                />
-                {!defaultExperimentPath && !experimentPath && onGoToSetup && (
-                  <span className="deploy-error-hint">
-                    No experiment directory configured.{" "}
-                    <button className="btn-link" onClick={onGoToSetup}>
-                      Go to Setup
-                    </button>{" "}
-                    to configure your MLflow experiment directory.
-                  </span>
+                {defaultExperimentPath ? (
+                  <div className="deploy-experiment-path">
+                    <span className="deploy-experiment-prefix">{defaultExperimentPath}/</span>
+                    <input
+                      type="text"
+                      className="deploy-input deploy-experiment-name"
+                      placeholder="my-experiment"
+                      value={experimentName}
+                      onChange={(e) => setExperimentName(e.target.value)}
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      type="text"
+                      className="deploy-input"
+                      placeholder="/Users/your.email@company.com/folder/experiment"
+                      value={experimentName}
+                      onChange={(e) => setExperimentName(e.target.value)}
+                    />
+                    {onGoToSetup && (
+                      <span className="deploy-error-hint">
+                        No experiment directory configured.{" "}
+                        <button className="btn-link" onClick={onGoToSetup}>
+                          Go to Setup
+                        </button>{" "}
+                        to configure your MLflow experiment directory.
+                      </span>
+                    )}
+                  </>
                 )}
+                <span className="deploy-hint">
+                  The experiment will be created inside your setup folder.
+                </span>
               </label>
 
               {needsModelName && (

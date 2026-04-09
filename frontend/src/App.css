@@ -2958,6 +2958,40 @@ h4.md-header { font-size: 0.82em; }
   box-shadow: var(--ring);
 }
 
+.deploy-experiment-path {
+  display: flex;
+  align-items: center;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.deploy-experiment-prefix {
+  padding: 0.5rem 0 0.5rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.deploy-experiment-name {
+  border: none !important;
+  border-radius: 0 !important;
+  padding-left: 0 !important;
+  flex: 1;
+  min-width: 0;
+}
+
+.deploy-experiment-name:focus {
+  box-shadow: none !important;
+}
+
+.deploy-experiment-path:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
 .deploy-hint {
   font-size: 0.72rem;
   color: var(--text-muted);

@@ -463,11 +463,14 @@ def deploy_graph(req: DeployRequest):
                      f"Logging model to experiment {req.experiment_path}...")
         model_info = None
         try:
-            # Ensure the experiment directory is visible to the SP before
-            # creating the experiment (same pattern as Genesis Workbench).
+            # Ensure the parent directory is visible to the SP before
+            # creating the experiment (Genesis Workbench pattern).
+            # The experiment_path should be like /Users/user/folder/experiment,
+            # so the parent is the folder the user granted SP access to.
             from .auth import get_sp_workspace_client as _get_sp
+            exp_parent = req.experiment_path.rsplit("/", 1)[0]
             try:
-                _get_sp().workspace.mkdirs(req.experiment_path.rsplit("/", 1)[0])
+                _get_sp().workspace.mkdirs(exp_parent)
             except Exception:
                 pass  # best-effort; the folder may already exist
 
