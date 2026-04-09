@@ -6,6 +6,8 @@ interface Props {
   graphGetter: (() => GraphDef) | null;
   stateFieldsRef: React.RefObject<StateFieldDef[]>;
   onClose: () => void;
+  defaultExperimentPath?: string;
+  onGoToSetup?: () => void;
 }
 
 type Phase = "form" | "deploying" | "done" | "error";
@@ -92,9 +94,9 @@ function StepIcon({ status }: { status: DeployStepStatus }) {
   }
 }
 
-export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Props) {
+export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defaultExperimentPath, onGoToSetup }: Props) {
   const [modelName, setModelName] = useState("");
-  const [experimentPath, setExperimentPath] = useState("");
+  const [experimentPath, setExperimentPath] = useState(defaultExperimentPath || "");
   const [lakebaseConnString, setLakebaseConnString] = useState("");
   const [deployMode, setDeployMode] = useState<DeployMode>("full");
   const [phase, setPhase] = useState<Phase>("form");
@@ -211,6 +213,15 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose }: Pr
                   value={experimentPath}
                   onChange={(e) => setExperimentPath(e.target.value)}
                 />
+                {!defaultExperimentPath && !experimentPath && onGoToSetup && (
+                  <span className="deploy-error-hint">
+                    No experiment directory configured.{" "}
+                    <button className="btn-link" onClick={onGoToSetup}>
+                      Go to Setup
+                    </button>{" "}
+                    to configure your MLflow experiment directory.
+                  </span>
+                )}
               </label>
 
               {needsModelName && (
