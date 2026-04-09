@@ -538,31 +538,9 @@ def deploy_graph(req: DeployRequest):
                     f"Model name must be catalog.schema.model_name format, "
                     f"got '{req.model_name}'"
                 )
-            catalog, schema_name, _ = parts
-
-            w = get_workspace_client()
-            # Pre-validate catalog exists
-            try:
-                w.catalogs.get(catalog)
-            except Exception:
-                raise ValueError(
-                    f"Catalog '{catalog}' does not exist or you don't have "
-                    f"access to it. Verify the catalog name and your permissions."
-                )
-
-            # Pre-validate or create schema
-            try:
-                w.schemas.get(f"{catalog}.{schema_name}")
-            except Exception:
-                try:
-                    w.schemas.create(name=schema_name, catalog_name=catalog)
-                    logger.info("Created schema %s.%s", catalog, schema_name)
-                except Exception as schema_err:
-                    raise ValueError(
-                        f"Schema '{catalog}.{schema_name}' does not exist and "
-                        f"could not be created: {schema_err}"
-                    )
-
+            # Registration uses the SP credentials (via MLflow env vars),
+            # so we skip OBO pre-validation — the OBO token doesn't have
+            # catalog API scopes anyway.
             mv = mlflow.register_model(
                 model_uri=model_info.model_uri,
                 name=req.model_name,
