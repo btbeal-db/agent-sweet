@@ -178,23 +178,6 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
             </button>
           </div>
 
-          <div className="setup-card">
-            <h2>Unity Catalog Access</h2>
-            <p>
-              To register and deploy models, the app's service principal also needs
-              access to your target Unity Catalog and schema. Run these SQL commands
-              in a notebook or SQL editor:
-            </p>
-            <div className="setup-instructions-box">
-              <pre>{`GRANT USE CATALOG ON CATALOG <your_catalog> TO \`${info?.sp_id || "sp-client-id"}\`;
-GRANT USE SCHEMA ON SCHEMA <your_catalog>.<your_schema> TO \`${info?.sp_id || "sp-client-id"}\`;
-GRANT CREATE MODEL ON SCHEMA <your_catalog>.<your_schema> TO \`${info?.sp_id || "sp-client-id"}\`;`}</pre>
-            </div>
-            <p className="setup-hint">
-              Replace <code>&lt;your_catalog&gt;</code> and <code>&lt;your_schema&gt;</code> with
-              the catalog and schema you'll use when deploying models.
-            </p>
-          </div>
         </>
       )}
 

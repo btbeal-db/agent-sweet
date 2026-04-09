@@ -444,6 +444,8 @@ def deploy_graph(req: DeployRequest):
         event = DeployEvent(step=step, status=status, message=message, data=data)
         return f"data: {event.model_dump_json()}\n\n"
 
+    _prev_mlflow_token = os.environ.get("MLFLOW_TRACKING_TOKEN")
+
     def _generate():
         result_data: dict[str, str] = {}
         needs_register = req.deploy_mode in (DeployMode.LOG_AND_REGISTER, DeployMode.FULL)
@@ -463,16 +465,13 @@ def deploy_graph(req: DeployRequest):
                      f"Logging model to experiment {req.experiment_path}...")
         model_info = None
         try:
-            # Ensure the parent directory is visible to the SP before
-            # creating the experiment (Genesis Workbench pattern).
-            # The experiment_path should be like /Users/user/folder/experiment,
-            # so the parent is the folder the user granted SP access to.
-            from .auth import get_sp_workspace_client as _get_sp
-            exp_parent = req.experiment_path.rsplit("/", 1)[0]
-            try:
-                _get_sp().workspace.mkdirs(exp_parent)
-            except Exception:
-                pass  # best-effort; the folder may already exist
+            # Use OBO token for all MLflow/UC/serving operations so that
+            # experiments, models, and endpoints are owned by the user.
+            # Requires mlflow + unity-catalog + model-serving OBO scopes.
+            from .auth import get_user_token
+            user_token = get_user_token()
+            if user_token:
+                os.environ["MLFLOW_TRACKING_TOKEN"] = user_token
 
             mlflow.set_tracking_uri("databricks")
             mlflow.set_registry_uri("databricks-uc")
@@ -538,9 +537,6 @@ def deploy_graph(req: DeployRequest):
                     f"Model name must be catalog.schema.model_name format, "
                     f"got '{req.model_name}'"
                 )
-            # Registration uses the SP credentials (via MLflow env vars),
-            # so we skip OBO pre-validation — the OBO token doesn't have
-            # catalog API scopes anyway.
             mv = mlflow.register_model(
                 model_uri=model_info.model_uri,
                 name=req.model_name,
@@ -566,10 +562,7 @@ def deploy_graph(req: DeployRequest):
         yield _emit("create_endpoint", DeployStepStatus.RUNNING,
                      "Creating serving endpoint...")
         try:
-            # The entire deploy flow uses SP credentials — OBO tokens
-            # lack scopes for MLflow, UC catalog, and serving endpoint APIs.
-            from .auth import get_sp_workspace_client as _get_sp
-            w = _get_sp()
+            w = get_workspace_client()
             endpoint_name = req.model_name.split(".")[-1].replace("_", "-")
 
             env_vars = {
@@ -636,8 +629,19 @@ def deploy_graph(req: DeployRequest):
         yield _emit("complete", DeployStepStatus.DONE,
                      "Deployment complete!", result_data)
 
+    def _generate_with_cleanup():
+        """Wrap _generate to restore MLflow token on completion."""
+        try:
+            yield from _generate()
+        finally:
+            # Restore previous MLFLOW_TRACKING_TOKEN (or remove if none)
+            if _prev_mlflow_token is not None:
+                os.environ["MLFLOW_TRACKING_TOKEN"] = _prev_mlflow_token
+            else:
+                os.environ.pop("MLFLOW_TRACKING_TOKEN", None)
+
     return StreamingResponse(
-        _generate(),
+        _generate_with_cleanup(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
