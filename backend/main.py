@@ -593,6 +593,7 @@ def deploy_graph(req: DeployRequest):
                 }
                 reg_script = (
                     "import mlflow, json, sys; "
+                    "mlflow.set_tracking_uri('databricks'); "
                     "mlflow.set_registry_uri('databricks-uc'); "
                     "mv = mlflow.register_model("
                     f"  model_uri={model_info.model_uri!r},"
