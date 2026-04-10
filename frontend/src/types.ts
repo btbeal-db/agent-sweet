@@ -109,6 +109,7 @@ export interface DeployRequest {
   experiment_path: string;
   lakebase_conn_string: string;
   deploy_mode: DeployMode;
+  pat: string;
 }
 
 export interface ChatMessage {

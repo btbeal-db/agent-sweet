@@ -33,6 +33,7 @@ from mlflow.models.resources import (
 
 from langchain_core.messages import BaseMessage
 
+from databricks.sdk import WorkspaceClient
 from .auth import set_user_token, get_workspace_client
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
 from .graph_builder import build_graph, filter_output, run_graph
@@ -538,13 +539,55 @@ def deploy_graph(req: DeployRequest):
                     f"Model name must be catalog.schema.model_name format, "
                     f"got '{req.model_name}'"
                 )
-            # Registration uses the SP credentials (via MLflow env vars),
-            # so we skip OBO pre-validation — the OBO token doesn't have
-            # catalog API scopes anyway.
-            mv = mlflow.register_model(
-                model_uri=model_info.model_uri,
-                name=req.model_name,
-            )
+            catalog, schema_name, _ = parts
+
+            # When a PAT is provided, use it for UC operations so the model
+            # is registered under the user's identity and permissions.
+            # Otherwise fall back to the SP.
+            host = os.environ.get("DATABRICKS_HOST", "")
+            if req.pat:
+                uc_client = WorkspaceClient(host=host, token=req.pat)
+            else:
+                from .auth import get_sp_workspace_client as _get_sp
+                uc_client = _get_sp()
+
+            # Pre-validate catalog access
+            try:
+                uc_client.catalogs.get(catalog)
+            except Exception:
+                raise ValueError(
+                    f"Catalog '{catalog}' does not exist or you don't have "
+                    f"access to it. Verify the catalog name and your permissions."
+                )
+
+            # Pre-validate or create schema
+            try:
+                uc_client.schemas.get(f"{catalog}.{schema_name}")
+            except Exception:
+                try:
+                    uc_client.schemas.create(name=schema_name, catalog_name=catalog)
+                    logger.info("Created schema %s.%s", catalog, schema_name)
+                except Exception as schema_err:
+                    raise ValueError(
+                        f"Schema '{catalog}.{schema_name}' does not exist and "
+                        f"could not be created: {schema_err}"
+                    )
+
+            # Register model — use PAT if provided, otherwise SP env vars
+            prev_token = os.environ.get("MLFLOW_TRACKING_TOKEN")
+            if req.pat:
+                os.environ["MLFLOW_TRACKING_TOKEN"] = req.pat
+            try:
+                mv = mlflow.register_model(
+                    model_uri=model_info.model_uri,
+                    name=req.model_name,
+                )
+            finally:
+                if prev_token is not None:
+                    os.environ["MLFLOW_TRACKING_TOKEN"] = prev_token
+                elif "MLFLOW_TRACKING_TOKEN" in os.environ:
+                    del os.environ["MLFLOW_TRACKING_TOKEN"]
+
             result_data["model_version"] = str(mv.version)
         except Exception as e:
             mlflow.end_run()
@@ -566,10 +609,12 @@ def deploy_graph(req: DeployRequest):
         yield _emit("create_endpoint", DeployStepStatus.RUNNING,
                      "Creating serving endpoint...")
         try:
-            # The entire deploy flow uses SP credentials — OBO tokens
-            # lack scopes for MLflow, UC catalog, and serving endpoint APIs.
-            from .auth import get_sp_workspace_client as _get_sp
-            w = _get_sp()
+            # Use PAT for endpoint creation if provided, otherwise SP.
+            if req.pat:
+                w = WorkspaceClient(host=host, token=req.pat)
+            else:
+                from .auth import get_sp_workspace_client as _get_sp
+                w = _get_sp()
             endpoint_name = req.model_name.split(".")[-1].replace("_", "-")
 
             env_vars = {

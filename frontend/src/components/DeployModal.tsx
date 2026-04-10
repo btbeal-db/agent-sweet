@@ -103,6 +103,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
     ? (experimentName ? `${defaultExperimentPath.replace(/\/+$/, "")}/${experimentName}` : "")
     : experimentName;
   const [lakebaseConnString, setLakebaseConnString] = useState("");
+  const [pat, setPat] = useState("");
   const [deployMode, setDeployMode] = useState<DeployMode>("full");
   const [phase, setPhase] = useState<Phase>("form");
   const [steps, setSteps] = useState<Record<string, StepState>>({});
@@ -144,6 +145,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
           experiment_path: experimentPath,
           lakebase_conn_string: lakebaseConnString,
           deploy_mode: deployMode,
+          pat: pat,
         },
         (event: DeployEvent) => {
           if (event.step === "complete") {
@@ -284,6 +286,23 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
                   )}
                 </label>
               )}
+
+              {needsModelName && (
+                <label className="deploy-label">
+                  Personal Access Token
+                  <input
+                    type="password"
+                    className="deploy-input"
+                    placeholder="dapi..."
+                    value={pat}
+                    onChange={(e) => setPat(e.target.value)}
+                  />
+                  <span className="deploy-hint">
+                    Used to register models and create endpoints under your identity.
+                    Your token is not stored — it's only used for this deploy.
+                  </span>
+                </label>
+              )}
             </div>
 
             <div className="deploy-actions">
@@ -293,6 +312,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
                 disabled={
                   !experimentPath ||
                   (needsModelName && !modelName) ||
+                  (needsModelName && !pat) ||
                   needsLakebase
                 }
                 onClick={handleDeploy}

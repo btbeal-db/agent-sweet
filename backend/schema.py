@@ -109,6 +109,7 @@ class DeployRequest(BaseModel):
     experiment_path: str  # MLflow experiment: /Users/email/experiment
     lakebase_conn_string: str = ""  # Lakebase Postgres connection URL
     deploy_mode: DeployMode = DeployMode.FULL
+    pat: str = ""  # Optional PAT for UC registration + endpoint creation
 
 
 class DeployResponse(BaseModel):

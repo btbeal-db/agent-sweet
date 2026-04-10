@@ -53,7 +53,9 @@ resources:
       user_api_scopes:
         - sql
         - serving.serving-endpoints
-        - serving.serving-endpoints-data-plane
+        - catalog.catalogs:read
+        - catalog.schemas:read
+        - catalog.tables:read
         - vectorsearch.vector-search-endpoints
         - vectorsearch.vector-search-indexes
 
