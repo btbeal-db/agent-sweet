@@ -573,27 +573,41 @@ def deploy_graph(req: DeployRequest):
                         f"could not be created: {schema_err}"
                     )
 
-            # Register model — use PAT if provided, otherwise SP env vars.
-            # When using the PAT we must mask the SP OAuth env vars so
-            # MLflow doesn't see two auth methods (oauth + pat).
-            prev_token = os.environ.get("MLFLOW_TRACKING_TOKEN")
-            masked = {}
+            # Register model. When a PAT is provided, we create a fresh
+            # MlflowClient with the PAT. We must mask the SP's OAuth env
+            # vars so the new client doesn't see two auth methods, and set
+            # DATABRICKS_TOKEN to the PAT. The global mlflow.register_model()
+            # can't be used because MLflow caches its registry store with
+            # whatever auth was active at init time (the SP).
             if req.pat:
-                os.environ["MLFLOW_TRACKING_TOKEN"] = req.pat
+                masked = {}
                 for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
                     if key in os.environ:
                         masked[key] = os.environ.pop(key)
-            try:
+                os.environ["DATABRICKS_TOKEN"] = req.pat
+                try:
+                    from mlflow import MlflowClient
+                    pat_client = MlflowClient(
+                        registry_uri="databricks-uc",
+                    )
+                    # Ensure the registered model exists in UC
+                    try:
+                        pat_client.get_registered_model(req.model_name)
+                    except Exception:
+                        pat_client.create_registered_model(req.model_name)
+                    mv = pat_client.create_model_version(
+                        name=req.model_name,
+                        source=model_info.model_uri,
+                        run_id=run.info.run_id,
+                    )
+                finally:
+                    os.environ.pop("DATABRICKS_TOKEN", None)
+                    os.environ.update(masked)
+            else:
                 mv = mlflow.register_model(
                     model_uri=model_info.model_uri,
                     name=req.model_name,
                 )
-            finally:
-                os.environ.update(masked)
-                if prev_token is not None:
-                    os.environ["MLFLOW_TRACKING_TOKEN"] = prev_token
-                elif "MLFLOW_TRACKING_TOKEN" in os.environ:
-                    del os.environ["MLFLOW_TRACKING_TOKEN"]
 
             result_data["model_version"] = str(mv.version)
         except Exception as e:
