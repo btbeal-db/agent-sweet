@@ -649,6 +649,22 @@ def deploy_graph(req: DeployRequest):
                 w = _get_sp()
             endpoint_name = req.model_name.split(".")[-1].replace("_", "-")
 
+            # Wait for model version to be READY before creating the endpoint
+            import time
+            for _ in range(60):
+                mv_info = w.model_versions.get(
+                    full_name=req.model_name,
+                    version=int(result_data["model_version"]),
+                )
+                if mv_info.status and mv_info.status.value == "READY":
+                    break
+                time.sleep(2)
+            else:
+                raise RuntimeError(
+                    f"Model version {result_data['model_version']} did not reach "
+                    f"READY status within 120s (current: {mv_info.status})"
+                )
+
             env_vars = {
                 "ENABLE_MLFLOW_TRACING": "true",
                 "MLFLOW_EXPERIMENT_ID": result_data.get("experiment_id", ""),
