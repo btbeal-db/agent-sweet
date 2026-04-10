@@ -178,7 +178,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
       setErrorMsg(e instanceof Error ? e.message : "Connection error");
       setPhase("error");
     }
-  }, [graphGetter, stateFieldsRef, modelName, experimentPath, lakebaseConnString, deployMode]);
+  }, [graphGetter, stateFieldsRef, modelName, experimentPath, lakebaseConnString, deployMode, pat]);
 
   const doneMessage = deployMode === "full"
     ? "Agent deployed successfully!"

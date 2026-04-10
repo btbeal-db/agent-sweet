@@ -65,3 +65,36 @@ def get_sp_workspace_client() -> WorkspaceClient:
             "Expected DATABRICKS_HOST, DATABRICKS_CLIENT_ID, and DATABRICKS_CLIENT_SECRET."
         )
     return WorkspaceClient(host=host, client_id=client_id, client_secret=client_secret)
+
+
+def mask_sp_env_vars() -> dict[str, str]:
+    """Remove SP OAuth env vars and return them for later restoration.
+
+    The Databricks SDK rejects requests when it detects multiple auth methods
+    (e.g. both OAuth client credentials and a PAT).  Call this before creating
+    a ``WorkspaceClient(token=...)`` to avoid conflicts, then restore with
+    ``os.environ.update(masked)``.
+    """
+    masked = {}
+    for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
+        if key in os.environ:
+            masked[key] = os.environ.pop(key)
+    return masked
+
+
+def create_pat_client(pat: str) -> WorkspaceClient:
+    """Create a WorkspaceClient authenticated with a user's PAT.
+
+    Temporarily masks the SP OAuth env vars so the SDK sees only one
+    auth method.  The caller is responsible for restoring them afterwards
+    via ``os.environ.update(masked)`` — use :func:`mask_sp_env_vars` for
+    the full mask-use-restore pattern, or rely on the fact that this
+    function restores on its own.
+    """
+    host = os.environ.get("DATABRICKS_HOST", "")
+    masked = mask_sp_env_vars()
+    try:
+        return WorkspaceClient(host=host, token=pat)
+    except Exception:
+        os.environ.update(masked)
+        raise

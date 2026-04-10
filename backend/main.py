@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import mlflow
 from databricks.sdk.errors import ResourceAlreadyExists
@@ -33,8 +38,13 @@ from mlflow.models.resources import (
 
 from langchain_core.messages import BaseMessage
 
-from databricks.sdk import WorkspaceClient
-from .auth import set_user_token, get_workspace_client
+from .auth import (
+    set_user_token,
+    get_workspace_client,
+    get_sp_workspace_client,
+    create_pat_client,
+    mask_sp_env_vars,
+)
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
 from .graph_builder import build_graph, filter_output, run_graph
 from .nodes import get_all_metadata
@@ -119,8 +129,6 @@ def _collect_code_paths() -> list[str]:
     MLflow code_paths needs a directory to preserve the package structure
     so that `from backend.graph_builder import ...` works in the serving container.
     """
-    import shutil
-
     tmp = Path(tempfile.mkdtemp()) / "backend"
     shutil.copytree(
         _BACKEND_DIR,
@@ -377,8 +385,6 @@ def load_graph_from_run(run_id: str):
         run_name = run.info.run_name or run_id
         experiment_id = run.info.experiment_id
 
-        import glob as _glob
-
         search_paths = [
             "agent/artifacts/graph_def",
             "agent/artifacts",
@@ -399,7 +405,7 @@ def load_graph_from_run(run_id: str):
                 continue
 
             if Path(local_path).is_dir():
-                json_files = _glob.glob(f"{local_path}/*.json")
+                json_files = glob.glob(f"{local_path}/*.json")
             elif local_path.endswith(".json"):
                 json_files = [local_path]
             else:
@@ -433,6 +439,41 @@ def load_graph_from_run(run_id: str):
         return {"success": False, "error": str(e)}
 
 
+def _register_model_with_pat(
+    host: str, pat: str, model_uri: str, model_name: str,
+) -> SimpleNamespace:
+    """Run ``mlflow.register_model`` in a subprocess with clean PAT credentials.
+
+    MLflow caches DatabricksConfig in-process, so env-var masking doesn't
+    reliably override the SP credentials.  A subprocess starts fresh.
+
+    Returns a ``SimpleNamespace(version=...)`` matching the mlflow ModelVersion
+    interface that downstream code expects.
+    """
+    reg_env = {
+        "DATABRICKS_HOST": host,
+        "DATABRICKS_TOKEN": pat,
+        "HOME": os.environ.get("HOME", "/tmp"),
+        "PATH": os.environ.get("PATH", ""),
+    }
+    reg_script = (
+        "import mlflow, json; "
+        "mlflow.set_tracking_uri('databricks'); "
+        "mlflow.set_registry_uri('databricks-uc'); "
+        f"mv = mlflow.register_model(model_uri={model_uri!r}, name={model_name!r}); "
+        "print(json.dumps({'version': mv.version}))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", reg_script],
+        capture_output=True, text=True, env=reg_env,
+        timeout=300,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Model registration failed: {proc.stderr.strip()}")
+    mv_data = json.loads(proc.stdout.strip())
+    return SimpleNamespace(version=mv_data["version"])
+
+
 @app.post("/api/graph/deploy")
 def deploy_graph(req: DeployRequest):
     """Log the graph as an MLflow model and optionally register + deploy.
@@ -464,14 +505,11 @@ def deploy_graph(req: DeployRequest):
                      f"Logging model to experiment {req.experiment_path}...")
         model_info = None
         try:
-            # Ensure the parent directory is visible to the SP before
-            # creating the experiment (Genesis Workbench pattern).
-            # The experiment_path should be like /Users/user/folder/experiment,
-            # so the parent is the folder the user granted SP access to.
-            from .auth import get_sp_workspace_client as _get_sp
+            # Ensure the parent directory is visible to the SP (Genesis
+            # Workbench pattern: mkdirs on the folder the user shared).
             exp_parent = req.experiment_path.rsplit("/", 1)[0]
             try:
-                _get_sp().workspace.mkdirs(exp_parent)
+                get_sp_workspace_client().workspace.mkdirs(exp_parent)
             except Exception:
                 pass  # best-effort; the folder may already exist
 
@@ -496,7 +534,6 @@ def deploy_graph(req: DeployRequest):
                     "--python-version 3.11"
                 )
 
-            # Use explicit start/end so we can yield between steps
             run = mlflow.start_run()
             try:
                 model_info = mlflow.pyfunc.log_model(
@@ -532,6 +569,7 @@ def deploy_graph(req: DeployRequest):
 
         yield _emit("register_model", DeployStepStatus.RUNNING,
                      f"Registering {req.model_name} in Unity Catalog...")
+        masked = {}
         try:
             parts = req.model_name.split(".")
             if len(parts) != 3:
@@ -540,21 +578,14 @@ def deploy_graph(req: DeployRequest):
                     f"got '{req.model_name}'"
                 )
             catalog, schema_name, _ = parts
-
-            # When a PAT is provided, use it for UC operations so the model
-            # is registered under the user's identity and permissions.
-            # We must mask the SP OAuth env vars before creating the client,
-            # otherwise the SDK sees both oauth + pat and rejects it.
             host = os.environ.get("DATABRICKS_HOST", "")
-            _masked_sp = {}
+
+            # Build a client for UC operations — PAT (user identity) or SP.
             if req.pat:
-                for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
-                    if key in os.environ:
-                        _masked_sp[key] = os.environ.pop(key)
-                uc_client = WorkspaceClient(host=host, token=req.pat)
+                masked = mask_sp_env_vars()
+                uc_client = create_pat_client(req.pat)
             else:
-                from .auth import get_sp_workspace_client as _get_sp
-                uc_client = _get_sp()
+                uc_client = get_sp_workspace_client()
 
             # Pre-validate catalog access
             try:
@@ -578,44 +609,13 @@ def deploy_graph(req: DeployRequest):
                         f"could not be created: {schema_err}"
                     )
 
-            # Register model. When a PAT is provided, run mlflow.register_model
-            # in a subprocess with a clean environment so the SP's OAuth
-            # credentials don't conflict.  MLflow caches DatabricksConfig
+            # Register model. With a PAT we run in a subprocess to get a
+            # clean credential context — MLflow caches DatabricksConfig
             # in-process, so env-var masking alone isn't reliable.
             if req.pat:
-                import subprocess
-                import sys
-                reg_env = {
-                    "DATABRICKS_HOST": host,
-                    "DATABRICKS_TOKEN": req.pat,
-                    "HOME": os.environ.get("HOME", "/tmp"),
-                    "PATH": os.environ.get("PATH", ""),
-                }
-                reg_script = (
-                    "import mlflow, json, sys; "
-                    "mlflow.set_tracking_uri('databricks'); "
-                    "mlflow.set_registry_uri('databricks-uc'); "
-                    "mv = mlflow.register_model("
-                    f"  model_uri={model_info.model_uri!r},"
-                    f"  name={req.model_name!r},"
-                    "); "
-                    "print(json.dumps({'version': mv.version}))"
+                mv = _register_model_with_pat(
+                    host, req.pat, model_info.model_uri, req.model_name,
                 )
-                proc = subprocess.run(
-                    [sys.executable, "-c", reg_script],
-                    capture_output=True, text=True, env=reg_env,
-                    timeout=300,
-                )
-                if proc.returncode != 0:
-                    raise RuntimeError(
-                        f"Model registration failed: {proc.stderr.strip()}"
-                    )
-                mv_data = json.loads(proc.stdout.strip())
-
-                class _ModelVersion:
-                    """Minimal shim so downstream code can read .version."""
-                    def __init__(self, v): self.version = v
-                mv = _ModelVersion(mv_data["version"])
             else:
                 mv = mlflow.register_model(
                     model_uri=model_info.model_uri,
@@ -624,12 +624,12 @@ def deploy_graph(req: DeployRequest):
 
             result_data["model_version"] = str(mv.version)
         except Exception as e:
-            os.environ.update(_masked_sp)
+            os.environ.update(masked)
             mlflow.end_run()
             yield _emit("register_model", DeployStepStatus.ERROR,
                         f"Registration failed: {e}")
             return
-        os.environ.update(_masked_sp)
+        os.environ.update(masked)
         mlflow.end_run()
         yield _emit("register_model", DeployStepStatus.DONE,
                      f"Registered as {req.model_name} v{mv.version}")
@@ -644,17 +644,14 @@ def deploy_graph(req: DeployRequest):
 
         yield _emit("create_endpoint", DeployStepStatus.RUNNING,
                      "Creating serving endpoint...")
+        masked = {}
         try:
-            # Use PAT for endpoint creation if provided, otherwise SP.
-            _masked_sp2 = {}
             if req.pat:
-                for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
-                    if key in os.environ:
-                        _masked_sp2[key] = os.environ.pop(key)
-                w = WorkspaceClient(host=host, token=req.pat)
+                masked = mask_sp_env_vars()
+                w = create_pat_client(req.pat)
             else:
-                from .auth import get_sp_workspace_client as _get_sp
-                w = _get_sp()
+                w = get_sp_workspace_client()
+
             endpoint_name = req.model_name.split(".")[-1].replace("_", "-")
 
             env_vars = {
@@ -672,18 +669,17 @@ def deploy_graph(req: DeployRequest):
                 workload_size="Small",
             )
 
-            parts = req.model_name.split(".")
+            catalog, schema_name = parts[0], parts[1]
             ai_gateway = AiGatewayConfig(
                 inference_table_config=AiGatewayInferenceTableConfig(
-                    catalog_name=parts[0],
-                    schema_name=parts[1],
+                    catalog_name=catalog,
+                    schema_name=schema_name,
                     table_name_prefix=endpoint_name,
                     enabled=True,
                 ),
             )
 
-            # Fire-and-forget: create (or update) the endpoint without
-            # waiting for it to become ready — that can take 10+ minutes.
+            # Fire-and-forget — endpoint provisioning can take 10+ minutes.
             try:
                 w.serving_endpoints.create(
                     name=endpoint_name,
@@ -693,19 +689,17 @@ def deploy_graph(req: DeployRequest):
                     ),
                     ai_gateway=ai_gateway,
                 )
-                # create() returns a Wait object — don't call .result()
             except ResourceAlreadyExists:
                 w.serving_endpoints.update_config(
                     name=endpoint_name,
                     served_entities=[served_entity],
                 )
-                # update_config() also returns Wait — don't call .result()
                 try:
                     w.serving_endpoints.put_ai_gateway(
                         name=endpoint_name,
                         inference_table_config=AiGatewayInferenceTableConfig(
-                            catalog_name=parts[0],
-                            schema_name=parts[1],
+                            catalog_name=catalog,
+                            schema_name=schema_name,
                             table_name_prefix=endpoint_name,
                             enabled=True,
                         ),
@@ -718,11 +712,11 @@ def deploy_graph(req: DeployRequest):
                 f"{ep_host}/serving-endpoints/{endpoint_name}/invocations"
             )
         except Exception as e:
-            os.environ.update(_masked_sp2)
+            os.environ.update(masked)
             yield _emit("create_endpoint", DeployStepStatus.ERROR,
                         f"Endpoint creation failed: {e}")
             return
-        os.environ.update(_masked_sp2)
+        os.environ.update(masked)
         yield _emit("create_endpoint", DeployStepStatus.DONE,
                      f"Endpoint ready: {endpoint_name}")
 
