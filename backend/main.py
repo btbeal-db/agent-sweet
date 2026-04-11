@@ -517,8 +517,10 @@ def deploy_graph(req: DeployRequest):
                 masked = mask_sp_env_vars()
                 try:
                     w = create_pat_client(req.pat)
+                    sp_client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
                     lb_config = provision_lakebase(
                         w, req.lakebase_project_id, req.model_name,
+                        sp_client_id,
                     )
                 finally:
                     os.environ.update(masked)
@@ -709,6 +711,10 @@ def deploy_graph(req: DeployRequest):
                 env_vars["LAKEBASE_ENDPOINT"] = lb_config.endpoint
                 env_vars["LAKEBASE_HOST"] = lb_config.host
                 env_vars["LAKEBASE_DATABASE"] = lb_config.database
+                # The app's SP has a Lakebase role; inject its creds so the
+                # serving container uses it instead of the endpoint's own SP.
+                env_vars["LAKEBASE_SP_CLIENT_ID"] = os.environ.get("DATABRICKS_CLIENT_ID", "")
+                env_vars["LAKEBASE_SP_CLIENT_SECRET"] = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
             elif req.lakebase_conn_string:
                 env_vars["LAKEBASE_CONN_STRING"] = req.lakebase_conn_string
 

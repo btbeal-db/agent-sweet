@@ -18,6 +18,9 @@ from databricks.sdk.service.postgres import (
     EndpointStatusState,
     Project,
     ProjectSpec,
+    Role,
+    RoleIdentityType,
+    RoleRoleSpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,12 +61,16 @@ def provision_lakebase(
     w: WorkspaceClient,
     project_id: str,
     model_name: str,
+    sp_client_id: str,
 ) -> LakebaseConfig:
     """Create a Lakebase project + database and return connection details.
 
     The project is shared (one compute endpoint, scale-to-zero).  Each agent
     gets its own database derived from ``model_name``, e.g.
     ``catalog.schema.my_agent`` → database ``my-agent-checkpoints``.
+
+    A Lakebase role is also created for the app's service principal so that
+    the serving endpoint can authenticate to Postgres at runtime.
 
     Parameters
     ----------
@@ -76,6 +83,9 @@ def provision_lakebase(
     model_name:
         Unity Catalog model name (``catalog.schema.model``).  Used to derive
         a unique database name for this agent.
+    sp_client_id:
+        The app's service principal application/client ID.  A Lakebase role
+        is created for this SP so the serving endpoint can connect.
 
     Returns
     -------
@@ -119,7 +129,24 @@ def provision_lakebase(
     host = ep.status.hosts.host
     logger.info("Endpoint %s active at %s", endpoint_path, host)
 
-    # ── 3. Resolve the owner role for the deploying user ────────────
+    # ── 3. Create a role for the app's SP so it can connect at serving time
+    try:
+        logger.info("Creating Lakebase role for SP %s", sp_client_id)
+        role_op = w.postgres.create_role(
+            parent=branch_path,
+            role=Role(
+                spec=RoleRoleSpec(
+                    identity_type=RoleIdentityType.SERVICE_PRINCIPAL,
+                ),
+            ),
+            role_id=sp_client_id,
+        )
+        role_op.wait()
+        logger.info("SP role created")
+    except ResourceAlreadyExists:
+        logger.info("SP role already exists, reusing")
+
+    # ── 4. Resolve the owner role for the deploying user ──────────
     user_email = w.current_user.me().user_name
     owner_role = None
     for role in w.postgres.list_roles(parent=branch_path):
@@ -132,7 +159,7 @@ def provision_lakebase(
             f"Ensure you have access to this project."
         )
 
-    # ── 4. Create the checkpoints database or reuse existing ──────
+    # ── 5. Create the checkpoints database or reuse existing ──────
     try:
         logger.info("Creating database %s in %s (owner: %s)", database_id, branch_path, user_email)
         db_op = w.postgres.create_database(

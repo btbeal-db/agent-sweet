@@ -56,7 +56,21 @@ def _create_lakebase_checkpointer(
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
 
-    w = WorkspaceClient()
+    # Use the app's SP (which has a Lakebase role) rather than the
+    # serving endpoint's auto-generated SP (which does not).
+    sp_client_id = os.environ.get("LAKEBASE_SP_CLIENT_ID", "")
+    sp_client_secret = os.environ.get("LAKEBASE_SP_CLIENT_SECRET", "")
+    db_host = os.environ.get("DATABRICKS_HOST", "")
+
+    if sp_client_id and sp_client_secret:
+        w = WorkspaceClient(
+            host=db_host,
+            client_id=sp_client_id,
+            client_secret=sp_client_secret,
+        )
+    else:
+        w = WorkspaceClient()
+
     username = w.current_user.me().user_name
 
     class _LakebaseConnection(psycopg.Connection):
