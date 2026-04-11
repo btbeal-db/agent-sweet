@@ -181,7 +181,15 @@ def _build_config(checkpointer, thread_id: str | None) -> dict | None:
 
 
 def _get_thread_id(request: ResponsesAgentRequest) -> str:
-    """Extract or generate a thread_id from the request."""
+    """Extract or generate a thread_id from the request.
+
+    Checks (in order):
+    1. ``context.conversation_id`` — sent by the Databricks AI Playground
+    2. ``custom_inputs.thread_id`` — sent by the Agent Sweet playground
+    3. Falls back to a random UUID for one-off requests.
+    """
+    if request.context and request.context.conversation_id:
+        return request.context.conversation_id
     if request.custom_inputs:
         tid = request.custom_inputs.get("thread_id")
         if tid:
