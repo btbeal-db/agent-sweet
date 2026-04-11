@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.errors import ResourceAlreadyExists
+from databricks.sdk.errors import ResourceAlreadyExists, ResourceConflict
 from databricks.sdk.service.postgres import (
     Database,
     DatabaseDatabaseSpec,
@@ -98,7 +98,7 @@ def _ensure_sp_role(
             role_id=sp_client_id,
         ).wait()
         logger.info("SP role created")
-    except ResourceAlreadyExists:
+    except (ResourceAlreadyExists, ResourceConflict):
         logger.info("SP role already exists")
 
 
@@ -135,7 +135,7 @@ def _ensure_database(
             database_id=database_id,
         ).wait()
         logger.info("Database %s ready", database_id)
-    except ResourceAlreadyExists:
+    except (ResourceAlreadyExists, ResourceConflict):
         logger.info("Database %s already exists", database_id)
 
 
@@ -168,7 +168,7 @@ def provision_lakebase(
             project_id=project_id,
         ).wait()
         logger.info("Project %s ready", project_id)
-    except ResourceAlreadyExists:
+    except (ResourceAlreadyExists, ResourceConflict):
         logger.info("Project %s already exists, reusing", project_id)
 
     # 2–4. Shared: wait for endpoint, ensure SP role, ensure database
