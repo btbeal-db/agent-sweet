@@ -1,13 +1,14 @@
 """Lakebase provisioning helpers for conversational agent checkpointing.
 
-Provides a function to create a Lakebase Autoscaling project + database and
-return the connection details needed by the serving endpoint.
+Provides a function to create or resolve a Lakebase Autoscaling project +
+database and return the connection details needed by the serving endpoint.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 from databricks.sdk import WorkspaceClient
@@ -60,159 +61,32 @@ class LakebaseConfig:
     database: str  # Postgres database name
 
 
-def provision_lakebase(
-    w: WorkspaceClient,
-    project_id: str,
-    model_name: str,
-    sp_client_id: str,
-) -> LakebaseConfig:
-    """Create a Lakebase project + database and return connection details.
+# ── Shared helpers ───────────────────────────────────────────────────────────
 
-    The project is shared (one compute endpoint, scale-to-zero).  Each agent
-    gets its own database derived from ``model_name``, e.g.
-    ``catalog.schema.my_agent`` → database ``my-agent-checkpoints``.
 
-    A Lakebase role is also created for the app's service principal so that
-    the serving endpoint can authenticate to Postgres at runtime.
-
-    Parameters
-    ----------
-    w:
-        Authenticated ``WorkspaceClient`` (typically PAT-based so the
-        resources are owned by the deploying user).
-    project_id:
-        Short identifier for the project (e.g. ``"agent-sweet"``).  Must be
-        3-63 chars, lowercase, starting with a letter.
-    model_name:
-        Unity Catalog model name (``catalog.schema.model``).  Used to derive
-        a unique database name for this agent.
-    sp_client_id:
-        The app's service principal application/client ID.  A Lakebase role
-        is created for this SP so the serving endpoint can connect.
-
-    Returns
-    -------
-    LakebaseConfig
-        The endpoint path, host, and database name needed as env vars on
-        the serving endpoint.
-    """
-    database_id = _model_name_to_database_id(model_name)
-    display_name = f"{_DEFAULT_PROJECT_DISPLAY_PREFIX} – {project_id}"
-
-    # ── 1. Create project or reuse existing ─────────────────────────
-    branch_path = f"projects/{project_id}/branches/{_DEFAULT_BRANCH}"
-    endpoint_path = f"{branch_path}/endpoints/{_DEFAULT_ENDPOINT}"
-
-    try:
-        logger.info("Creating Lakebase project %s", project_id)
-        project_op = w.postgres.create_project(
-            project=Project(spec=ProjectSpec(display_name=display_name)),
-            project_id=project_id,
-        )
-        project_op.wait()
-        logger.info("Project %s ready", project_id)
-    except ResourceAlreadyExists:
-        logger.info("Project %s already exists, reusing", project_id)
-
-    # ── 2. Resolve the primary endpoint and wait for it to be ACTIVE
+def _wait_for_endpoint(w: WorkspaceClient, endpoint_path: str) -> str:
+    """Poll until the endpoint is ACTIVE and return its host."""
     ep = w.postgres.get_endpoint(name=endpoint_path)
-    if ep.status and ep.status.current_state != EndpointStatusState.ACTIVE:
-        import time
+    if ep.status and ep.status.current_state == EndpointStatusState.ACTIVE:
+        return ep.status.hosts.host
 
-        for _ in range(60):
-            time.sleep(5)
-            ep = w.postgres.get_endpoint(name=endpoint_path)
-            if ep.status and ep.status.current_state == EndpointStatusState.ACTIVE:
-                break
-        else:
-            raise TimeoutError(
-                f"Endpoint {endpoint_path} did not become ACTIVE within 5 minutes"
-            )
+    for _ in range(60):
+        time.sleep(5)
+        ep = w.postgres.get_endpoint(name=endpoint_path)
+        if ep.status and ep.status.current_state == EndpointStatusState.ACTIVE:
+            return ep.status.hosts.host
 
-    host = ep.status.hosts.host
-    logger.info("Endpoint %s active at %s", endpoint_path, host)
-
-    # ── 3. Create a role for the app's SP so it can connect at serving time
-    try:
-        logger.info("Creating Lakebase role for SP %s", sp_client_id)
-        role_op = w.postgres.create_role(
-            parent=branch_path,
-            role=Role(
-                spec=RoleRoleSpec(
-                    identity_type=RoleIdentityType.SERVICE_PRINCIPAL,
-                    postgres_role=sp_client_id,
-                ),
-            ),
-            role_id=sp_client_id,
-        )
-        role_op.wait()
-        logger.info("SP role created")
-    except ResourceAlreadyExists:
-        logger.info("SP role already exists, reusing")
-
-    # ── 4. Resolve the owner role for the deploying user ──────────
-    user_email = w.current_user.me().user_name
-    owner_role = None
-    for role in w.postgres.list_roles(parent=branch_path):
-        if role.status and role.status.postgres_role == user_email:
-            owner_role = role.name
-            break
-    if not owner_role:
-        raise ValueError(
-            f"No Lakebase role found for {user_email} on {branch_path}. "
-            f"Ensure you have access to this project."
-        )
-
-    # ── 5. Create the checkpoints database or reuse existing ──────
-    try:
-        logger.info("Creating database %s in %s (owner: %s)", database_id, branch_path, user_email)
-        db_op = w.postgres.create_database(
-            parent=branch_path,
-            database=Database(
-                spec=DatabaseDatabaseSpec(
-                    postgres_database=database_id,
-                    role=owner_role,
-                ),
-            ),
-            database_id=database_id,
-        )
-        db_op.wait()
-        logger.info("Database %s ready", database_id)
-    except ResourceAlreadyExists:
-        logger.info("Database %s already exists, reusing", database_id)
-
-    return LakebaseConfig(
-        endpoint=endpoint_path,
-        host=host,
-        database=database_id,
+    raise TimeoutError(
+        f"Endpoint {endpoint_path} did not become ACTIVE within 5 minutes"
     )
 
 
-def resolve_lakebase(
-    w: WorkspaceClient,
-    project_id: str,
-    model_name: str,
-    sp_client_id: str,
-) -> LakebaseConfig:
-    """Resolve connection details for an existing Lakebase project.
-
-    Like :func:`provision_lakebase` but skips project creation — only looks up
-    the endpoint host, ensures the SP role exists, and creates the per-agent
-    database if it doesn't exist yet.
-    """
-    database_id = _model_name_to_database_id(model_name)
-    branch_path = f"projects/{project_id}/branches/{_DEFAULT_BRANCH}"
-    endpoint_path = f"{branch_path}/endpoints/{_DEFAULT_ENDPOINT}"
-
-    # Verify the project exists
-    w.postgres.get_project(name=f"projects/{project_id}")
-
-    # Get endpoint host
-    ep = w.postgres.get_endpoint(name=endpoint_path)
-    host = ep.status.hosts.host
-
-    # Ensure the SP role exists
+def _ensure_sp_role(
+    w: WorkspaceClient, branch_path: str, sp_client_id: str,
+) -> None:
+    """Create a SERVICE_PRINCIPAL role on the branch (idempotent)."""
     try:
+        logger.info("Ensuring Lakebase role for SP %s", sp_client_id)
         w.postgres.create_role(
             parent=branch_path,
             role=Role(
@@ -223,10 +97,18 @@ def resolve_lakebase(
             ),
             role_id=sp_client_id,
         ).wait()
+        logger.info("SP role created")
     except ResourceAlreadyExists:
-        pass
+        logger.info("SP role already exists")
 
-    # Ensure the per-agent database exists
+
+def _ensure_database(
+    w: WorkspaceClient, branch_path: str, database_id: str,
+) -> None:
+    """Create the per-agent database (idempotent).
+
+    Resolves the deploying user's role to set as owner.
+    """
     user_email = w.current_user.me().user_name
     owner_role = None
     for role in w.postgres.list_roles(parent=branch_path):
@@ -234,23 +116,90 @@ def resolve_lakebase(
             owner_role = role.name
             break
 
-    if owner_role:
-        try:
-            w.postgres.create_database(
-                parent=branch_path,
-                database=Database(
-                    spec=DatabaseDatabaseSpec(
-                        postgres_database=database_id,
-                        role=owner_role,
-                    ),
-                ),
-                database_id=database_id,
-            ).wait()
-        except ResourceAlreadyExists:
-            pass
+    if not owner_role:
+        raise ValueError(
+            f"No Lakebase role found for {user_email} on {branch_path}. "
+            f"Ensure you have access to this project."
+        )
 
-    return LakebaseConfig(
-        endpoint=endpoint_path,
-        host=host,
-        database=database_id,
-    )
+    try:
+        logger.info("Ensuring database %s in %s", database_id, branch_path)
+        w.postgres.create_database(
+            parent=branch_path,
+            database=Database(
+                spec=DatabaseDatabaseSpec(
+                    postgres_database=database_id,
+                    role=owner_role,
+                ),
+            ),
+            database_id=database_id,
+        ).wait()
+        logger.info("Database %s ready", database_id)
+    except ResourceAlreadyExists:
+        logger.info("Database %s already exists", database_id)
+
+
+# ── Public API ───────────────────────────────────────────────────────────────
+
+
+def provision_lakebase(
+    w: WorkspaceClient,
+    project_id: str,
+    model_name: str,
+    sp_client_id: str,
+) -> LakebaseConfig:
+    """Create a Lakebase project + per-agent database and return connection
+    details.
+
+    Idempotent — reuses existing project, SP role, and database if they
+    already exist.  Multiple agents can share the same project; each gets
+    its own database derived from the full UC model name.
+    """
+    database_id = _model_name_to_database_id(model_name)
+    branch_path = f"projects/{project_id}/branches/{_DEFAULT_BRANCH}"
+    endpoint_path = f"{branch_path}/endpoints/{_DEFAULT_ENDPOINT}"
+
+    # 1. Create project (or reuse)
+    try:
+        display_name = f"{_DEFAULT_PROJECT_DISPLAY_PREFIX} – {project_id}"
+        logger.info("Creating Lakebase project %s", project_id)
+        w.postgres.create_project(
+            project=Project(spec=ProjectSpec(display_name=display_name)),
+            project_id=project_id,
+        ).wait()
+        logger.info("Project %s ready", project_id)
+    except ResourceAlreadyExists:
+        logger.info("Project %s already exists, reusing", project_id)
+
+    # 2–4. Shared: wait for endpoint, ensure SP role, ensure database
+    host = _wait_for_endpoint(w, endpoint_path)
+    _ensure_sp_role(w, branch_path, sp_client_id)
+    _ensure_database(w, branch_path, database_id)
+
+    return LakebaseConfig(endpoint=endpoint_path, host=host, database=database_id)
+
+
+def resolve_lakebase(
+    w: WorkspaceClient,
+    project_id: str,
+    model_name: str,
+    sp_client_id: str,
+) -> LakebaseConfig:
+    """Resolve connection details for an existing Lakebase project.
+
+    Like :func:`provision_lakebase` but skips project creation.
+    Still ensures the SP role and per-agent database exist.
+    """
+    database_id = _model_name_to_database_id(model_name)
+    branch_path = f"projects/{project_id}/branches/{_DEFAULT_BRANCH}"
+    endpoint_path = f"{branch_path}/endpoints/{_DEFAULT_ENDPOINT}"
+
+    # Verify the project exists (raises if not)
+    w.postgres.get_project(name=f"projects/{project_id}")
+
+    # Shared: get host, ensure SP role, ensure database
+    host = _wait_for_endpoint(w, endpoint_path)
+    _ensure_sp_role(w, branch_path, sp_client_id)
+    _ensure_database(w, branch_path, database_id)
+
+    return LakebaseConfig(endpoint=endpoint_path, host=host, database=database_id)

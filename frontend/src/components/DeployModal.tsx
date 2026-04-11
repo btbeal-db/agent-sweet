@@ -308,12 +308,13 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
                       <input
                         type="text"
                         className="deploy-input"
-                        placeholder="my-agent (lowercase, 3-63 chars)"
+                        placeholder="my-team (lowercase, 3-63 chars)"
                         value={lakebaseProjectId}
                         onChange={(e) => setLakebaseProjectId(e.target.value)}
                       />
                       <span className="deploy-hint">
-                        Creates a Lakebase Autoscaling project with a &quot;checkpoints&quot; database.
+                        Choose a short name for your Lakebase project (e.g. &quot;my-team&quot;).
+                        Multiple agents can share the same project — each gets its own database.
                       </span>
                     </label>
                   )}
@@ -329,8 +330,8 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
                         onChange={(e) => setLakebaseExistingProjectId(e.target.value)}
                       />
                       <span className="deploy-hint">
-                        The ID of an existing Lakebase project. Find it under Compute &gt; Lakebase in your workspace.
-                        A per-agent database will be created automatically.
+                        The short name you chose when creating the project (e.g. &quot;my-team&quot;, not the UUID).
+                        Find it under Compute &gt; Lakebase in your workspace.
                       </span>
                     </label>
                   )}

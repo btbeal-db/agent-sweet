@@ -508,54 +508,35 @@ def deploy_graph(req: DeployRequest):
         # ── Step 1.5: Provision or resolve Lakebase ───────────────────
         lb_config: LakebaseConfig | None = None
 
-        if req.lakebase_project_id:
-            yield _emit("provision_lakebase", DeployStepStatus.RUNNING,
-                        f"Provisioning Lakebase project '{req.lakebase_project_id}'...")
-            try:
-                if not req.pat:
-                    raise ValueError("A PAT is required to provision Lakebase")
-                masked = mask_sp_env_vars()
-                try:
-                    w = create_pat_client(req.pat)
-                    sp_client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
-                    lb_config = provision_lakebase(
-                        w, req.lakebase_project_id, req.model_name,
-                        sp_client_id,
-                    )
-                finally:
-                    os.environ.update(masked)
-            except Exception as e:
-                yield _emit("provision_lakebase", DeployStepStatus.ERROR,
-                            f"Lakebase provisioning failed: {e}")
-                return
-            yield _emit("provision_lakebase", DeployStepStatus.DONE,
-                        f"Lakebase ready (db: {lb_config.database})")
+        # Determine which lakebase operation to run (if any).
+        lb_project_id = req.lakebase_project_id or req.lakebase_existing_project_id
+        lb_is_create = bool(req.lakebase_project_id)
 
-        elif req.lakebase_existing_project_id:
+        if lb_project_id:
+            action = "Provisioning" if lb_is_create else "Resolving"
             yield _emit("provision_lakebase", DeployStepStatus.RUNNING,
-                        f"Resolving Lakebase project '{req.lakebase_existing_project_id}'...")
+                        f"{action} Lakebase project '{lb_project_id}'...")
             try:
                 if not req.pat:
-                    raise ValueError("A PAT is required to resolve Lakebase details")
+                    raise ValueError("A PAT is required for Lakebase setup")
+                sp_client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
                 masked = mask_sp_env_vars()
                 try:
-                    sp_client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
                     w = create_pat_client(req.pat)
-                    lb_config = resolve_lakebase(
-                        w, req.lakebase_existing_project_id, req.model_name,
-                        sp_client_id,
+                    lb_fn = provision_lakebase if lb_is_create else resolve_lakebase
+                    lb_config = lb_fn(
+                        w, lb_project_id, req.model_name, sp_client_id,
                     )
                 finally:
                     os.environ.update(masked)
             except Exception as e:
                 yield _emit("provision_lakebase", DeployStepStatus.ERROR,
-                            f"Lakebase resolution failed: {e}")
+                            f"Lakebase setup failed: {e}")
                 return
             yield _emit("provision_lakebase", DeployStepStatus.DONE,
                         f"Lakebase ready (db: {lb_config.database})")
 
         elif req.lakebase_conn_string:
-            # Legacy: raw connection string — no provisioning step needed
             yield _emit("provision_lakebase", DeployStepStatus.DONE,
                         "Using provided connection string")
 
@@ -707,6 +688,9 @@ def deploy_graph(req: DeployRequest):
 
         yield _emit("create_endpoint", DeployStepStatus.RUNNING,
                      "Creating serving endpoint...")
+        # Capture SP creds before masking — needed as env vars on the endpoint.
+        sp_id_for_env = os.environ.get("DATABRICKS_CLIENT_ID", "")
+        sp_secret_for_env = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
         masked = {}
         try:
             if req.pat:
@@ -727,8 +711,8 @@ def deploy_graph(req: DeployRequest):
                 env_vars["LAKEBASE_DATABASE"] = lb_config.database
                 # The app's SP has a Lakebase role; inject its creds so the
                 # serving container uses it instead of the endpoint's own SP.
-                env_vars["LAKEBASE_SP_CLIENT_ID"] = os.environ.get("DATABRICKS_CLIENT_ID", "")
-                env_vars["LAKEBASE_SP_CLIENT_SECRET"] = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
+                env_vars["LAKEBASE_SP_CLIENT_ID"] = sp_id_for_env
+                env_vars["LAKEBASE_SP_CLIENT_SECRET"] = sp_secret_for_env
             elif req.lakebase_conn_string:
                 env_vars["LAKEBASE_CONN_STRING"] = req.lakebase_conn_string
 
