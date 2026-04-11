@@ -286,24 +286,25 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
               )}
 
               {deployMode === "full" && (
-                <fieldset className="deploy-fieldset">
-                  <legend className="deploy-legend">
+                <>
+                  <label className="deploy-label">
                     Lakebase (Conversation Memory)
-                    {isConversational && (
-                      <span className="deploy-hint" style={{ fontWeight: "normal", marginLeft: 8 }}>
-                        Required — your graph has conversational nodes
-                      </span>
-                    )}
-                  </legend>
-
-                  <div className="deploy-radio-group">
-                    <label><input type="radio" name="lb" checked={lakebaseMode === "create"} onChange={() => setLakebaseMode("create")} /> Create new Lakebase project</label>
-                    <label><input type="radio" name="lb" checked={lakebaseMode === "existing"} onChange={() => setLakebaseMode("existing")} /> Use existing Lakebase instance</label>
-                    <label><input type="radio" name="lb" checked={lakebaseMode === "connstring"} onChange={() => setLakebaseMode("connstring")} /> Connection string (advanced)</label>
-                    {!isConversational && (
-                      <label><input type="radio" name="lb" checked={lakebaseMode === "none"} onChange={() => setLakebaseMode("none")} /> None</label>
-                    )}
-                  </div>
+                    <select
+                      className="deploy-input"
+                      value={lakebaseMode}
+                      onChange={(e) => setLakebaseMode(e.target.value as LakebaseMode)}
+                    >
+                      <option value="create">Create new Lakebase project</option>
+                      <option value="existing">Use existing Lakebase instance</option>
+                      <option value="connstring">Connection string (advanced)</option>
+                      {!isConversational && <option value="none">None</option>}
+                    </select>
+                    <span className="deploy-hint">
+                      {isConversational
+                        ? "Required — your graph has conversational nodes."
+                        : "Optional. Enables multi-turn conversation memory."}
+                    </span>
+                  </label>
 
                   {lakebaseMode === "create" && (
                     <label className="deploy-label">
@@ -371,7 +372,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
                       </span>
                     </label>
                   )}
-                </fieldset>
+                </>
               )}
 
               {needsModelName && (
