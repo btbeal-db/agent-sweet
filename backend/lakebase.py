@@ -34,18 +34,21 @@ _DEFAULT_ENDPOINT = "primary"
 def _model_name_to_database_id(model_name: str) -> str:
     """Derive a Postgres database name from a UC model name.
 
-    ``catalog.schema.my_agent`` → ``my-agent-checkpoints``
+    ``catalog.schema.my_agent`` → ``catalog-schema-my-agent-ckpt``
+
+    Uses the full UC path so that different agents in the same project
+    never collide, even if they share the same model name suffix.
 
     Database IDs must be 4-63 chars, lowercase, DNS-safe (RFC-1123).
     """
-    # Take the last part of catalog.schema.model_name
-    short = model_name.split(".")[-1]
-    # Normalize: lowercase, underscores/spaces to hyphens, strip non-DNS chars
-    db_id = re.sub(r"[^a-z0-9-]", "-", short.lower()).strip("-")
+    # Normalize: lowercase, dots/underscores/spaces to hyphens, strip non-DNS chars
+    db_id = re.sub(r"[^a-z0-9-]", "-", model_name.lower()).strip("-")
     db_id = re.sub(r"-+", "-", db_id)  # collapse consecutive hyphens
-    db_id = f"{db_id}-checkpoints"
-    # Enforce 4-63 char limit
-    return db_id[:63]
+    db_id = f"{db_id}-ckpt"
+    # Enforce 4-63 char limit (trim from the left to keep the unique suffix)
+    if len(db_id) > 63:
+        db_id = db_id[-63:].lstrip("-")
+    return db_id
 
 
 @dataclass

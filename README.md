@@ -98,7 +98,7 @@ Auto-provisioned projects use these defaults:
 - **Tier:** Autoscaling (0.5–1 CU, scale-to-zero enabled)
 - **Branch:** `production` (created automatically)
 - **Endpoint:** `primary` read-write (created automatically)
-- **Database:** `{model-name}-checkpoints` (derived from your UC model name, e.g. `my-agent-checkpoints`)
+- **Database:** `{catalog}-{schema}-{model}-ckpt` (derived from your full UC model name, e.g. `catalog-schema-my-agent-ckpt`)
 - **PostgreSQL version:** Latest supported (currently 16)
 
 These are appropriate for checkpoint storage workloads. For production use with higher throughput, scale the endpoint via the Lakebase project page or CLI.
