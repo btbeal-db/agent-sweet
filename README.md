@@ -63,6 +63,10 @@ Agent Sweet respects your existing Unity Catalog permissions. Here's how credent
 - **MLflow experiment logging** uses the app's service principal, scoped to folders you've explicitly shared. The SP cannot access anything you haven't granted it.
 - **Collaboration** is built in. If teammates complete setup, you can load each other's deployed graph definitions, iterate on them, and deploy to your own experiments. The SP's access boundary is the setup grant — nothing more.
 
+### Deployed endpoint permissions
+
+When you deploy an agent, the app declares every external resource your graph references (serving endpoints, Vector Search indexes, Genie rooms, UC functions, and tables) as [MLflow model resources](https://docs.databricks.com/en/machine-learning/manage-model-lifecycle/index.html). At serving time, Model Serving uses **on-behalf-of (OBO) credentials** — each caller's request runs with their own identity and permissions. Your agent doesn't get blanket access to data; each caller only reaches what they're already allowed to see.
+
 The app never creates shadow admin roles, never bypasses UC permissions, and never stores or logs your PAT.
 
 ## Local Development
