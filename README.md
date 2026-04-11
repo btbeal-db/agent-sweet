@@ -83,7 +83,7 @@ When deploying a full endpoint, you have three choices for Lakebase:
 
 | Option | What you provide | What happens |
 |---|---|---|
-| **Create new** (recommended) | A project ID (e.g. `my-agent`) | The app provisions an Autoscaling Lakebase project with a `checkpoints` database using your PAT. Default config: 0.5–1 CU autoscaling, production branch, primary read-write endpoint. |
+| **Create new** (recommended) | A project ID (e.g. `agent-sweet`) | The app provisions an Autoscaling Lakebase project and creates a per-agent database (e.g. `my-agent-checkpoints`) using your PAT. Multiple agents can share one project. |
 | **Use existing** | Endpoint path, host, and database name | The app uses your existing Lakebase instance. Get these values from the Lakebase project page in your workspace. |
 | **Connection string** (advanced) | A `postgresql://` URI | Static credential passed as-is. Note: Lakebase OAuth tokens expire after 1 hour, so this is mainly useful for non-Lakebase Postgres instances. |
 
@@ -98,7 +98,7 @@ Auto-provisioned projects use these defaults:
 - **Tier:** Autoscaling (0.5–1 CU, scale-to-zero enabled)
 - **Branch:** `production` (created automatically)
 - **Endpoint:** `primary` read-write (created automatically)
-- **Database:** `checkpoints`
+- **Database:** `{model-name}-checkpoints` (derived from your UC model name, e.g. `my-agent-checkpoints`)
 - **PostgreSQL version:** Latest supported (currently 16)
 
 These are appropriate for checkpoint storage workloads. For production use with higher throughput, scale the endpoint via the Lakebase project page or CLI.

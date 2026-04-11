@@ -518,7 +518,7 @@ def deploy_graph(req: DeployRequest):
                 try:
                     w = create_pat_client(req.pat)
                     lb_config = provision_lakebase(
-                        w, req.lakebase_project_id,
+                        w, req.lakebase_project_id, req.model_name,
                     )
                 finally:
                     os.environ.update(masked)
@@ -527,7 +527,7 @@ def deploy_graph(req: DeployRequest):
                             f"Lakebase provisioning failed: {e}")
                 return
             yield _emit("provision_lakebase", DeployStepStatus.DONE,
-                        f"Lakebase ready ({lb_config.host})")
+                        f"Lakebase ready (db: {lb_config.database})")
 
         elif req.lakebase_endpoint and req.lakebase_host and req.lakebase_database:
             lb_config = LakebaseConfig(
