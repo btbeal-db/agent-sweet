@@ -96,7 +96,7 @@ def _create_lakebase_checkpointer(
     )
 
     checkpointer = PostgresSaver(pool)
-    checkpointer.setup()
+    _safe_setup(checkpointer)
     logger.info("Lakebase checkpointer initialized (pool, endpoint=%s)", endpoint)
     return checkpointer
 
@@ -120,9 +120,26 @@ def _create_connstring_checkpointer(conn_string: str) -> PostgresSaver:
     )
 
     checkpointer = PostgresSaver(pool)
-    checkpointer.setup()
+    _safe_setup(checkpointer)
     logger.info("Lakebase checkpointer initialized (static conn string)")
     return checkpointer
+
+
+def _safe_setup(checkpointer: PostgresSaver) -> None:
+    """Run checkpointer.setup(), tolerating tables that already exist.
+
+    PostgresSaver.setup() creates checkpoint tables and inserts migration
+    records.  It is not fully idempotent — re-running it on an already-
+    migrated database raises UniqueViolation.  This is harmless; the
+    tables are ready to use.
+    """
+    try:
+        checkpointer.setup()
+    except Exception as e:
+        if "unique" in str(e).lower() or "already exists" in str(e).lower():
+            logger.info("Checkpoint tables already set up, skipping: %s", e)
+        else:
+            raise
 
 
 def _extract_user_message(request: ResponsesAgentRequest) -> str:
