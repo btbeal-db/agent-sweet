@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { CheckCircle, AlertCircle, Loader, ExternalLink, FolderOpen, Shield, Search } from "lucide-react";
-import { getSetupInfo, grantSpAccess, validateSetup } from "../api";
+import { CheckCircle, AlertCircle, Loader, FolderOpen, Shield, Search } from "lucide-react";
+import { getSetupInfo, validateSetup } from "../api";
 import type { SetupInfoResponse, SetupStatusResponse } from "../types";
 
 type Step = "create" | "grant" | "validate";
@@ -27,8 +27,6 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
     grant: "pending",
     validate: "pending",
   });
-  const [grantLoading, setGrantLoading] = useState(false);
-  const [manualInstructions, setManualInstructions] = useState<string | null>(null);
   const [validateLoading, setValidateLoading] = useState(false);
   const [validateError, setValidateError] = useState<string | null>(null);
   const [isComplete, setIsComplete] = useState(false);
@@ -61,28 +59,7 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
     setCurrentStep("grant");
   }, [experimentPath]);
 
-  const handleGrant = useCallback(async () => {
-    setGrantLoading(true);
-    setManualInstructions(null);
-    try {
-      const result = await grantSpAccess(experimentPath);
-      if (result.success) {
-        setStepStatuses((prev) => ({ ...prev, grant: "done", validate: "active" }));
-        setCurrentStep("validate");
-      } else {
-        setManualInstructions(result.manual_instructions);
-      }
-    } catch (err) {
-      setManualInstructions(
-        `Failed to grant access: ${err instanceof Error ? err.message : String(err)}. ` +
-        "Please grant permissions manually (see instructions below)."
-      );
-    } finally {
-      setGrantLoading(false);
-    }
-  }, [experimentPath]);
-
-  const handleSkipGrant = useCallback(() => {
+  const handleGrantDone = useCallback(() => {
     setStepStatuses((prev) => ({ ...prev, grant: "done", validate: "active" }));
     setCurrentStep("validate");
   }, []);
@@ -112,7 +89,6 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
     setIsComplete(false);
     setCurrentStep("create");
     setStepStatuses({ create: "active", grant: "pending", validate: "pending" });
-    setManualInstructions(null);
     setValidateError(null);
   }, []);
 
@@ -160,42 +136,22 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
 
       {/* Completed state */}
       {isComplete && (
-        <>
-          <div className="setup-card setup-success-card">
-            <CheckCircle size={32} />
-            <h2>Setup Complete</h2>
-            <p>Your MLflow experiment directory is configured and accessible.</p>
-            <div className="setup-field">
-              <label>Experiment Path</label>
-              <input type="text" className="deploy-input" readOnly value={experimentPath} />
-            </div>
-            <p className="setup-hint">
-              This path will be pre-filled when you deploy an agent. You can change it
-              in the Deploy modal if needed.
-            </p>
-            <button className="btn btn-ghost" onClick={handleReconfigure}>
-              Reconfigure
-            </button>
+        <div className="setup-card setup-success-card">
+          <CheckCircle size={32} />
+          <h2>Setup Complete</h2>
+          <p>Your MLflow experiment directory is configured and accessible.</p>
+          <div className="setup-field">
+            <label>Experiment Path</label>
+            <input type="text" className="deploy-input" readOnly value={experimentPath} />
           </div>
-
-          <div className="setup-card">
-            <h2>Unity Catalog Access</h2>
-            <p>
-              To register and deploy models, the app's service principal also needs
-              access to your target Unity Catalog and schema. Run these SQL commands
-              in a notebook or SQL editor:
-            </p>
-            <div className="setup-instructions-box">
-              <pre>{`GRANT USE CATALOG ON CATALOG <your_catalog> TO \`${info?.sp_id || "sp-client-id"}\`;
-GRANT USE SCHEMA ON SCHEMA <your_catalog>.<your_schema> TO \`${info?.sp_id || "sp-client-id"}\`;
-GRANT CREATE MODEL ON SCHEMA <your_catalog>.<your_schema> TO \`${info?.sp_id || "sp-client-id"}\`;`}</pre>
-            </div>
-            <p className="setup-hint">
-              Replace <code>&lt;your_catalog&gt;</code> and <code>&lt;your_schema&gt;</code> with
-              the catalog and schema you'll use when deploying models.
-            </p>
-          </div>
-        </>
+          <p className="setup-hint">
+            This path will be pre-filled when you deploy an agent. You can change it
+            in the Deploy modal if needed.
+          </p>
+          <button className="btn btn-ghost" onClick={handleReconfigure}>
+            Reconfigure
+          </button>
+        </div>
       )}
 
       {/* Step 1: Create Folder */}
@@ -216,7 +172,7 @@ GRANT CREATE MODEL ON SCHEMA <your_catalog>.<your_schema> TO \`${info?.sp_id || 
             </ol>
           </div>
           <div className="setup-field">
-            <label>Enter the full path of the experiment you created:</label>
+            <label>Enter the full path of the folder you created:</label>
             <input
               type="text"
               className="deploy-input"
@@ -238,13 +194,13 @@ GRANT CREATE MODEL ON SCHEMA <your_catalog>.<your_schema> TO \`${info?.sp_id || 
         </div>
       )}
 
-      {/* Step 2: Grant Access */}
+      {/* Step 2: Grant Access (manual instructions only) */}
       {!isComplete && currentStep === "grant" && (
         <div className="setup-card">
           <h2>Step 2: Grant App Access</h2>
           <p>
-            The app needs <strong>Can Manage</strong> permission on your directory so
-            it can create experiments and log models. We'll try to do this automatically.
+            The app's service principal needs <strong>Can Manage</strong> permission on
+            your folder so it can create experiments and log models.
           </p>
           {info && (
             <div className="setup-sp-info">
@@ -253,34 +209,29 @@ GRANT CREATE MODEL ON SCHEMA <your_catalog>.<your_schema> TO \`${info?.sp_id || 
               <span className="setup-sp-id">(ID: {info.sp_id})</span>
             </div>
           )}
-
-          {manualInstructions && (
-            <div className="setup-instructions-box setup-instructions-warning">
-              <pre>{manualInstructions}</pre>
-            </div>
-          )}
-
+          <div className="setup-instructions-box">
+            <ol>
+              <li>Open your Databricks workspace</li>
+              <li>Navigate to <strong>Workspace</strong> &gt; find <code>{experimentPath}</code></li>
+              <li>Right-click the folder &gt; <strong>Permissions</strong></li>
+              <li>Search for <strong>{info?.sp_display_name || "the service principal"}</strong> (ID: <code>{info?.sp_id || "sp-client-id"}</code>)</li>
+              <li>Set permission to <strong>Can Manage</strong></li>
+              <li>Click <strong>Save</strong></li>
+            </ol>
+          </div>
           <div className="setup-actions">
-            {!manualInstructions ? (
-              <button
-                className="btn btn-primary"
-                disabled={grantLoading}
-                onClick={handleGrant}
-              >
-                {grantLoading ? (
-                  <>
-                    <Loader size={14} className="spinning" />
-                    Granting Access...
-                  </>
-                ) : (
-                  "Grant Access Automatically"
-                )}
-              </button>
-            ) : (
-              <button className="btn btn-primary" onClick={handleSkipGrant}>
-                I've granted access manually — Continue
-              </button>
-            )}
+            <button
+              className="btn btn-ghost"
+              onClick={() => {
+                setCurrentStep("create");
+                setStepStatuses((prev) => ({ ...prev, create: "active", grant: "pending" }));
+              }}
+            >
+              Back
+            </button>
+            <button className="btn btn-primary" onClick={handleGrantDone}>
+              I've granted access — Continue
+            </button>
           </div>
         </div>
       )}

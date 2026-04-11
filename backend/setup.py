@@ -3,31 +3,23 @@
 Each user creates a workspace directory for their MLflow experiments, then
 grants the app's service principal "Can Manage" on it.  This module provides
 the API endpoints that walk the user through that flow and persist the result
-in a Delta table so setup only happens once.
+in a workspace file so setup only happens once.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import os
 import time
 
 import mlflow
-from databricks.sdk.service.iam import (
-    AccessControlRequest,
-    PermissionLevel,
-)
-from databricks.sdk.service.sql import (
-    Disposition,
-    Format,
-    StatementState,
-)
+from databricks.sdk.service.workspace import ExportFormat, ImportFormat
 from fastapi import APIRouter, HTTPException
 
 from .auth import get_sp_workspace_client, get_workspace_client
 from .schema import (
-    SetupGrantRequest,
-    SetupGrantResponse,
     SetupInfoResponse,
     SetupStatusResponse,
     SetupValidateRequest,
@@ -37,90 +29,64 @@ from .schema import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Directory in the workspace where per-user setup configs are stored.
+_SETUP_DIR = "/Shared/.agent-builder/setup"
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _get_setup_table() -> str:
-    """Return the fully-qualified config table name from env."""
-    table = os.environ.get("SETUP_TABLE", "")
-    if not table:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "SETUP_TABLE env var not configured. "
-                "Set setup_catalog, setup_schema, and sql_warehouse_id in databricks.yml and redeploy."
-            ),
-        )
-    return table
+def _sanitize_email(email: str) -> str:
+    """Convert an email to a safe workspace filename component."""
+    return email.replace("@", "_at_").replace(".", "_dot_")
 
 
-def _get_warehouse_id() -> str:
-    """Return the SQL warehouse ID from env."""
-    wh = os.environ.get("SQL_WAREHOUSE_ID", "")
-    if not wh:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "SQL_WAREHOUSE_ID env var not configured. "
-                "Set sql_warehouse_id in databricks.yml and redeploy."
-            ),
-        )
-    return wh
+def _user_config_path(email: str) -> str:
+    """Return the workspace path for a user's setup config file."""
+    return f"{_SETUP_DIR}/{_sanitize_email(email)}.json"
 
 
-def ensure_setup_table() -> None:
-    """Create the setup config table if it doesn't exist.
+def ensure_setup_dir() -> None:
+    """Create the setup config directory if it doesn't exist.
 
-    Called once at app startup.  Silently skips if env vars are not set
-    (e.g. local development).
+    Called once at app startup.
     """
-    table = os.environ.get("SETUP_TABLE", "")
-    wh = os.environ.get("SQL_WAREHOUSE_ID", "")
-    if not table or not wh:
-        logger.info("SETUP_TABLE or SQL_WAREHOUSE_ID not set — skipping table creation")
-        return
-
     try:
-        _execute_sql(
-            f"CREATE TABLE IF NOT EXISTS {table} ("
-            f"  user_email STRING NOT NULL,"
-            f"  experiment_path STRING NOT NULL,"
-            f"  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()"
-            f") USING DELTA"
-            f" COMMENT 'Per-user MLflow experiment setup for Agent Builder'",
-            warehouse_id=wh,
-        )
-        logger.info("Setup table ready: %s", table)
+        sp = get_sp_workspace_client()
+        sp.workspace.mkdirs(_SETUP_DIR)
+        logger.info("Setup directory ready: %s", _SETUP_DIR)
     except Exception as exc:
-        logger.warning("Could not create setup table (will retry on first use): %s", exc)
+        logger.warning("Could not create setup directory (will retry on first use): %s", exc)
 
 
-def _execute_sql(statement: str, *, warehouse_id: str | None = None) -> list[list[str]]:
-    """Execute a SQL statement via the SP and return result rows."""
-    wh = warehouse_id or _get_warehouse_id()
+def _read_user_config(email: str) -> dict | None:
+    """Read a user's setup config from a workspace file."""
+    path = _user_config_path(email)
+    try:
+        sp = get_sp_workspace_client()
+        resp = sp.workspace.export(path=path, format=ExportFormat.AUTO)
+        if resp.content:
+            return json.loads(base64.b64decode(resp.content))
+    except Exception:
+        return None
+    return None
+
+
+def _write_user_config(email: str, experiment_path: str) -> None:
+    """Write a user's setup config to a workspace file."""
+    path = _user_config_path(email)
+    data = {
+        "user_email": email,
+        "experiment_path": experiment_path,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
     sp = get_sp_workspace_client()
-    resp = sp.statement_execution.execute_statement(
-        warehouse_id=wh,
-        statement=statement,
-        disposition=Disposition.INLINE,
-        format=Format.JSON_ARRAY,
+    sp.workspace.mkdirs(_SETUP_DIR)
+    sp.workspace.import_(
+        path=path,
+        content=base64.b64encode(json.dumps(data, indent=2).encode()).decode(),
+        format=ImportFormat.AUTO,
+        overwrite=True,
     )
-    # Poll until complete (most queries finish instantly)
-    while resp.status and resp.status.state in (
-        StatementState.PENDING,
-        StatementState.RUNNING,
-    ):
-        time.sleep(0.5)
-        resp = sp.statement_execution.get_statement(resp.statement_id)
-
-    if resp.status and resp.status.state == StatementState.FAILED:
-        err = resp.status.error
-        msg = err.message if err else "SQL execution failed"
-        raise HTTPException(status_code=500, detail=f"SQL error: {msg}")
-
-    if resp.result and resp.result.data_array:
-        return resp.result.data_array
-    return []
 
 
 def _get_user_email() -> str:
@@ -156,28 +122,13 @@ def setup_status():
     email = _get_user_email()
     sp_name = _get_sp_display_name()
 
-    try:
-        table = _get_setup_table()
-        rows = _execute_sql(
-            f"SELECT experiment_path FROM {table} "
-            f"WHERE user_email = '{email}' "
-            f"ORDER BY updated_at DESC LIMIT 1"
-        )
-    except HTTPException as e:
-        if e.status_code == 503:
-            return SetupStatusResponse(
-                setup_complete=False,
-                user_email=email,
-                sp_display_name=sp_name,
-            )
-        raise
-
-    if rows:
+    config = _read_user_config(email)
+    if config and config.get("experiment_path"):
         return SetupStatusResponse(
             setup_complete=True,
             user_email=email,
             sp_display_name=sp_name,
-            experiment_path=rows[0][0],
+            experiment_path=config["experiment_path"],
         )
 
     return SetupStatusResponse(
@@ -194,57 +145,6 @@ def setup_info():
     sp_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
     sp_name = _get_sp_display_name()
     return SetupInfoResponse(user_email=email, sp_display_name=sp_name, sp_id=sp_id)
-
-
-@router.post("/grant-access", response_model=SetupGrantResponse)
-def grant_access(req: SetupGrantRequest):
-    """Try to grant the SP 'Can Manage' on the user's experiment directory."""
-    sp_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
-    sp_name = _get_sp_display_name()
-    host = os.environ.get("DATABRICKS_HOST", "")
-
-    try:
-        w = get_workspace_client()
-
-        # Resolve workspace object ID for the directory
-        obj = w.workspace.get_status(req.experiment_path)
-        if obj is None or obj.object_id is None:
-            return SetupGrantResponse(
-                success=False,
-                manual_instructions=(
-                    f"Could not find a workspace object at '{req.experiment_path}'. "
-                    "Make sure you created the folder first."
-                ),
-            )
-
-        # Grant the SP CAN_MANAGE via the Permissions API.
-        # Workspace folders use the "directories" object type.
-        w.permissions.update(
-            "directories",
-            str(obj.object_id),
-            access_control_list=[
-                AccessControlRequest(
-                    service_principal_name=sp_id,
-                    permission_level=PermissionLevel.CAN_MANAGE,
-                ),
-            ],
-        )
-        return SetupGrantResponse(success=True)
-
-    except Exception as exc:
-        logger.warning("Auto-grant failed: %s", exc)
-        manual = (
-            f"Automatic permission grant failed. Please do this manually:\n\n"
-            f"1. Open your Databricks workspace\n"
-            f"2. Navigate to Workspace > find '{req.experiment_path}'\n"
-            f"3. Right-click the folder > Permissions\n"
-            f"4. Search for '{sp_name}' (ID: {sp_id})\n"
-            f"5. Set permission to 'Can Manage'\n"
-            f"6. Click Save"
-        )
-        if host:
-            manual += f"\n\nWorkspace URL: {host}"
-        return SetupGrantResponse(success=False, manual_instructions=manual)
 
 
 @router.post("/validate", response_model=SetupValidateResponse)
@@ -292,20 +192,9 @@ def validate_setup(req: SetupValidateRequest):
             ),
         )
 
-    # Persist the setup record in the Delta table
+    # Persist the setup record as a workspace file
     try:
-        table = _get_setup_table()
-        escaped_email = email.replace("'", "''")
-        escaped_path = req.experiment_path.replace("'", "''")
-        _execute_sql(
-            f"MERGE INTO {table} t "
-            f"USING (SELECT '{escaped_email}' AS user_email, '{escaped_path}' AS experiment_path) s "
-            f"ON t.user_email = s.user_email "
-            f"WHEN MATCHED THEN UPDATE SET "
-            f"  experiment_path = s.experiment_path, updated_at = CURRENT_TIMESTAMP() "
-            f"WHEN NOT MATCHED THEN INSERT (user_email, experiment_path) "
-            f"  VALUES (s.user_email, s.experiment_path)"
-        )
+        _write_user_config(email, req.experiment_path)
     except Exception as exc:
         logger.warning("Failed to persist setup record: %s", exc)
         # Still return success — the SP can access the experiment even if

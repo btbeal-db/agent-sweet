@@ -6,7 +6,6 @@ import type {
   DeployEvent,
   SetupStatusResponse,
   SetupInfoResponse,
-  SetupGrantResponse,
   SetupValidateResponse,
 } from "./types";
 
@@ -122,16 +121,6 @@ export async function getSetupStatus(): Promise<SetupStatusResponse> {
 export async function getSetupInfo(): Promise<SetupInfoResponse> {
   const res = await fetch(`${BASE}/setup/info`);
   if (!res.ok) throw new Error("Failed to fetch setup info");
-  return res.json();
-}
-
-export async function grantSpAccess(experimentPath: string): Promise<SetupGrantResponse> {
-  const res = await fetch(`${BASE}/setup/grant-access`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ experiment_path: experimentPath }),
-  });
-  if (!res.ok) throw new Error("Failed to grant SP access");
   return res.json();
 }
 

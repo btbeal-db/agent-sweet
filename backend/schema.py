@@ -142,15 +142,6 @@ class SetupInfoResponse(BaseModel):
     sp_id: str
 
 
-class SetupGrantRequest(BaseModel):
-    experiment_path: str
-
-
-class SetupGrantResponse(BaseModel):
-    success: bool
-    manual_instructions: str | None = None
-
-
 class SetupValidateRequest(BaseModel):
     experiment_path: str
 

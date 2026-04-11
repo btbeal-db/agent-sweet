@@ -142,11 +142,6 @@ export interface SetupInfoResponse {
   sp_id: string;
 }
 
-export interface SetupGrantResponse {
-  success: boolean;
-  manual_instructions: string | null;
-}
-
 export interface SetupValidateResponse {
   success: boolean;
   experiment_id: string | null;
