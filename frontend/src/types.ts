@@ -93,7 +93,7 @@ export interface ExportResponse {
 
 export type DeployMode = "log_only" | "log_and_register" | "full";
 
-export type DeployStepName = "validate" | "log_model" | "register_model" | "create_endpoint" | "complete";
+export type DeployStepName = "validate" | "provision_lakebase" | "log_model" | "register_model" | "create_endpoint" | "complete";
 export type DeployStepStatus = "pending" | "running" | "done" | "error" | "skipped";
 
 export interface DeployEvent {
@@ -107,9 +107,16 @@ export interface DeployRequest {
   graph: GraphDef;
   model_name: string;
   experiment_path: string;
-  lakebase_conn_string: string;
   deploy_mode: DeployMode;
   pat: string;
+  // Lakebase — option A: auto-provision
+  lakebase_project_id: string;
+  // Lakebase — option B: existing instance
+  lakebase_endpoint: string;
+  lakebase_host: string;
+  lakebase_database: string;
+  // Lakebase — option C: raw connection string (legacy)
+  lakebase_conn_string: string;
 }
 
 export interface ChatMessage {

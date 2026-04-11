@@ -107,9 +107,19 @@ class DeployRequest(BaseModel):
     graph: GraphDef
     model_name: str = ""  # Unity Catalog path: catalog.schema.model_name
     experiment_path: str  # MLflow experiment: /Users/email/experiment
-    lakebase_conn_string: str = ""  # Lakebase Postgres connection URL
     deploy_mode: DeployMode = DeployMode.FULL
     pat: str = ""  # Optional PAT for UC registration + endpoint creation
+
+    # Lakebase checkpointing — option A: auto-provision a new project
+    lakebase_project_id: str = ""  # e.g. "my-agent" → creates project + db
+
+    # Lakebase checkpointing — option B: use an existing Lakebase instance
+    lakebase_endpoint: str = ""  # projects/{id}/branches/{b}/endpoints/{e}
+    lakebase_host: str = ""  # Postgres hostname
+    lakebase_database: str = ""  # Postgres database name
+
+    # Lakebase checkpointing — option C: raw connection string (legacy)
+    lakebase_conn_string: str = ""
 
 
 class DeployResponse(BaseModel):

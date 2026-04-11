@@ -13,6 +13,7 @@ import os
 import sys
 import uuid
 from collections.abc import Generator
+from typing import TYPE_CHECKING
 
 import mlflow
 from mlflow.pyfunc import ResponsesAgent
@@ -21,6 +22,9 @@ from mlflow.types.responses import (
     ResponsesAgentResponse,
     ResponsesAgentStreamEvent,
 )
+
+if TYPE_CHECKING:
+    from langgraph.checkpoint.postgres import PostgresSaver
 
 # Ensure the backend package is importable when MLflow loads this file
 # from the code/ directory in the serving container.
@@ -33,6 +37,78 @@ from backend.graph_builder import build_graph, filter_output
 from backend.schema import GraphDef
 
 logger = logging.getLogger(__name__)
+
+
+def _create_lakebase_checkpointer(
+    endpoint: str, host: str, database: str,
+) -> PostgresSaver:
+    """Create a PostgresSaver backed by a ConnectionPool with automatic OAuth
+    token refresh.
+
+    Each time the pool opens a new connection it calls
+    ``WorkspaceClient().postgres.generate_database_credential()`` to mint a
+    fresh 1-hour token.  Existing connections remain valid even after the token
+    that opened them expires (Lakebase enforces expiry only at login).
+    """
+    import psycopg
+    from databricks.sdk import WorkspaceClient
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+
+    w = WorkspaceClient()
+    username = w.current_user.me().user_name
+
+    class _LakebaseConnection(psycopg.Connection):
+        """Custom connection class that generates a fresh OAuth token on
+        every ``connect()`` call so the pool never uses a stale password."""
+
+        @classmethod
+        def connect(cls, conninfo="", **kwargs):
+            cred = w.postgres.generate_database_credential(endpoint=endpoint)
+            kwargs["password"] = cred.token
+            return super().connect(
+                conninfo, autocommit=True, prepare_threshold=0,
+                row_factory=dict_row, **kwargs,
+            )
+
+    conninfo = f"host={host} port=5432 dbname={database} user={username} sslmode=require"
+    pool = ConnectionPool(
+        conninfo=conninfo,
+        connection_class=_LakebaseConnection,
+        min_size=1,
+        max_size=5,
+        open=True,
+    )
+
+    checkpointer = PostgresSaver(pool)
+    checkpointer.setup()
+    logger.info("Lakebase checkpointer initialized (pool, endpoint=%s)", endpoint)
+    return checkpointer
+
+
+def _create_connstring_checkpointer(conn_string: str) -> PostgresSaver:
+    """Fallback: create a PostgresSaver from a static connection string.
+
+    Use this only for non-Lakebase Postgres instances or manual overrides.
+    Note that Lakebase OAuth tokens embedded in the URI expire after 1 hour.
+    """
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+
+    pool = ConnectionPool(
+        conninfo=conn_string,
+        min_size=1,
+        max_size=5,
+        open=True,
+        kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+    )
+
+    checkpointer = PostgresSaver(pool)
+    checkpointer.setup()
+    logger.info("Lakebase checkpointer initialized (static conn string)")
+    return checkpointer
 
 
 def _extract_user_message(request: ResponsesAgentRequest) -> str:
@@ -98,14 +174,21 @@ class AgentGraphModel(ResponsesAgent):
             raw = json.load(f)
         self.graph_def = GraphDef(**raw)
 
+        # Prefer dynamic token refresh (LAKEBASE_ENDPOINT/HOST/DATABASE),
+        # fall back to static connection string (LAKEBASE_CONN_STRING).
         self.checkpointer = None
-        conn_string = os.environ.get("LAKEBASE_CONN_STRING")
-        if conn_string:
-            from langgraph.checkpoint.postgres import PostgresSaver
+        lb_endpoint = os.environ.get("LAKEBASE_ENDPOINT")
+        lb_host = os.environ.get("LAKEBASE_HOST")
+        lb_database = os.environ.get("LAKEBASE_DATABASE")
 
-            self.checkpointer = PostgresSaver.from_conn_string(conn_string)
-            self.checkpointer.setup()
-            logger.info("Lakebase checkpointer initialized")
+        if lb_endpoint and lb_host and lb_database:
+            self.checkpointer = _create_lakebase_checkpointer(
+                lb_endpoint, lb_host, lb_database,
+            )
+        else:
+            conn_string = os.environ.get("LAKEBASE_CONN_STRING")
+            if conn_string:
+                self.checkpointer = _create_connstring_checkpointer(conn_string)
 
         self.compiled_graph = build_graph(
             self.graph_def, checkpointer=self.checkpointer

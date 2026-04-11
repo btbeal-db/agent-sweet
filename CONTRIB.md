@@ -123,6 +123,49 @@ Users provide their PAT at deploy time for operations that need UC write access.
 | Register model in UC | PAT | No UC write OBO scopes |
 | Create serving endpoint | PAT | `model-serving` OBO scope unreliable |
 
+## Lakebase Connection Handling
+
+Conversational agents need persistent state. The app uses Lakebase (Databricks-managed PostgreSQL) as a checkpoint store. Understanding the connection pattern matters if you're modifying the deploy flow or `mlflow_model.py`.
+
+### Why not a static connection string?
+
+Lakebase Autoscaling uses OAuth tokens that expire after 1 hour. A `postgresql://user:token@host/db` URI baked into an env var stops working after the first hour. Model Serving endpoints are long-running, so static credentials don't work.
+
+### The pattern: ConnectionPool with token refresh
+
+Instead of a static connection string, the serving endpoint gets three env vars:
+
+| Env var | Example | Purpose |
+|---|---|---|
+| `LAKEBASE_ENDPOINT` | `projects/my-agent/branches/production/endpoints/primary` | Resource path for `generate_database_credential()` |
+| `LAKEBASE_HOST` | `ep-abc123.database.us-east-1.databricks.com` | Postgres hostname |
+| `LAKEBASE_DATABASE` | `checkpoints` | Postgres database name |
+
+At serving time (`mlflow_model.py`), the model creates a `psycopg_pool.ConnectionPool` with a custom `psycopg.Connection` subclass. Each time the pool opens a new connection, the subclass calls `WorkspaceClient().postgres.generate_database_credential(endpoint=...)` to get a fresh 1-hour OAuth token and passes it as the password.
+
+Key facts:
+- **Open connections survive token expiry.** Lakebase enforces expiry only at login time, not on established connections.
+- **The pool handles rotation transparently.** Existing connections keep working; new ones get fresh tokens.
+- **`WorkspaceClient()` auto-detects credentials** in the Model Serving environment (SP identity).
+- **`PostgresSaver` accepts `ConnectionPool` directly** — LangGraph calls `pool.connection()` for each checkpoint read/write.
+
+A `LAKEBASE_CONN_STRING` fallback exists for non-Lakebase Postgres instances but should be avoided for Lakebase deployments.
+
+### The deploy flow
+
+1. User chooses "Create new" or "Use existing" in the Deploy modal
+2. If "Create new": the deploy endpoint calls `provision_lakebase()` (in `backend/lakebase.py`) using the user's PAT to create a project + database
+3. The three env vars are injected on the `ServedEntityInput` when creating the serving endpoint
+4. If the user provides a raw connection string instead, it's injected as `LAKEBASE_CONN_STRING` (legacy path)
+
+### Auth summary for Lakebase
+
+| When | Who | How |
+|---|---|---|
+| Provisioning (deploy time) | User | PAT-authenticated `WorkspaceClient` |
+| Token generation (serving time) | Service Principal | SP credentials auto-detected by `WorkspaceClient()` |
+| Postgres connection (serving time) | SP identity | OAuth token as password, SP email as username |
+
 ## Pull Requests
 
 ### Guidelines

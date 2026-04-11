@@ -48,6 +48,7 @@ from .auth import (
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
 from .graph_builder import build_graph, filter_output, run_graph
 from .nodes import get_all_metadata
+from .lakebase import LakebaseConfig, provision_lakebase
 from .setup import router as setup_router, ensure_setup_table
 from .schema import (
     DeployEvent,
@@ -504,6 +505,48 @@ def deploy_graph(req: DeployRequest):
             return
         yield _emit("validate", DeployStepStatus.DONE, "Graph compiled successfully")
 
+        # ── Step 1.5: Provision or resolve Lakebase ───────────────────
+        lb_config: LakebaseConfig | None = None
+
+        if req.lakebase_project_id:
+            yield _emit("provision_lakebase", DeployStepStatus.RUNNING,
+                        f"Provisioning Lakebase project '{req.lakebase_project_id}'...")
+            try:
+                if not req.pat:
+                    raise ValueError("A PAT is required to provision Lakebase")
+                masked = mask_sp_env_vars()
+                try:
+                    w = create_pat_client(req.pat)
+                    lb_config = provision_lakebase(
+                        w, req.lakebase_project_id,
+                    )
+                finally:
+                    os.environ.update(masked)
+            except Exception as e:
+                yield _emit("provision_lakebase", DeployStepStatus.ERROR,
+                            f"Lakebase provisioning failed: {e}")
+                return
+            yield _emit("provision_lakebase", DeployStepStatus.DONE,
+                        f"Lakebase ready ({lb_config.host})")
+
+        elif req.lakebase_endpoint and req.lakebase_host and req.lakebase_database:
+            lb_config = LakebaseConfig(
+                endpoint=req.lakebase_endpoint,
+                host=req.lakebase_host,
+                database=req.lakebase_database,
+            )
+            yield _emit("provision_lakebase", DeployStepStatus.DONE,
+                        "Using existing Lakebase instance")
+
+        elif req.lakebase_conn_string:
+            # Legacy: raw connection string — no provisioning step needed
+            yield _emit("provision_lakebase", DeployStepStatus.DONE,
+                        "Using provided connection string")
+
+        else:
+            yield _emit("provision_lakebase", DeployStepStatus.SKIPPED,
+                        "No Lakebase configuration provided")
+
         # ── Step 2: Log model to MLflow ───────────────────────────────
         yield _emit("log_model", DeployStepStatus.RUNNING,
                      f"Logging model to experiment {req.experiment_path}...")
@@ -662,7 +705,11 @@ def deploy_graph(req: DeployRequest):
                 "ENABLE_MLFLOW_TRACING": "true",
                 "MLFLOW_EXPERIMENT_ID": result_data.get("experiment_id", ""),
             }
-            if req.lakebase_conn_string:
+            if lb_config:
+                env_vars["LAKEBASE_ENDPOINT"] = lb_config.endpoint
+                env_vars["LAKEBASE_HOST"] = lb_config.host
+                env_vars["LAKEBASE_DATABASE"] = lb_config.database
+            elif req.lakebase_conn_string:
                 env_vars["LAKEBASE_CONN_STRING"] = req.lakebase_conn_string
 
             served_entity = ServedEntityInput(

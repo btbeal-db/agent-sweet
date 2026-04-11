@@ -69,6 +69,40 @@ When you deploy an agent, the app declares every external resource your graph re
 
 The app never creates shadow admin roles, never bypasses UC permissions, and never stores or logs your PAT.
 
+## Conversational Agents and Lakebase
+
+Agents with conversational (multi-turn) LLM nodes need persistent state between requests. Model Serving is stateless, so the app uses [Lakebase](https://docs.databricks.com/aws/en/oltp/) (Databricks-managed PostgreSQL) as a checkpoint store via LangGraph's `PostgresSaver`.
+
+### How it works
+
+At deploy time, the app configures the serving endpoint with Lakebase connection details. At serving time, the model creates a `psycopg` connection pool with a custom connection class that mints a fresh OAuth token on every new connection via `WorkspaceClient().postgres.generate_database_credential()`. Existing connections remain valid after the token expires — Lakebase enforces expiry only at login — so the pool handles rotation transparently.
+
+### Deploy options
+
+When deploying a full endpoint, you have three choices for Lakebase:
+
+| Option | What you provide | What happens |
+|---|---|---|
+| **Create new** (recommended) | A project ID (e.g. `my-agent`) | The app provisions an Autoscaling Lakebase project with a `checkpoints` database using your PAT. Default config: 0.5–1 CU autoscaling, production branch, primary read-write endpoint. |
+| **Use existing** | Endpoint path, host, and database name | The app uses your existing Lakebase instance. Get these values from the Lakebase project page in your workspace. |
+| **Connection string** (advanced) | A `postgresql://` URI | Static credential passed as-is. Note: Lakebase OAuth tokens expire after 1 hour, so this is mainly useful for non-Lakebase Postgres instances. |
+
+### Prerequisites
+
+Lakebase requires a workspace with serverless support.
+
+### Default parameters
+
+Auto-provisioned projects use these defaults:
+
+- **Tier:** Autoscaling (0.5–1 CU, scale-to-zero enabled)
+- **Branch:** `production` (created automatically)
+- **Endpoint:** `primary` read-write (created automatically)
+- **Database:** `checkpoints`
+- **PostgreSQL version:** Latest supported (currently 16)
+
+These are appropriate for checkpoint storage workloads. For production use with higher throughput, scale the endpoint via the Lakebase project page or CLI.
+
 ## Local Development
 
 ```bash

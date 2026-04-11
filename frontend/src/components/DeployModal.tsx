@@ -17,10 +17,11 @@ interface StepState {
   message: string;
 }
 
-const STEP_NAMES: DeployStepName[] = ["validate", "log_model", "register_model", "create_endpoint"];
+const STEP_NAMES: DeployStepName[] = ["validate", "provision_lakebase", "log_model", "register_model", "create_endpoint"];
 
 const STEP_LABELS: Record<string, string> = {
   validate: "Validate Graph",
+  provision_lakebase: "Configure Lakebase",
   log_model: "Log Model to MLflow",
   register_model: "Register in Unity Catalog",
   create_endpoint: "Create Serving Endpoint",
@@ -102,7 +103,6 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
   const experimentPath = defaultExperimentPath
     ? (experimentName ? `${defaultExperimentPath.replace(/\/+$/, "")}/${experimentName}` : "")
     : experimentName;
-  const [lakebaseConnString, setLakebaseConnString] = useState("");
   const [pat, setPat] = useState("");
   const [deployMode, setDeployMode] = useState<DeployMode>("full");
   const [phase, setPhase] = useState<Phase>("form");
@@ -110,9 +110,28 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
   const [resultData, setResultData] = useState<DeployEvent["data"]>({});
   const [errorMsg, setErrorMsg] = useState("");
 
+  // Lakebase options: "create" | "existing" | "connstring" | "none"
+  type LakebaseMode = "create" | "existing" | "connstring" | "none";
+  const [lakebaseMode, setLakebaseMode] = useState<LakebaseMode>("create");
+  const [lakebaseProjectId, setLakebaseProjectId] = useState("");
+  const [lakebaseEndpoint, setLakebaseEndpoint] = useState("");
+  const [lakebaseHost, setLakebaseHost] = useState("");
+  const [lakebaseDatabase, setLakebaseDatabase] = useState("");
+  const [lakebaseConnString, setLakebaseConnString] = useState("");
+
   const isConversational = hasConversationalNode(graphGetter);
-  const needsLakebase = isConversational && !lakebaseConnString.trim() && deployMode === "full";
   const needsModelName = deployMode !== "log_only";
+
+  const lakebaseValid = (() => {
+    if (deployMode !== "full") return true;
+    if (!isConversational) return true;
+    switch (lakebaseMode) {
+      case "create": return lakebaseProjectId.trim().length > 0;
+      case "existing": return lakebaseEndpoint.trim().length > 0 && lakebaseHost.trim().length > 0 && lakebaseDatabase.trim().length > 0;
+      case "connstring": return lakebaseConnString.trim().length > 0;
+      case "none": return true;
+    }
+  })();
 
   const handleDeploy = useCallback(async () => {
     const stateFields = stateFieldsRef.current ?? [];
@@ -143,9 +162,13 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
           graph,
           model_name: modelName,
           experiment_path: experimentPath,
-          lakebase_conn_string: lakebaseConnString,
           deploy_mode: deployMode,
           pat: pat,
+          lakebase_project_id: lakebaseMode === "create" ? lakebaseProjectId : "",
+          lakebase_endpoint: lakebaseMode === "existing" ? lakebaseEndpoint : "",
+          lakebase_host: lakebaseMode === "existing" ? lakebaseHost : "",
+          lakebase_database: lakebaseMode === "existing" ? lakebaseDatabase : "",
+          lakebase_conn_string: lakebaseMode === "connstring" ? lakebaseConnString : "",
         },
         (event: DeployEvent) => {
           if (event.step === "complete") {
@@ -178,7 +201,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
       setErrorMsg(e instanceof Error ? e.message : "Connection error");
       setPhase("error");
     }
-  }, [graphGetter, stateFieldsRef, modelName, experimentPath, lakebaseConnString, deployMode, pat]);
+  }, [graphGetter, stateFieldsRef, modelName, experimentPath, lakebaseMode, lakebaseProjectId, lakebaseEndpoint, lakebaseHost, lakebaseDatabase, lakebaseConnString, deployMode, pat]);
 
   const doneMessage = deployMode === "full"
     ? "Agent deployed successfully!"
@@ -263,28 +286,92 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
               )}
 
               {deployMode === "full" && (
-                <label className="deploy-label">
-                  Lakebase Connection String
-                  <input
-                    type="text"
-                    className="deploy-input"
-                    placeholder="postgresql://user:pass@host:port/db"
-                    value={lakebaseConnString}
-                    onChange={(e) => setLakebaseConnString(e.target.value)}
-                  />
-                  <span className="deploy-hint">
-                    {isConversational
-                      ? "Required — your graph has conversational LLM nodes."
-                      : "Optional. Enables multi-turn conversation memory."}
-                  </span>
-                  {needsLakebase && (
-                    <span className="deploy-error-hint">
-                      Conversational agents require a Lakebase connection to persist
-                      conversation history. Model Serving is stateless — without it,
-                      multi-turn will not work.
-                    </span>
+                <fieldset className="deploy-fieldset">
+                  <legend className="deploy-legend">
+                    Lakebase (Conversation Memory)
+                    {isConversational && (
+                      <span className="deploy-hint" style={{ fontWeight: "normal", marginLeft: 8 }}>
+                        Required — your graph has conversational nodes
+                      </span>
+                    )}
+                  </legend>
+
+                  <div className="deploy-radio-group">
+                    <label><input type="radio" name="lb" checked={lakebaseMode === "create"} onChange={() => setLakebaseMode("create")} /> Create new Lakebase project</label>
+                    <label><input type="radio" name="lb" checked={lakebaseMode === "existing"} onChange={() => setLakebaseMode("existing")} /> Use existing Lakebase instance</label>
+                    <label><input type="radio" name="lb" checked={lakebaseMode === "connstring"} onChange={() => setLakebaseMode("connstring")} /> Connection string (advanced)</label>
+                    {!isConversational && (
+                      <label><input type="radio" name="lb" checked={lakebaseMode === "none"} onChange={() => setLakebaseMode("none")} /> None</label>
+                    )}
+                  </div>
+
+                  {lakebaseMode === "create" && (
+                    <label className="deploy-label">
+                      Project ID
+                      <input
+                        type="text"
+                        className="deploy-input"
+                        placeholder="my-agent (lowercase, 3-63 chars)"
+                        value={lakebaseProjectId}
+                        onChange={(e) => setLakebaseProjectId(e.target.value)}
+                      />
+                      <span className="deploy-hint">
+                        Creates a Lakebase Autoscaling project with a &quot;checkpoints&quot; database.
+                      </span>
+                    </label>
                   )}
-                </label>
+
+                  {lakebaseMode === "existing" && (
+                    <>
+                      <label className="deploy-label">
+                        Endpoint Path
+                        <input
+                          type="text"
+                          className="deploy-input"
+                          placeholder="projects/my-app/branches/production/endpoints/primary"
+                          value={lakebaseEndpoint}
+                          onChange={(e) => setLakebaseEndpoint(e.target.value)}
+                        />
+                      </label>
+                      <label className="deploy-label">
+                        Host
+                        <input
+                          type="text"
+                          className="deploy-input"
+                          placeholder="ep-abc123.database.us-east-1.databricks.com"
+                          value={lakebaseHost}
+                          onChange={(e) => setLakebaseHost(e.target.value)}
+                        />
+                      </label>
+                      <label className="deploy-label">
+                        Database
+                        <input
+                          type="text"
+                          className="deploy-input"
+                          placeholder="checkpoints"
+                          value={lakebaseDatabase}
+                          onChange={(e) => setLakebaseDatabase(e.target.value)}
+                        />
+                      </label>
+                    </>
+                  )}
+
+                  {lakebaseMode === "connstring" && (
+                    <label className="deploy-label">
+                      Connection String
+                      <input
+                        type="text"
+                        className="deploy-input"
+                        placeholder="postgresql://user:pass@host:port/db"
+                        value={lakebaseConnString}
+                        onChange={(e) => setLakebaseConnString(e.target.value)}
+                      />
+                      <span className="deploy-hint">
+                        Static credential — tokens embedded in the URI expire after 1 hour.
+                      </span>
+                    </label>
+                  )}
+                </fieldset>
               )}
 
               {needsModelName && (
@@ -313,7 +400,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
                   !experimentPath ||
                   (needsModelName && !modelName) ||
                   (needsModelName && !pat) ||
-                  needsLakebase
+                  !lakebaseValid
                 }
                 onClick={handleDeploy}
               >
