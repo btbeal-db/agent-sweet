@@ -121,7 +121,16 @@ def provision_lakebase(
 
     # ── 3. Resolve the owner role for the deploying user ────────────
     user_email = w.current_user.me().user_name
-    owner_role = f"{branch_path}/roles/{user_email}"
+    owner_role = None
+    for role in w.postgres.list_roles(parent=branch_path):
+        if role.status and role.status.postgres_role == user_email:
+            owner_role = role.name
+            break
+    if not owner_role:
+        raise ValueError(
+            f"No Lakebase role found for {user_email} on {branch_path}. "
+            f"Ensure you have access to this project."
+        )
 
     # ── 4. Create the checkpoints database or reuse existing ──────
     try:
