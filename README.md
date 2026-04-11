@@ -1,118 +1,87 @@
-# Agent Builder
+# Agent Sweet
 
 Visual drag-and-drop [LangGraph](https://langchain-ai.github.io/langgraph/) agent builder for Databricks. Build, preview, and deploy AI agents — no code required.
 
 **Built-in node types:** LLM, Router, Vector Search, Genie, UC Function, Human Input
 
-## Prerequisites
+## Deploy
 
-- Databricks workspace with Unity Catalog enabled and [Apps user token passthrough](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/) enabled
-
-## Deploy from Git (recommended)
-
-The easiest way to deploy is directly from this GitHub repository — no local clone or build tools needed.
-
-1. In your Databricks workspace, go to **Compute → Apps**
+1. In your Databricks workspace, go to **Compute > Apps**
 2. Click **Create App** and give it a name
-3. Under **Git repository**, paste this repo's URL and select your Git provider
-4. For private repos, click **Configure Git credential** to add access
-5. Click **Create app**
-6. On the app details page, click **Deploy → From Git**
-7. Set the **Git reference** to `main` and **Reference type** to `Branch`
-8. Click **Deploy**
+3. Under **Git repository**, paste this repo's URL
+4. Click **Deploy > From Git**, set the branch to `main`, and deploy
 
-For more details, see [Deploy from a Git repository](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy/#deploy-from-a-git-repository).
+That's it. The app is live. See [Databricks Apps docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy/#deploy-from-a-git-repository) for details.
 
-## Local Development (optional)
+## First-Time Setup
 
-If you want to run locally or contribute changes:
+Each user completes a one-time setup before deploying agents. Open the app and navigate to the **Setup** page.
 
-### Prerequisites
+### Step 1: Create an experiment folder
 
-- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) v0.230+
-- Node.js 18+ and npm
-- Python 3.11 and [uv](https://docs.astral.sh/uv/)
+In your Databricks workspace, create a folder under your user directory (e.g. `/Users/you@company.com/agent-sweet`). This is where your MLflow experiments will live.
 
-### Setup
+### Step 2: Grant the app access
+
+The Setup page will show the app's service principal name. Grant it **Can Manage** on your folder — the app will try to do this automatically, or show you manual instructions.
+
+### Step 3: Validate
+
+Click **Validate** on the Setup page. The app confirms it can write to your folder.
+
+That's it. You're ready to build and deploy agents.
+
+## Using the App
+
+### Build
+
+Drag nodes onto the canvas, wire them together, and configure each node. Define your agent's state model in the left panel.
+
+### Preview
+
+Click **Playground** to test your agent with live data. Previews use your own identity — you only see data you have access to.
+
+### Deploy
+
+Click **Deploy** and choose a deploy mode:
+
+- **Log Only** — saves the agent as an MLflow model in your experiment folder. No PAT required. You can then register and deploy the model yourself from the Databricks UI (see [Deploy models from Model Registry](https://docs.databricks.com/en/machine-learning/manage-model-lifecycle/index.html)).
+- **Log & Register** or **Full Deploy** — also registers in Unity Catalog and (optionally) creates a serving endpoint. These modes require a Personal Access Token (PAT).
+
+**About your PAT:**
+- Generate one at **Settings > Developer > Access tokens** in your Databricks workspace ([docs](https://docs.databricks.com/en/dev-tools/auth/pat.html))
+- Your PAT is used only for the duration of the deploy request — the app never stores or logs it
+- Treat your PAT like a password: don't share it, don't paste it into chat or email, and set a short expiration when possible
+- If you're not comfortable providing a PAT, use **Log Only** mode and register/deploy from the Databricks UI instead
+
+## Security and Governance
+
+Agent Sweet respects your existing Unity Catalog permissions. Here's how credentials work:
+
+- **Playground** uses your identity (OBO token). You only see data you already have access to.
+- **Model registration and endpoint creation** use your Personal Access Token. Models are registered in catalogs you choose, that you have access to, under your identity.
+- **MLflow experiment logging** uses the app's service principal, scoped to folders you've explicitly shared. The SP cannot access anything you haven't granted it.
+- **Collaboration** is built in. If teammates complete setup, you can load each other's deployed graph definitions, iterate on them, and deploy to your own experiments. The SP's access boundary is the setup grant — nothing more.
+
+The app never creates shadow admin roles, never bypasses UC permissions, and never stores or logs your PAT.
+
+## Local Development
 
 ```bash
-git clone <repo-url> && cd agent-builder-app
-databricks auth login --host https://your-workspace.cloud.databricks.com
-uv sync
-cd frontend && npm install && cd ..
-```
-
-### Run locally
-
-```bash
-# Terminal 1: backend
+# Backend
 uv run uvicorn backend.main:app --reload --port 8000
 
-# Terminal 2: frontend with hot reload
+# Frontend (proxies /api to :8000)
 cd frontend && npm run dev
 ```
 
-The frontend dev server proxies `/api` requests to the backend on port 8000.
-
-### Deploy via CLI
-
-```bash
-# First time — creates the app and provisions compute (~2-3 min)
-./deploy.sh --profile DEFAULT --init
-
-# Subsequent deploys — syncs code + redeploys (~30 sec)
-./deploy.sh --profile DEFAULT
-```
-
-Replace `DEFAULT` with the name of your Databricks CLI profile (run `databricks auth profiles` to list them).
-
-## Architecture
-
-```
-frontend/              React/Vite UI (builds to backend/static/)
-backend/               FastAPI app + LangGraph agent engine
-  nodes/               Pluggable node types (auto-discovered)
-  mlflow_model.py      MLflow pyfunc wrapper for serving deployed agents
-demo/                  Optional: sample data setup script
-app.yaml               Databricks Apps runtime config
-databricks.yml         Databricks Asset Bundle definition
-deploy.sh              Build + deploy helper script
-```
-
-When deployed as a **Databricks App**, the platform automatically injects workspace credentials and the user's identity token (OBO). The FastAPI backend serves both the API and the built frontend static files.
-
-## Deploying Agents (from the UI)
-
-The app lets you visually build agent graphs and deploy them as Model Serving endpoints. The deploy flow:
-
-1. **Log** — saves the agent as an MLflow model with its graph definition as an artifact
-2. **Register** — registers the model version in Unity Catalog
-3. **Serve** — creates a Model Serving endpoint with AI Gateway and inference tables
-
-**Required permissions:**
-- `CREATE MODEL` on the target UC catalog/schema
-- `CREATE SERVING ENDPOINT` on the workspace
-- Access to any resources referenced by your nodes (serving endpoints, vector search indexes, Genie rooms, UC functions)
-
-## Demo Data (optional)
-
-To set up sample vector search indexes and Genie rooms for testing:
-
-```bash
-python demo/setup_demo.py
-```
-
-See `demo/README.md` for options (custom catalog/schema, teardown, etc.).
-
-## Adding Custom Nodes
-
-See [CONTRIB.md](CONTRIB.md) for how to create and register new node types.
+See [CONTRIB.md](CONTRIB.md) for the full developer guide.
 
 ## Troubleshooting
 
 | Issue | Fix |
 |---|---|
-| App deploy fails with "user token passthrough not enabled" | Ask your workspace admin to enable Apps user token passthrough |
-| `requirements-serving.txt` not found during CLI deploy | Run `uv pip compile pyproject.toml -o requirements-serving.txt --python-version 3.11` |
-| Stale deployment state / workspace mismatch | Run `./deploy.sh dev --clean` to clear Terraform state |
-| Auth errors (CLI deploy) | Run `databricks auth env` to verify credentials, then `databricks auth login` to refresh |
+| Setup validation fails | Make sure you created a **folder** (not an MLflow experiment) and granted the SP "Can Manage" |
+| Registration fails with auth error | Check that your PAT is valid and you have `CREATE MODEL` on the target catalog/schema |
+| Endpoint creation fails | Verify your PAT has `CREATE SERVING ENDPOINT` permissions |
+| `requirements-serving.txt` not found | Run `uv pip compile pyproject.toml -o requirements-serving.txt --python-version 3.11` |

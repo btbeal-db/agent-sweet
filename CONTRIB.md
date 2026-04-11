@@ -82,17 +82,46 @@ pyproject.toml         Python package definition (hatchling)
 
 ## Authentication Model
 
-This is important to understand before contributing:
+This is important to understand before contributing. The app uses three credential types depending on the operation:
 
-- **App auth (OBO):** When running as a Databricks App, each request includes the user's OAuth token via `x-forwarded-access-token`. The `OBOMiddleware` in `main.py` stores it in a contextvar. `get_workspace_client()` in `auth.py` uses this token to create a user-scoped `WorkspaceClient`.
+### OBO (On-Behalf-Of) Token
 
-- **SP credentials masking:** The SDK rejects having both a token and client credentials present. `get_workspace_client()` temporarily masks `DATABRICKS_CLIENT_ID`/`SECRET` from the env when creating an OBO client. Do NOT pass `auth_type` to `WorkspaceClient` — let the SDK auto-detect.
+Each request from a logged-in user includes their downscoped OAuth token via the `x-forwarded-access-token` header. `OBOMiddleware` in `main.py` stores it in a contextvar. `get_workspace_client()` in `auth.py` creates a user-scoped `WorkspaceClient` from it.
 
-- **LLM calls use SP credentials:** LLM nodes call Foundation Model API endpoints using the app's service principal (default env vars). FMAPI does not accept OBO tokens.
+**Used for:** Playground/preview (Vector Search, Genie, UC Functions), catalog/schema read validation, setup permission grants.
 
-- **Data-access calls use OBO:** Vector Search, Genie, UC Function nodes all call `get_workspace_client()` which uses the user's token for per-user access control.
+**Important:** The Databricks SDK rejects requests when it sees both a token and OAuth client credentials. `get_workspace_client()` temporarily masks `DATABRICKS_CLIENT_ID`/`SECRET` from the env when creating an OBO client. Do NOT pass `auth_type` to `WorkspaceClient` — let the SDK auto-detect.
 
-- **Known limitation:** The `mlflow` OAuth scope is not available for Databricks Apps. All MLflow operations (log, register) must be done by the user in their own environment, not from the app. This is why deployment generates a notebook rather than deploying directly.
+### Service Principal (SP)
+
+The app's SP credentials are injected by the platform via env vars (`DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`). Use `get_sp_workspace_client()` from `auth.py`.
+
+**Used for:** LLM calls (Foundation Model API doesn't accept OBO), MLflow experiment logging (`set_experiment`, `log_model`), setup config table reads/writes, loading graphs from MLflow runs.
+
+**Why SP for MLflow?** There is no `mlflow` or `ml.experiments` OBO scope available for Databricks Apps. The SP is granted access to each user's experiment folder during the setup flow.
+
+### Personal Access Token (PAT)
+
+Users provide their PAT at deploy time for operations that need UC write access.
+
+**Used for:** Model registration in Unity Catalog, schema creation, serving endpoint creation.
+
+**Why PAT?** There are no UC write OBO scopes (only `catalog.*:read`). The PAT gives the user full permissions under their own identity. It is never stored.
+
+**Implementation detail:** `create_pat_client()` and `mask_sp_env_vars()` in `auth.py` handle PAT-authenticated `WorkspaceClient` creation. For `mlflow.register_model()`, we use a subprocess because MLflow caches `DatabricksConfig` via `@lru_cache` on the registry store — env-var masking alone doesn't override it. See `_register_model_with_pat()` in `main.py`.
+
+### Summary
+
+| Operation | Auth | Why |
+|---|---|---|
+| Preview / Playground | OBO | User's data permissions apply |
+| LLM calls (FMAPI) | SP | FMAPI doesn't accept OBO |
+| MLflow experiment logging | SP | No `ml.experiments` OBO scope |
+| Load graph from MLflow run | SP | Same as above; scoped by setup grants |
+| Setup config table | SP | App-owned Delta table |
+| Setup folder permission grant | OBO | User owns their workspace folder |
+| Register model in UC | PAT | No UC write OBO scopes |
+| Create serving endpoint | PAT | `model-serving` OBO scope unreliable |
 
 ## Pull Requests
 
@@ -260,14 +289,29 @@ It must return a dict with:
 
 ## App Scopes
 
-When adding integrations that call new Databricks APIs via OBO, you may need to add OAuth scopes. Scopes must be added in **two** places:
+When adding integrations that call new Databricks APIs via OBO, you may need to add OAuth scopes in `databricks.yml` under `user_api_scopes`.
 
-1. `databricks.yml` — for documentation (the SDK doesn't propagate these yet)
-2. `deploy.sh` — the API call that actually sets scopes on the app
+**Currently configured scopes:**
 
-Known valid scopes: `catalog.catalogs:read`, `catalog.schemas:read`, `catalog.tables:read`, `dashboards.genie`, `serving.serving-endpoints`, `serving.serving-endpoints-data-plane`, `sql`, `vectorsearch.vector-search-endpoints`, `vectorsearch.vector-search-indexes`
+| Scope | Purpose |
+|---|---|
+| `sql` | SQL warehouse queries, statement execution |
+| `serving.serving-endpoints` | Query serving endpoints (LLM nodes) |
+| `catalog.catalogs:read` | Validate catalog access at deploy time |
+| `catalog.schemas:read` | Validate schema access at deploy time |
+| `catalog.tables:read` | Read UC tables |
+| `vectorsearch.vector-search-endpoints` | Vector Search endpoint access |
+| `vectorsearch.vector-search-indexes` | Vector Search index queries |
 
-If you get a 403 with "required scopes: X", add scope `X` to both places.
+**Discovering available scopes:** Fetch the full list from your workspace's OAuth discovery endpoint:
+
+```bash
+databricks api get /oidc/.well-known/oauth-authorization-server | jq '.scopes_supported'
+```
+
+**Important:** Not all scopes listed in the OAuth discovery endpoint work as OBO scopes for Apps. In particular, `mlflow`, `unity-catalog`, and `model-serving` appear in the list but do not reliably grant access when used as `user_api_scopes`. This is why the deploy flow uses PAT/SP instead of OBO for those operations.
+
+If you get a 403 with "required scopes: X", add scope `X` to `databricks.yml` and redeploy.
 
 ## Quick Reference
 

@@ -378,9 +378,13 @@ def load_graph_from_run(run_id: str):
     show the user what was found before they accept.
     """
     try:
+        # Uses the SP credentials (via MLflow's cached tracking store).
+        # Access is scoped by the SP's permissions — it can only read
+        # experiments that users explicitly shared during setup.  This
+        # allows teammates who both completed setup to load each other's
+        # deployed graphs, which is intentional for collaboration.
         mlflow.set_tracking_uri("databricks")
 
-        # Fetch run metadata
         run = mlflow.get_run(run_id)
         run_name = run.info.run_name or run_id
         experiment_id = run.info.experiment_id
