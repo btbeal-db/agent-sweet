@@ -84,10 +84,7 @@ export default function BuilderWalkthrough({ onDismiss }: Props) {
         }
       `}</style>
 
-      {/* Click anywhere outside the popover to dismiss */}
-      <div className="walkthrough-backdrop" onClick={onDismiss} />
-
-      <div className={`walkthrough walkthrough-${current.position}`} onClick={(e) => e.stopPropagation()}>
+      <div className={`walkthrough walkthrough-${current.position}`}>
         <button className="walkthrough-close" onClick={onDismiss} title="Dismiss">
           <X size={14} />
         </button>
