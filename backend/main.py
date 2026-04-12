@@ -371,10 +371,12 @@ def _read_artifact_via_files_api(w, experiment_id: str, run_id: str, relative_pa
 
     ``mlflow.artifacts.download_artifacts`` follows a presigned-URL redirect to
     ``storage.cloud.databricks.com`` which is unreachable from Databricks Apps.
-    The workspace Files API routes through the workspace host directly.
+    The workspace Files API (GET /api/2.0/fs/files/) routes through the
+    workspace host directly.
     """
+    # No leading slash — the SDK builds /api/2.0/fs/files/{file_path}
     file_path = (
-        f"/WorkspaceInternal/Jobs/mlflow-tracking/"
+        f"WorkspaceInternal/Jobs/mlflow-tracking/"
         f"{experiment_id}/{run_id}/artifacts/{relative_path}"
     )
     logger.info("Downloading artifact via Files API: %s", file_path)
@@ -412,8 +414,6 @@ def load_graph_from_run(run_id: str):
         search_paths = [
             "agent/artifacts/graph_def",
             "agent/artifacts",
-            "agent",
-            "",
         ]
         searched = []
 
