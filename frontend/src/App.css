@@ -1788,8 +1788,8 @@ code, pre, .mono {
   left: 400px;   /* nav(64) + left-panel(320) + gap */
 }
 
-.walkthrough-left-bottom {
-  bottom: 1rem;
+.walkthrough-left-mid {
+  top: 40%;
   left: 400px;
 }
 

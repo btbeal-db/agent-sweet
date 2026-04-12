@@ -9,8 +9,8 @@ interface Props {
  * Each step anchors to a different part of the UI.
  *
  * position tells CSS where to render the popover:
- *   "left-top"     → next to the State Model section
- *   "left-bottom"  → next to the Components palette
+ *   "left-top"     → next to the State Model section (top of sidebar)
+ *   "left-mid"     → next to the Components palette (middle of sidebar)
  *   "center"       → center of the canvas
  *   "top-right"    → near the toolbar actions
  *
@@ -20,7 +20,7 @@ interface Step {
   icon: JSX.Element;
   title: string;
   text: string;
-  position: "left-top" | "left-bottom" | "center" | "top-right";
+  position: "left-top" | "left-mid" | "center" | "top-right";
   highlight: string;
 }
 
@@ -29,14 +29,14 @@ const STEPS: Step[] = [
     icon: <GripVertical size={16} />,
     title: "Drop nodes to start",
     text: "Drag nodes from the Components palette onto the canvas. Each node automatically creates a state field it writes to — no setup needed. You can rename or customize fields in the State panel.",
-    position: "left-top",
+    position: "left-mid",
     highlight: ".palette",
   },
   {
     icon: <Layers size={16} />,
     title: "State model",
     text: "The State panel tracks your agent's shared memory. Fields are created as you add nodes, and each node updates its field via the \"writes to\" setting. You can add or rename fields here.",
-    position: "left-bottom",
+    position: "left-top",
     highlight: ".state-panel",
   },
   {
@@ -56,7 +56,7 @@ const STEPS: Step[] = [
   {
     icon: <Save size={16} />,
     title: "Save & restore",
-    text: "Your entire graph — nodes, edges, configs, and state model — is just JSON. Use Save to export it and Load to restore it later or share with others. Version control friendly.",
+    text: "Your entire graph — nodes, edges, configs, and state model — is just JSON. Use Save to export it, Load to restore from a file, or Import to paste JSON directly (e.g. from an MLflow run artifact).",
     position: "top-right",
     highlight: ".header-group",
   },
