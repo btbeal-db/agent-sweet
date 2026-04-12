@@ -35,6 +35,7 @@ resources:
         - catalog.tables:read
         - vectorsearch.vector-search-endpoints
         - vectorsearch.vector-search-indexes
+        - files.files
 
 targets:
   dev:
