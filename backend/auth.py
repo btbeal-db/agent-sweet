@@ -29,22 +29,15 @@ def get_workspace_client() -> WorkspaceClient:
     """Return a WorkspaceClient using the OBO user token if available,
     otherwise fall back to the default env-var credentials (local dev).
 
-    When an OBO token is present we temporarily mask the service principal's
-    OAuth env vars so the SDK sees only one auth method (the user token).
-    Do NOT pass ``auth_type`` — letting the SDK auto-detect avoids conflicts
-    between legacy-scope PAT handling and OAuth M2M client-credential flows.
+    When an OBO token is present we pass ``auth_type="pat"`` so the SDK
+    uses bearer-token auth directly, skipping its auth detection chain.
+    This avoids conflicts with SP OAuth env vars without needing to
+    mutate ``os.environ`` (which is not thread-safe).
     """
     token = _user_token.get()
     host = os.environ.get("DATABRICKS_HOST", "")
     if token and host:
-        masked = {}
-        for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
-            if key in os.environ:
-                masked[key] = os.environ.pop(key)
-        try:
-            return WorkspaceClient(host=host, token=token)
-        finally:
-            os.environ.update(masked)
+        return WorkspaceClient(host=host, token=token, auth_type="pat")
     return WorkspaceClient()
 
 
@@ -67,34 +60,12 @@ def get_sp_workspace_client() -> WorkspaceClient:
     return WorkspaceClient(host=host, client_id=client_id, client_secret=client_secret)
 
 
-def mask_sp_env_vars() -> dict[str, str]:
-    """Remove SP OAuth env vars and return them for later restoration.
-
-    The Databricks SDK rejects requests when it detects multiple auth methods
-    (e.g. both OAuth client credentials and a PAT).  Call this before creating
-    a ``WorkspaceClient(token=...)`` to avoid conflicts, then restore with
-    ``os.environ.update(masked)``.
-    """
-    masked = {}
-    for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
-        if key in os.environ:
-            masked[key] = os.environ.pop(key)
-    return masked
-
 
 def create_pat_client(pat: str) -> WorkspaceClient:
     """Create a WorkspaceClient authenticated with a user's PAT.
 
-    Temporarily masks the SP OAuth env vars so the SDK sees only one
-    auth method.  The caller is responsible for restoring them afterwards
-    via ``os.environ.update(masked)`` — use :func:`mask_sp_env_vars` for
-    the full mask-use-restore pattern, or rely on the fact that this
-    function restores on its own.
+    Uses ``auth_type="pat"`` so the SDK skips auth detection and ignores
+    any SP OAuth env vars in the environment.  No env-var masking needed.
     """
     host = os.environ.get("DATABRICKS_HOST", "")
-    masked = mask_sp_env_vars()
-    try:
-        return WorkspaceClient(host=host, token=pat)
-    except Exception:
-        os.environ.update(masked)
-        raise
+    return WorkspaceClient(host=host, token=pat, auth_type="pat")

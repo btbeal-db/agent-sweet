@@ -58,7 +58,7 @@ Injected by Databricks Apps in the `x-forwarded-access-token` header on every re
 
 **Used for**: preview/playground (user sees only their data), user identity, Vector Search, Genie, UC Functions.
 
-**Key constraint**: The Databricks SDK rejects requests when it detects multiple auth methods (OBO token + SP OAuth). `get_workspace_client()` temporarily masks `DATABRICKS_CLIENT_ID`/`SECRET` from the environment before creating an OBO client to avoid conflicts. Never pass `auth_type` -- let the SDK auto-detect.
+**Key constraint**: The Databricks SDK rejects requests when it detects multiple auth methods (OBO token + SP OAuth). `get_workspace_client()` passes `auth_type="pat"` so the SDK uses bearer-token auth directly, skipping its auth detection chain. This avoids conflicts with SP env vars without mutating `os.environ` (which is not thread-safe).
 
 **Scopes** (declared in `databricks.yml`): `sql`, `serving.serving-endpoints`, `catalog.*:read`, `vectorsearch.*`.
 
@@ -94,7 +94,7 @@ User provides at deploy time. Never stored, used only for the duration of the re
 - **MLflow artifact downloads from Apps**: `mlflow.artifacts.download_artifacts()` follows presigned URL redirects to `storage.cloud.databricks.com`, which is unreachable from Databricks Apps networking. DBFS root is also disabled. We removed the run-ID-based loading feature in favor of direct JSON paste/import.
 - **Lakebase OAuth token expiry**: Autoscaling projects use tokens that expire after 1 hour. Serving endpoints use a `ConnectionPool` with a custom `Connection` subclass that calls `generate_database_credential()` for fresh tokens on each new connection.
 - **CPU serving tracing**: Endpoints need `ENABLE_MLFLOW_TRACING=true` and `MLFLOW_EXPERIMENT_ID` env vars explicitly. `autolog()` alone is insufficient.
-- **OBO + SP env var conflict**: The SDK fails if both OBO token and SP client creds are present. Always mask SP env vars before creating an OBO client.
+- **OBO + SP env var conflict**: The SDK fails if both OBO token and SP client creds are present. Pass `auth_type="pat"` to force bearer-token auth and skip detection. Do NOT mutate `os.environ` to mask SP vars -- it's not thread-safe.
 
 ## Dev Preferences
 

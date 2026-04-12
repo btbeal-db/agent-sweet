@@ -42,7 +42,6 @@ from .auth import (
     get_workspace_client,
     get_sp_workspace_client,
     create_pat_client,
-    mask_sp_env_vars,
 )
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
 from .graph_builder import build_graph, filter_output, run_graph
@@ -445,15 +444,11 @@ def deploy_graph(req: DeployRequest):
                 if not req.pat:
                     raise ValueError("A PAT is required for Lakebase setup")
                 sp_client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
-                masked = mask_sp_env_vars()
-                try:
-                    w = create_pat_client(req.pat)
-                    lb_fn = provision_lakebase if lb_is_create else resolve_lakebase
-                    lb_config = lb_fn(
-                        w, lb_project_id, req.model_name, sp_client_id,
-                    )
-                finally:
-                    os.environ.update(masked)
+                w = create_pat_client(req.pat)
+                lb_fn = provision_lakebase if lb_is_create else resolve_lakebase
+                lb_config = lb_fn(
+                    w, lb_project_id, req.model_name, sp_client_id,
+                )
             except Exception as e:
                 yield _emit("provision_lakebase", DeployStepStatus.ERROR,
                             f"Lakebase setup failed: {e}")
@@ -538,7 +533,6 @@ def deploy_graph(req: DeployRequest):
 
         yield _emit("register_model", DeployStepStatus.RUNNING,
                      f"Registering {req.model_name} in Unity Catalog...")
-        masked = {}
         try:
             parts = req.model_name.split(".")
             if len(parts) != 3:
@@ -551,7 +545,6 @@ def deploy_graph(req: DeployRequest):
 
             # Build a client for UC operations — PAT (user identity) or SP.
             if req.pat:
-                masked = mask_sp_env_vars()
                 uc_client = create_pat_client(req.pat)
             else:
                 uc_client = get_sp_workspace_client()
@@ -593,12 +586,10 @@ def deploy_graph(req: DeployRequest):
 
             result_data["model_version"] = str(mv.version)
         except Exception as e:
-            os.environ.update(masked)
             mlflow.end_run()
             yield _emit("register_model", DeployStepStatus.ERROR,
                         f"Registration failed: {e}")
             return
-        os.environ.update(masked)
         mlflow.end_run()
         yield _emit("register_model", DeployStepStatus.DONE,
                      f"Registered as {req.model_name} v{mv.version}")
@@ -617,10 +608,8 @@ def deploy_graph(req: DeployRequest):
         sp_id_for_env = os.environ.get("DATABRICKS_CLIENT_ID", "")
         sp_secret_for_env = os.environ.get("DATABRICKS_CLIENT_SECRET", "")
         sp_host_for_env = os.environ.get("DATABRICKS_HOST", "")
-        masked = {}
         try:
             if req.pat:
-                masked = mask_sp_env_vars()
                 w = create_pat_client(req.pat)
             else:
                 w = get_sp_workspace_client()
@@ -694,11 +683,9 @@ def deploy_graph(req: DeployRequest):
                 f"{ep_host}/serving-endpoints/{endpoint_name}/invocations"
             )
         except Exception as e:
-            os.environ.update(masked)
             yield _emit("create_endpoint", DeployStepStatus.ERROR,
                         f"Endpoint creation failed: {e}")
             return
-        os.environ.update(masked)
         yield _emit("create_endpoint", DeployStepStatus.DONE,
                      f"Endpoint ready: {endpoint_name}")
 
