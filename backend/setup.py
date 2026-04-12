@@ -8,16 +8,16 @@ in a workspace file (in the user's own directory) so setup only happens once.
 
 from __future__ import annotations
 
-import io
 import json
 import logging
 import os
 import time
 
 import mlflow
+import requests as http_requests
 from fastapi import APIRouter, HTTPException
 
-from .auth import get_sp_workspace_client, get_workspace_client
+from .auth import get_sp_workspace_client, get_user_token, get_workspace_client
 from .schema import (
     SetupInfoResponse,
     SetupStatusResponse,
@@ -39,31 +39,48 @@ def _user_config_path(email: str) -> str:
     return f"/Users/{email}/{_SETUP_FILENAME}"
 
 
+def _workspace_files_headers() -> dict[str, str]:
+    """Return auth headers using the OBO user token."""
+    token = get_user_token()
+    if not token:
+        raise RuntimeError("No OBO token available")
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _workspace_files_url(path: str) -> str:
+    """Build the Workspace Files REST URL for a given path."""
+    host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
+    return f"{host}/api/2.0/workspace-files/{path.lstrip('/')}"
+
+
 def _read_user_config(email: str) -> dict | None:
-    """Read a user's setup config from their workspace directory via OBO."""
-    path = _user_config_path(email)
+    """Read a user's setup config via the Workspace Files API (files.files scope)."""
+    url = _workspace_files_url(_user_config_path(email))
     try:
-        w = get_workspace_client()
-        resp = w.workspace.download(path)
-        return json.loads(resp.read())
+        resp = http_requests.get(url, headers=_workspace_files_headers(), timeout=10)
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
     except Exception:
         return None
 
 
 def _write_user_config(email: str, experiment_path: str) -> None:
-    """Write a user's setup config to their workspace directory via OBO."""
-    path = _user_config_path(email)
+    """Write a user's setup config via the Workspace Files API (files.files scope)."""
+    url = _workspace_files_url(_user_config_path(email))
     data = {
         "user_email": email,
         "experiment_path": experiment_path,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    w = get_workspace_client()
-    w.workspace.upload(
-        path,
-        io.BytesIO(json.dumps(data, indent=2).encode()),
-        overwrite=True,
+    resp = http_requests.put(
+        url,
+        data=json.dumps(data, indent=2).encode(),
+        headers={**_workspace_files_headers(), "Content-Type": "application/octet-stream"},
+        timeout=10,
     )
+    resp.raise_for_status()
 
 
 def _get_user_email() -> str:
