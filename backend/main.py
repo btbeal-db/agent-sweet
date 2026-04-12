@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import glob
 import json
 import logging
 import os
@@ -367,6 +366,26 @@ def preview_graph(req: PreviewRequest):
         mlflow.set_tracking_uri(prev_tracking_uri)
 
 
+def _read_artifact_via_dbfs(w, artifact_uri: str, relative_path: str) -> str:
+    """Read artifact content through the workspace DBFS API.
+
+    ``mlflow.artifacts.download_artifacts`` follows a presigned-URL redirect to
+    ``storage.cloud.databricks.com`` which is unreachable from Databricks Apps.
+    The DBFS ``read`` endpoint returns the content inline (base64-encoded) and
+    routes exclusively through the workspace host, avoiding the redirect.
+    """
+    import base64
+
+    if artifact_uri.startswith("dbfs:"):
+        base_path = artifact_uri[5:]  # strip "dbfs:" → "/databricks/mlflow-tracking/…"
+    else:
+        base_path = artifact_uri
+
+    full_path = f"{base_path}/{relative_path}"
+    resp = w.dbfs.read(full_path)
+    return base64.b64decode(resp.data).decode("utf-8")
+
+
 @app.get("/api/graph/load-from-run")
 def load_graph_from_run(run_id: str):
     """Load a GraphDef from an MLflow run's artifacts.
@@ -385,6 +404,10 @@ def load_graph_from_run(run_id: str):
         run = mlflow.get_run(run_id)
         run_name = run.info.run_name or run_id
         experiment_id = run.info.experiment_id
+        artifact_uri = run.info.artifact_uri
+
+        w = get_sp_workspace_client()
+        client = mlflow.MlflowClient(tracking_uri="databricks")
 
         search_paths = [
             "agent/artifacts/graph_def",
@@ -397,25 +420,20 @@ def load_graph_from_run(run_id: str):
         for artifact_path in search_paths:
             searched.append(artifact_path or "(root)")
             try:
-                local_path = mlflow.artifacts.download_artifacts(
-                    run_id=run_id,
-                    artifact_path=artifact_path or None,
-                    tracking_uri="databricks",
+                artifacts = client.list_artifacts(
+                    run_id, path=artifact_path if artifact_path else None
                 )
             except Exception:
                 continue
 
-            if Path(local_path).is_dir():
-                json_files = glob.glob(f"{local_path}/*.json")
-            elif local_path.endswith(".json"):
-                json_files = [local_path]
-            else:
-                continue
-
-            for jf in json_files:
+            for artifact_info in artifacts:
+                if artifact_info.is_dir or not artifact_info.path.endswith(".json"):
+                    continue
                 try:
-                    with open(jf) as f:
-                        graph_data = json.load(f)
+                    content = _read_artifact_via_dbfs(
+                        w, artifact_uri, artifact_info.path
+                    )
+                    graph_data = json.loads(content)
                     if "nodes" in graph_data and "edges" in graph_data:
                         graph = GraphDef.model_validate(graph_data)
                         return {
