@@ -41,15 +41,15 @@ class TestGetWorkspaceClient:
             else:
                 os.environ.pop("DATABRICKS_HOST", None)
 
-    def test_sp_env_vars_untouched_during_obo(self):
-        """auth_type='pat' means SP env vars are never popped from os.environ."""
+    def test_sp_env_vars_restored_after_obo(self):
+        """SP env vars are masked during OBO client creation but restored after."""
         os.environ["DATABRICKS_HOST"] = "https://test.cloud.databricks.com"
         os.environ["DATABRICKS_CLIENT_ID"] = "test-client-id"
         os.environ["DATABRICKS_CLIENT_SECRET"] = "test-secret"
         set_user_token("obo-token")
         try:
             get_workspace_client()
-            # Env vars should be untouched — auth_type="pat" bypasses detection
+            # Env vars should be restored after the client is created
             assert os.environ.get("DATABRICKS_CLIENT_ID") == "test-client-id"
             assert os.environ.get("DATABRICKS_CLIENT_SECRET") == "test-secret"
         finally:

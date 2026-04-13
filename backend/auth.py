@@ -29,15 +29,24 @@ def get_workspace_client() -> WorkspaceClient:
     """Return a WorkspaceClient using the OBO user token if available,
     otherwise fall back to the default env-var credentials (local dev).
 
-    When an OBO token is present we pass ``auth_type="pat"`` so the SDK
-    uses bearer-token auth directly, skipping its auth detection chain.
-    This avoids conflicts with SP OAuth env vars without needing to
-    mutate ``os.environ`` (which is not thread-safe).
+    When an OBO token is present we temporarily mask the service principal's
+    OAuth env vars so the SDK doesn't load them into its Config, then pass
+    ``auth_type="pat"`` so it uses bearer-token auth directly.  Both are
+    required: masking keeps ``client_id``/``client_secret`` out of the
+    Config (otherwise the server treats the request as an SP OAuth call
+    with wrong scopes), and ``auth_type="pat"`` forces bearer-token auth.
     """
     token = _user_token.get()
     host = os.environ.get("DATABRICKS_HOST", "")
     if token and host:
-        return WorkspaceClient(host=host, token=token, auth_type="pat")
+        masked = {}
+        for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
+            if key in os.environ:
+                masked[key] = os.environ.pop(key)
+        try:
+            return WorkspaceClient(host=host, token=token, auth_type="pat")
+        finally:
+            os.environ.update(masked)
     return WorkspaceClient()
 
 
@@ -60,12 +69,18 @@ def get_sp_workspace_client() -> WorkspaceClient:
     return WorkspaceClient(host=host, client_id=client_id, client_secret=client_secret)
 
 
-
 def create_pat_client(pat: str) -> WorkspaceClient:
     """Create a WorkspaceClient authenticated with a user's PAT.
 
-    Uses ``auth_type="pat"`` so the SDK skips auth detection and ignores
-    any SP OAuth env vars in the environment.  No env-var masking needed.
+    Masks SP OAuth env vars and uses ``auth_type="pat"`` so the SDK
+    sees only the PAT.  Always restores env vars via ``finally``.
     """
     host = os.environ.get("DATABRICKS_HOST", "")
-    return WorkspaceClient(host=host, token=pat, auth_type="pat")
+    masked = {}
+    for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
+        if key in os.environ:
+            masked[key] = os.environ.pop(key)
+    try:
+        return WorkspaceClient(host=host, token=pat, auth_type="pat")
+    finally:
+        os.environ.update(masked)
