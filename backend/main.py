@@ -236,13 +236,43 @@ def test_vector_search(index_name: str, request: FastAPIRequest, query: str = "t
         finally:
             os.environ.update(masked)
 
+    # Also test what OBO can actually do with catalog APIs
+    obo_checks = {}
+    masked = {}
+    for key in ("DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET"):
+        if key in os.environ:
+            masked[key] = os.environ.pop(key)
+    try:
+        w = WorkspaceClient(host=host, token=token, auth_type="pat")
+
+        # Can OBO read the table/index metadata?
+        try:
+            t = w.tables.get(full_name=index_name)
+            obo_checks["tables.get"] = {"success": True, "table_type": str(t.table_type)}
+        except Exception as exc:
+            obo_checks["tables.get"] = {"success": False, "error": str(exc)}
+
+        # Can OBO list grants?
+        try:
+            g = w.grants.get_effective(securable_type="TABLE", full_name=index_name)
+            obo_checks["grants.get_effective"] = {"success": True, "count": len(g.privilege_assignments or [])}
+        except Exception as exc:
+            obo_checks["grants.get_effective"] = {"success": False, "error": str(exc)}
+
+        # Can OBO get current user? (sanity check)
+        try:
+            me = w.current_user.me()
+            obo_checks["current_user"] = {"success": True, "user": me.user_name}
+        except Exception as exc:
+            obo_checks["current_user"] = {"success": False, "error": str(exc)}
+    finally:
+        os.environ.update(masked)
+
     return {
         "token_length": len(token),
-        "results": [
-            _try_query("auth_type=pat, masked=yes",    auth_type="pat",  mask=True),
-            _try_query("auth_type=pat, masked=no",     auth_type="pat",  mask=False),
-            _try_query("auth_type=None, masked=yes",   auth_type=None,   mask=True),
-            _try_query("auth_type=None, masked=no",    auth_type=None,   mask=False),
+        "obo_checks": obo_checks,
+        "vs_results": [
+            _try_query("auth_type=pat, masked=yes", auth_type="pat", mask=True),
         ],
     }
 
