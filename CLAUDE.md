@@ -50,53 +50,62 @@ Three modes:
 
 ## Authentication Model
 
-Three credential types, each serving a distinct purpose:
+Three credential types. The PAT-first model is a pragmatic response to platform limitations, not a design preference -- if OBO scopes for Vector Search, Unity Catalog writes, and MLflow become available, the PAT requirement can be removed. The OBO fallback path is already wired in via `get_data_client()`.
 
-### OBO (On-Behalf-Of) Token
+### Why PAT instead of OBO?
 
-Injected by Databricks Apps in the `x-forwarded-access-token` header on every request. Stored per-request via `ContextVar` in middleware.
+Databricks Apps inject an OBO token per request, but many critical scopes don't work (as of April 2026):
 
-**Used for**: preview/playground (user sees only their data), user identity, Vector Search, Genie, UC Functions.
+- `vector-search` -- required by the VS API, but **not a valid configurable OBO scope** (the platform rejects it)
+- `unity-catalog` -- scope exists but returns 403 for `tables.get` and write operations
+- `model-serving` (write) -- appears in OAuth discovery but doesn't grant access
+- `mlflow` / `ml.experiments` -- does not exist as an OBO scope
 
-**Key constraint**: The Databricks SDK loads all env vars into its Config, including SP creds. If both OBO token and `client_id`/`client_secret` are present, the server treats the request as an SP OAuth call (wrong scopes). `get_workspace_client()` temporarily masks `DATABRICKS_CLIENT_ID`/`SECRET` from the environment AND passes `auth_type="pat"` to force bearer-token auth. Both are required.
+We verified this with a bare-bones diagnostic endpoint (`GET /api/test-vs` in `main.py`) that tries every auth combination. The endpoint is kept for future regression testing. No custom `user_api_scopes` are declared in `databricks.yml` -- the default scopes (`iam.current-user:read`, `iam.access-control:read`) are sufficient.
 
-**Scopes** (declared in `databricks.yml`): `sql`, `serving.serving-endpoints`, `catalog.*:read`, `vectorsearch.*`.
+### Deployment is zero-config
 
-### Service Principal (SP)
+Users link the GitHub repo to a Databricks App and deploy. No custom scopes, no bundle variables, no infrastructure to provision. The only prerequisites are:
 
-Env vars `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET` auto-injected by Apps platform.
+1. **MLflow setup (one-time)** -- user creates a workspace folder and grants the SP "Can Manage" so the app can log models during deploy
+2. **PAT (each session)** -- user pastes a PAT in the builder banner so the app can access their workspace resources
 
-**Used for**: LLM calls (FMAPI rejects OBO), MLflow experiment logging (no `ml.experiments` OBO scope exists), setup config persistence, graph loading.
+### Credential types
 
-**Why SP for MLflow?** No OBO scopes exist for MLflow operations. The SP is scoped: during setup the user grants "Can Manage" on their experiment folder. The SP has no access to folders it hasn't been granted.
+**User PAT** -- provided via the builder banner UI. Stored in React `useState` (browser memory only, never persisted). Sent with preview/deploy requests. Backend holds it in a `ContextVar`, cleared in `finally` after each request.
 
-### Personal Access Token (PAT)
+- `get_data_client()` in `auth.py`: returns a PAT client if available, OBO fallback otherwise
+- All data-access nodes (VS, Genie) and tools call `get_data_client()`
+- Deploy modal pre-fills from the banner PAT
 
-User provides at deploy time. Never stored, used only for the duration of the request.
+**OBO Token** -- injected by Apps proxy via `x-forwarded-access-token`. Stored per-request in a `ContextVar` by `OBOMiddleware`.
 
-**Used for**: UC model registration, schema creation, serving endpoint creation.
+- `get_workspace_client()` in `auth.py`: masks SP env vars + `auth_type="pat"` (both required -- without masking, the SDK loads SP creds into its Config and the server treats it as an SP OAuth call)
+- Used for: user identity (`current_user.me()`), and as the fallback in `get_data_client()` when no PAT is provided
 
-**Why PAT?** No UC write OBO scopes exist (only `catalog.*:read`). OBO scopes for `mlflow`, `unity-catalog`, and `model-serving` appear in the OAuth discovery endpoint but don't actually grant access in practice (as of April 2026).
+**Service Principal (SP)** -- env vars auto-injected by the Apps platform. `get_sp_workspace_client()` in `auth.py`.
 
-**Implementation detail**: `mlflow.register_model()` is run in a subprocess because MLflow caches `DatabricksConfig` via `@lru_cache` -- env-var masking in the same process doesn't override it.
+- Used for: LLM calls (FMAPI rejects OBO/PAT), MLflow experiment logging (no OBO scope), setup config persistence
+- SP access is scoped: it can only reach folders users have explicitly granted during setup
+
+**Implementation detail**: `mlflow.register_model()` runs in a subprocess because MLflow caches `DatabricksConfig` via `@lru_cache` -- env-var masking in the same process doesn't override it.
 
 | Operation | Credential | Why |
 |---|---|---|
-| Preview / Playground | PAT > OBO | PAT preferred (full perms); OBO fallback for SQL/Genie |
-| Vector Search | PAT | No OBO `vector-search` scope exists |
-| Genie | PAT > OBO | PAT preferred; OBO works via `dashboards.genie` scope |
-| LLM inference (ChatDatabricks) | SP | FMAPI rejects OBO |
+| Preview -- VS, Genie, UC Functions | PAT > OBO | PAT preferred; OBO lacks `vector-search` scope |
+| Preview -- LLM inference | SP | FMAPI rejects OBO and PAT |
+| User identity | OBO | Default `iam.current-user:read` scope works |
 | MLflow experiment logging | SP | No OBO scope for MLflow |
-| Setup config persistence | SP | Workspace file write |
+| Setup config persistence | SP | Workspace file write (SP has Can Manage) |
 | UC model registration | PAT | No UC write OBO scopes |
-| Serving endpoint creation | PAT | model-serving scope unreliable |
+| Serving endpoint creation | PAT | `model-serving` OBO scope unreliable |
 
 ## Known Gotchas
 
 - **MLflow artifact downloads from Apps**: `mlflow.artifacts.download_artifacts()` follows presigned URL redirects to `storage.cloud.databricks.com`, which is unreachable from Databricks Apps networking. DBFS root is also disabled. We removed the run-ID-based loading feature in favor of direct JSON paste/import.
 - **Lakebase OAuth token expiry**: Autoscaling projects use tokens that expire after 1 hour. Serving endpoints use a `ConnectionPool` with a custom `Connection` subclass that calls `generate_database_credential()` for fresh tokens on each new connection.
 - **CPU serving tracing**: Endpoints need `ENABLE_MLFLOW_TRACING=true` and `MLFLOW_EXPERIMENT_ID` env vars explicitly. `autolog()` alone is insufficient.
-- **OBO + SP env var conflict**: The SDK loads `client_id`/`client_secret` from env into its Config even with `auth_type="pat"`. If both are present, the server treats it as an SP OAuth call (wrong scopes). Must mask SP env vars before creating OBO client AND pass `auth_type="pat"`. Always restore via `finally`.
+- **OBO + SP env var conflict**: The SDK loads `client_id`/`client_secret` from env into its Config even with `auth_type="pat"`. If both are present, the server treats it as an SP OAuth call (wrong scopes). `get_workspace_client()` masks SP env vars before creating an OBO client AND passes `auth_type="pat"`. Both are required. Always restore via `finally`.
 
 ## Dev Preferences
 
@@ -132,7 +141,7 @@ frontend/src/
     ChatPlayground.tsx -- Preview/test agent
 
 app.yaml           -- Databricks Apps runtime config
-databricks.yml     -- Asset Bundle definition (app + OBO scopes)
+databricks.yml     -- Asset Bundle definition (app name + uvicorn command, no custom scopes)
 deploy.sh          -- Build frontend + bundle deploy + app deploy
 ```
 
@@ -140,5 +149,5 @@ deploy.sh          -- Build frontend + bundle deploy + app deploy
 
 1. Create `backend/nodes/your_node.py` with a class extending `BaseNode`, decorated with `@register`
 2. Implement `node_type`, `display_name`, `config_fields`, and `execute(state, config)`
-3. If it accesses Databricks resources: add resource extraction in `main.py:_extract_resources()` and OBO scopes in `databricks.yml`
+3. If it accesses Databricks resources: use `get_data_client()` (PAT > OBO) and add resource extraction in `main.py:_extract_resources()`
 4. If it can be an LLM tool: set `tool_compatible = True` and add a factory in `tools.py`
