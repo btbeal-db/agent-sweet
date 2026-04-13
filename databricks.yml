@@ -27,14 +27,9 @@ resources:
           - 0.0.0.0
           - --port
           - "8000"
-      user_api_scopes:
-        - sql
-        - serving.serving-endpoints
-        - catalog.catalogs:read
-        - catalog.schemas:read
-        - catalog.tables:read
-        - vectorsearch.vector-search-endpoints
-        - vectorsearch.vector-search-indexes
+      # No user_api_scopes needed — default scopes (iam.current-user:read,
+      # iam.access-control:read) are sufficient. All data-access operations
+      # use the user's PAT, not the OBO token.
 
 targets:
   dev:

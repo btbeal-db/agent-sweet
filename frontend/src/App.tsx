@@ -297,7 +297,7 @@ export default function App() {
             )}
             {!pat && showPatInput && (
               <span className="pat-banner-hint">
-                Enables Vector Search &amp; Genie in the playground. Held in memory only.
+                Lets the app access your workspace resources. Held in memory only.
               </span>
             )}
           </div>

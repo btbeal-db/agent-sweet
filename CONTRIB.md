@@ -35,7 +35,7 @@ cd frontend && npm run dev
 
 The Vite dev server runs on `:3000` and proxies `/api` requests to the backend on `:8000`.
 
-**Auth in local dev:** There is no OBO token locally. `get_workspace_client()` falls back to your Databricks CLI credentials (from `databricks auth login`). This means local preview uses your identity directly.
+**Auth in local dev:** There is no OBO token locally. `get_workspace_client()` falls back to your Databricks CLI credentials (from `databricks auth login`). You can also paste a PAT in the builder banner — this works the same locally as in production.
 
 ### Building for deployment
 
@@ -82,45 +82,62 @@ pyproject.toml         Python package definition (hatchling)
 
 ## Authentication Model
 
-This is important to understand before contributing. The app uses three credential types depending on the operation:
+This is important to understand before contributing. The app uses three credential types, and the reasons for each are rooted in platform limitations — not design preference.
 
-### OBO (On-Behalf-Of) Token
+### Why the PAT?
 
-Each request from a logged-in user includes their downscoped OAuth token via the `x-forwarded-access-token` header. `OBOMiddleware` in `main.py` stores it in a contextvar. `get_workspace_client()` in `auth.py` creates a user-scoped `WorkspaceClient` from it.
+Databricks Apps inject an on-behalf-of (OBO) OAuth token for each logged-in user. In theory, this token should let the app call any Databricks API as the user. In practice, many critical OBO scopes either don't exist or don't work:
 
-**Used for:** Playground/preview (Vector Search, Genie, UC Functions), catalog/schema read validation, user identity resolution (setup status check).
+| Scope needed | Status (as of April 2026) |
+|---|---|
+| `vector-search` | **Not a valid OBO scope.** The Vector Search API requires it, but the Apps platform rejects it as an invalid scope when configured. |
+| `unity-catalog` | **Scope exists but returns 403.** Catalog read scopes (`catalog.*:read`) work; write operations and `tables.get` do not. |
+| `model-serving` (write) | **Unreliable.** Appears in OAuth discovery but doesn't grant access. |
+| `mlflow` / `ml.experiments` | **Does not exist** as an OBO scope. |
 
-**Important:** The Databricks SDK rejects requests when it sees both a token and OAuth client credentials. `get_workspace_client()` temporarily masks `DATABRICKS_CLIENT_ID`/`SECRET` from the env when creating an OBO client. Do NOT pass `auth_type` to `WorkspaceClient` — let the SDK auto-detect.
+We verified this empirically: a bare-bones `/api/test-vs` endpoint (still in `main.py`) creates a `WorkspaceClient` directly from the OBO token and calls `query_index`. Every auth combination (with/without `auth_type="pat"`, with/without env var masking) returns the same scope error. The test endpoint is kept for future regression testing as the platform evolves.
 
-### Service Principal (SP)
+Because of these gaps, the app asks users to provide a Personal Access Token (PAT) via a banner in the builder UI. The PAT has full permissions under the user's identity, bypassing all scope limitations. **If these OBO scopes become available in the future, the PAT requirement can be removed** — the fallback path through `get_workspace_client()` (OBO) is already in place.
 
-The app's SP credentials are injected by the platform via env vars (`DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`). Use `get_sp_workspace_client()` from `auth.py`.
+### Credential types
 
-**Used for:** LLM calls (Foundation Model API doesn't accept OBO), MLflow experiment logging (`set_experiment`, `log_model`), setup config persistence (workspace file in experiment dir), loading graphs from MLflow runs.
+#### User PAT (preferred for data access)
 
-**Why SP for MLflow?** There is no `mlflow` or `ml.experiments` OBO scope available for Databricks Apps. The SP is granted access to each user's experiment folder during the setup flow.
+Users paste their PAT in the builder banner. It's stored in a React `useState` (browser memory only — no localStorage, no cookies, no disk) and sent with each preview/deploy request. On the backend, it's held in a `ContextVar` for the request lifetime and explicitly cleared in `finally`.
 
-### Personal Access Token (PAT)
+`get_data_client()` in `auth.py` checks for a PAT first, then falls back to OBO. All data-access nodes (Vector Search, Genie) and their tool equivalents call `get_data_client()`.
 
-Users provide their PAT at deploy time for operations that need UC write access.
+**Used for:** Preview/playground (VS, Genie, UC Functions), model registration, schema creation, serving endpoint creation.
 
-**Used for:** Model registration in Unity Catalog, schema creation, serving endpoint creation.
+#### OBO (On-Behalf-Of) Token
 
-**Why PAT?** There are no UC write OBO scopes (only `catalog.*:read`). The PAT gives the user full permissions under their own identity. It is never stored.
+Injected by the Apps proxy via `x-forwarded-access-token`. `OBOMiddleware` stores it in a contextvar. `get_workspace_client()` creates a user-scoped `WorkspaceClient` from it, masking SP env vars and passing `auth_type="pat"` (both required — see below).
 
-**Implementation detail:** `create_pat_client()` and `mask_sp_env_vars()` in `auth.py` handle PAT-authenticated `WorkspaceClient` creation. For `mlflow.register_model()`, we use a subprocess because MLflow caches `DatabricksConfig` via `@lru_cache` on the registry store — env-var masking alone doesn't override it. See `_register_model_with_pat()` in `main.py`.
+**Used for:** User identity resolution (setup status, `current_user.me()`), SQL queries, Genie (when no PAT is provided). Also serves as the fallback in `get_data_client()` when no PAT is available — works for APIs with valid OBO scopes, fails for VS.
+
+**Important SDK behavior:** The Databricks SDK loads `DATABRICKS_CLIENT_ID`/`SECRET` from the environment into its Config even when you pass `token=`. If both are present, the server treats the request as an SP OAuth call (wrong scopes). `get_workspace_client()` masks these env vars before creating the client and passes `auth_type="pat"` to force bearer-token auth. Both are required.
+
+#### Service Principal (SP)
+
+Env vars `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET` injected by the platform. Use `get_sp_workspace_client()`.
+
+**Used for:** LLM calls (FMAPI rejects OBO tokens), MLflow experiment logging, setup config persistence.
 
 ### Summary
 
 | Operation | Auth | Why |
 |---|---|---|
-| Preview / Playground | OBO | User's data permissions apply |
-| LLM calls (FMAPI) | SP | FMAPI doesn't accept OBO |
-| MLflow experiment logging | SP | No `ml.experiments` OBO scope |
-| Load graph from MLflow run | SP | Same as above; scoped by setup grants |
-| Setup config persistence | SP | Workspace file in experiment dir (SP has Can Manage) |
-| Register model in UC | PAT | No UC write OBO scopes |
-| Create serving endpoint | PAT | `model-serving` OBO scope unreliable |
+| Preview — VS, Genie, UC Functions | PAT > OBO | PAT preferred; OBO lacks `vector-search` scope |
+| Preview — LLM inference | SP | FMAPI rejects OBO and PAT |
+| User identity | OBO | `iam.current-user:read` scope works |
+| MLflow experiment logging | SP | No OBO scope for MLflow |
+| Setup config persistence | SP | Workspace file write (SP has Can Manage) |
+| UC model registration | PAT | No UC write OBO scopes |
+| Serving endpoint creation | PAT | `model-serving` OBO scope unreliable |
+
+### Implementation detail
+
+`create_pat_client()` in `auth.py` handles PAT-authenticated `WorkspaceClient` creation with env var masking and `auth_type="pat"`. For `mlflow.register_model()`, we run in a subprocess because MLflow caches `DatabricksConfig` via `@lru_cache` — env-var masking in the same process doesn't override it. See `_register_model_with_pat()` in `main.py`.
 
 ## Lakebase Connection Handling
 
@@ -283,7 +300,7 @@ If your node can also be used as a tool attached to an LLM node:
 2. Add a tool factory function in `backend/tools.py` (e.g., `_make_your_tool()`)
 3. Register it in the `make_tools()` switch statement
 
-Tool functions use `get_workspace_client()` for data access — same OBO auth as nodes.
+Tool functions use `get_data_client()` for data access — PAT when available, OBO fallback.
 
 ## Config Field Types
 
@@ -351,9 +368,9 @@ When adding integrations that call new Databricks APIs via OBO, you may need to 
 databricks api get /oidc/.well-known/oauth-authorization-server | jq '.scopes_supported'
 ```
 
-**Important:** Not all scopes listed in the OAuth discovery endpoint work as OBO scopes for Apps. In particular, `mlflow`, `unity-catalog`, and `model-serving` appear in the list but do not reliably grant access when used as `user_api_scopes`. This is why the deploy flow uses PAT/SP instead of OBO for those operations.
+**Important:** Not all scopes listed in the OAuth discovery endpoint work as OBO scopes for Apps. In particular, `vector-search` (required by the VS API) is not a valid configurable scope, and `mlflow`, `unity-catalog`, and `model-serving` appear in the list but do not reliably grant access. This is why the app uses PATs for data-access operations and SP for MLflow — see the Authentication Model section above.
 
-If you get a 403 with "required scopes: X", add scope `X` to `databricks.yml` and redeploy.
+If you get a 403 with "required scopes: X", first check whether the scope is actually available as an OBO scope (it may not be). The `/api/test-vs` diagnostic endpoint in `main.py` can help verify.
 
 ## Quick Reference
 

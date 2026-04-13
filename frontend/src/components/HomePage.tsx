@@ -15,6 +15,7 @@ import {
   User,
   Wrench,
   History,
+  Key,
 } from "lucide-react";
 
 interface Props {
@@ -265,6 +266,23 @@ export default function HomePage({ onGetStarted }: Props) {
         </div>
       </section>
 
+      {/* PAT */}
+      <section className="home-section">
+        <h2>Connect your PAT</h2>
+        <p className="home-section-desc">
+          Click <strong>Connect PAT</strong> in the builder banner to paste a
+          Personal Access Token. This lets the app access your workspace
+          resources — Vector Search indexes, Genie rooms, UC functions — under
+          your identity. Your token is held in browser memory only and is never
+          stored or logged.
+        </p>
+        <p className="home-section-desc">
+          Generate a PAT at{" "}
+          <strong>Settings &gt; Developer &gt; Access tokens</strong> in your
+          Databricks workspace.
+        </p>
+      </section>
+
       {/* Permissions */}
       <section className="home-section">
         <h2>Required permissions</h2>
@@ -274,6 +292,13 @@ export default function HomePage({ onGetStarted }: Props) {
           are missing.
         </p>
         <div className="home-perms">
+          <div className="home-perm">
+            <Key size={16} />
+            <div>
+              <strong>Personal Access Token</strong>
+              <span>Required for playground previews and deployment</span>
+            </div>
+          </div>
           <div className="home-perm">
             <Shield size={16} />
             <div>

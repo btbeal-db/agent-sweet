@@ -6,32 +6,40 @@ Visual drag-and-drop [LangGraph](https://langchain-ai.github.io/langgraph/) agen
 
 ## Deploy
 
+No custom scopes, no infrastructure, no bundle variables. Just link the repo:
+
 1. In your Databricks workspace, go to **Compute > Apps**
 2. Click **Create App** and give it a name
 3. Under **Git repository**, paste this repo's URL
 4. Click **Deploy > From Git**, set the branch to `main`, and deploy
 
-That's it. The app is live. See [Databricks Apps docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy/#deploy-from-a-git-repository) for details.
+The app is live. See [Databricks Apps docs](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/deploy/#deploy-from-a-git-repository) for details.
 
 ## First-Time Setup
 
-Each user completes a one-time setup before deploying agents. Open the app and navigate to the **Setup** page.
+Each user completes two steps before building agents:
 
-### Step 1: Create an experiment folder
+### 1. MLflow experiment folder (one-time, on the Setup page)
 
-In your Databricks workspace, create a folder under your user directory (e.g. `/Users/you@company.com/agent-sweet`). This is where your MLflow experiments will live.
+This lets the app log MLflow models on your behalf when you deploy.
 
-### Step 2: Grant the app access
+1. Create a folder under your user directory (e.g. `/Users/you@company.com/agent-sweet`)
+2. The Setup page shows the app's service principal name — grant it **Can Manage** on your folder
+3. Click **Validate** to confirm
 
-The Setup page will show the app's service principal name and ID. In your workspace, right-click the folder you created, go to **Permissions**, search for the service principal, and grant it **Can Manage**.
+### 2. Connect your PAT (each session, in the builder banner)
 
-### Step 3: Validate
-
-Click **Validate** on the Setup page. The app confirms it can write to your folder.
-
-That's it. You're ready to build and deploy agents.
+Click **Connect PAT** and paste a Personal Access Token. This lets the app access your workspace resources under your identity. See [Using the App](#using-the-app) for details.
 
 ## Using the App
+
+### Connect your PAT
+
+Before building, click **Connect PAT** in the banner at the top of the builder. Paste a Personal Access Token — this lets the app access your workspace resources (Vector Search indexes, Genie rooms, UC functions) under your identity.
+
+**How to generate a PAT:** Go to **Settings > Developer > Access tokens** in your Databricks workspace ([docs](https://docs.databricks.com/en/dev-tools/auth/pat.html)).
+
+**Safety:** Your token is held in browser memory only — it is never stored to disk, never logged, and is cleared when you close the tab or refresh. Treat it like a password: don't share it, and set a short expiration when possible.
 
 ### Build
 
@@ -39,29 +47,28 @@ Drag nodes onto the canvas, wire them together, and configure each node. Define 
 
 ### Preview
 
-Click **Playground** to test your agent with live data. Previews use your own identity — you only see data you have access to.
+Click **Playground** to test your agent with live data. If you've connected your PAT, previews run under your identity — you only see data you have access to.
 
 ### Deploy
 
 Click **Deploy** and choose a deploy mode:
 
-- **Log Only** — saves the agent as an MLflow model in your experiment folder. No PAT required. You can then register and deploy the model yourself from the Databricks UI (see [Deploy models from Model Registry](https://docs.databricks.com/en/machine-learning/manage-model-lifecycle/index.html)).
-- **Log & Register** or **Full Deploy** — also registers in Unity Catalog and (optionally) creates a serving endpoint. These modes require a Personal Access Token (PAT).
+- **Log Only** — saves the agent as an MLflow model in your experiment folder. No PAT required.
+- **Log & Register** or **Full Deploy** — also registers in Unity Catalog and (optionally) creates a serving endpoint.
 
-**About your PAT:**
-- Generate one at **Settings > Developer > Access tokens** in your Databricks workspace ([docs](https://docs.databricks.com/en/dev-tools/auth/pat.html))
-- Your PAT is used only for the duration of the deploy request — the app never stores or logs it
-- Treat your PAT like a password: don't share it, don't paste it into chat or email, and set a short expiration when possible
-- If you're not comfortable providing a PAT, use **Log Only** mode and register/deploy from the Databricks UI instead
+If you've already connected your PAT in the banner, the deploy modal will pre-fill it.
 
 ## Security and Governance
 
 Agent Sweet respects your existing Unity Catalog permissions. Here's how credentials work:
 
-- **Playground** uses your identity (OBO token). You only see data you already have access to.
-- **Model registration and endpoint creation** use your Personal Access Token. Models are registered in catalogs you choose, that you have access to, under your identity.
-- **MLflow experiment logging** uses the app's service principal, scoped to folders you've explicitly shared. The SP cannot access anything you haven't granted it.
-- **Collaboration** is built in. If teammates complete setup, you can load each other's deployed graph definitions, iterate on them, and deploy to your own experiments. The SP's access boundary is the setup grant — nothing more.
+- **Your PAT** authenticates playground previews and deployment operations. The app uses it to access workspace resources (Vector Search, Genie, UC) under your identity. It is held in browser memory only for the duration of your session — never stored, never logged.
+- **MLflow experiment logging** uses the app's service principal, scoped to folders you've explicitly shared during setup. The SP cannot access anything you haven't granted it.
+- **Collaboration** is built in. If teammates complete setup, you can load each other's deployed graph definitions, iterate on them, and deploy to your own experiments.
+
+### Why a PAT?
+
+Databricks Apps support on-behalf-of (OBO) tokens for some APIs, but several critical scopes — including Vector Search, Unity Catalog writes, and model serving — are not available as OBO scopes. Rather than using the app's service principal as a proxy (which would require granting the SP access to every resource every user might reference), the app uses your PAT so that your own permissions apply directly. This is a platform limitation, not a design choice — if these OBO scopes become available in the future, the PAT requirement can be removed.
 
 ### Deployed endpoint permissions
 
