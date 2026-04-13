@@ -55,6 +55,7 @@ class PreviewRequest(BaseModel):
     input_message: str
     thread_id: str | None = None
     resume_value: str | None = None
+    pat: str | None = None  # optional PAT for data-access ops (VS, Genie)
 
 
 class TraceSpan(BaseModel):

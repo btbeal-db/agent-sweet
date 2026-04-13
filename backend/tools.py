@@ -12,8 +12,7 @@ from typing import Any
 
 from databricks.sdk.service.dashboards import MessageStatus
 
-from .auth import get_workspace_client, get_sp_workspace_client
-from .app_resources import check_user_vs_access, check_user_genie_access
+from .auth import get_workspace_client, get_data_client
 from databricks.sdk.service.vectorsearch import RerankerConfig, RerankerConfigRerankerParameters
 from databricks_langchain import UCFunctionToolkit
 from langchain_core.tools import BaseTool, tool
@@ -62,11 +61,7 @@ def _make_vector_search_tool(config: dict[str, Any]) -> BaseTool:
             except json.JSONDecodeError:
                 pass
 
-        denied = check_user_vs_access(index_name)
-        if denied:
-            return denied
-
-        w = get_sp_workspace_client()
+        w = get_data_client()
         response = w.vector_search_indexes.query_index(
             index_name=index_name,
             columns=columns,
@@ -111,11 +106,7 @@ def _make_genie_tool(config: dict[str, Any]) -> BaseTool:
     @tool
     def genie_query(question: str) -> str:
         """Ask a natural-language question to get structured data answers."""
-        denied = check_user_genie_access(room_id)
-        if denied:
-            return denied
-
-        w = get_sp_workspace_client()
+        w = get_data_client()
         message = w.genie.start_conversation_and_wait(room_id, question)
 
         if message.status == MessageStatus.FAILED:

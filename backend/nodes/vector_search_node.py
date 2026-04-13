@@ -6,8 +6,7 @@ from typing import Any
 
 from databricks.sdk.service.vectorsearch import RerankerConfig, RerankerConfigRerankerParameters
 
-from ..auth import get_sp_workspace_client
-from ..app_resources import check_user_vs_access
+from ..auth import get_data_client
 
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
@@ -177,15 +176,8 @@ class VectorSearchNode(BaseNode):
                     model="databricks_reranker",
                     parameters=RerankerConfigRerankerParameters(columns_to_rerank=rerank_cols),
                 )
-        denied = check_user_vs_access(index_name)
-        if denied:
-            return {
-                writes_to: denied,
-                "messages": [{"role": "system", "content": f"Vector Search: {denied}", "node": "vector_search"}],
-            }
-
         try:
-            w = get_sp_workspace_client()
+            w = get_data_client()
             response = w.vector_search_indexes.query_index(
                 index_name=index_name,
                 columns=columns,

@@ -1,15 +1,12 @@
 """Dynamic app resource management for Databricks Apps.
 
 Some Databricks APIs (Vector Search, Genie) lack usable OBO scopes, so queries
-must run via the SP.  This module:
+must run via the SP (or a user-provided PAT).  This module registers resources
+on the app so the SP gets the required permissions automatically.
 
-1. **Grants** the SP access by registering resources on the app (one-time per
-   resource, cached in-process).
-2. **Authorizes** each request by checking the *user's* permissions via the OBO
-   token before letting the SP execute the query.
-
-The net effect is that the SP is a transparent proxy — it can only query
-resources the requesting user is individually authorized for.
+When a user provides a PAT, these grants are skipped — the PAT has full
+permissions.  When no PAT is available, the SP acts as a proxy and needs
+explicit grants to each resource the graph uses.
 """
 
 from __future__ import annotations
@@ -19,7 +16,7 @@ import logging
 import os
 from typing import Any
 
-from .auth import get_sp_workspace_client, get_workspace_client
+from .auth import get_sp_workspace_client
 
 logger = logging.getLogger(__name__)
 
@@ -133,28 +130,3 @@ def ensure_app_resources(graph_def: Any) -> None:
         logger.info("Registered app resources: %s", missing)
     except Exception as exc:
         logger.warning("Failed to register app resources: %s", exc)
-
-
-# ── Per-request OBO authorization ────────────────────────────────────────────
-
-
-def check_user_vs_access(index_name: str) -> str | None:
-    """Return an error message if the user lacks access to *index_name*, else None."""
-    try:
-        obo = get_workspace_client()
-        obo.tables.get(full_name=index_name)
-        return None
-    except Exception:
-        logger.warning("User does not have access to VS index %s", index_name)
-        return f"Access denied: you don't have permission on index '{index_name}'."
-
-
-def check_user_genie_access(space_id: str) -> str | None:
-    """Return an error message if the user lacks access to *space_id*, else None."""
-    try:
-        obo = get_workspace_client()
-        obo.genie.get_space(space_id)
-        return None
-    except Exception:
-        logger.warning("User does not have access to Genie space %s", space_id)
-        return f"Access denied: you don't have permission on Genie room '{space_id}'."

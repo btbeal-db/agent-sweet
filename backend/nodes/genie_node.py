@@ -5,8 +5,7 @@ from typing import Any
 
 from databricks.sdk.service.dashboards import MessageStatus
 
-from ..auth import get_sp_workspace_client
-from ..app_resources import check_user_genie_access
+from ..auth import get_data_client
 
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
@@ -128,16 +127,8 @@ class GenieNode(BaseNode):
                 "messages": [{"role": "system", "content": "Genie: empty question.", "node": "genie"}],
             }
 
-        # Authorize via OBO, execute via SP
-        denied = check_user_genie_access(space_id)
-        if denied:
-            return {
-                writes_to: denied,
-                "messages": [{"role": "system", "content": f"Genie: {denied}", "node": "genie"}],
-            }
-
         try:
-            w = get_sp_workspace_client()
+            w = get_data_client()
             message = w.genie.start_conversation_and_wait(space_id, query)
         except Exception as exc:
             # If the wait failed, try to get more detail from the message

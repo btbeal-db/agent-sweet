@@ -1,9 +1,11 @@
-"""OBO (On-Behalf-Of) authentication for Databricks Apps.
+"""Authentication helpers for Databricks Apps.
 
-When the app runs on Databricks, the user's downscoped access token is passed
-in the ``x-forwarded-access-token`` request header.  We store it in a
-context variable so that any code in the request path can create a
-WorkspaceClient that acts on behalf of the logged-in user.
+Two per-request credentials are stored in ContextVars:
+
+* **OBO token** — injected by the Apps proxy via ``x-forwarded-access-token``.
+  Useful for identity and APIs with working OBO scopes (SQL, Genie).
+* **User PAT** — optionally provided by the user for preview/playground.
+  Has full permissions (no scope gaps), never stored beyond the request.
 """
 
 from __future__ import annotations
@@ -13,8 +15,9 @@ from contextvars import ContextVar
 
 from databricks.sdk import WorkspaceClient
 
-# Holds the current request's user token (set per-request by middleware)
+# Per-request credential storage (set by middleware / endpoint, read by nodes)
 _user_token: ContextVar[str | None] = ContextVar("_user_token", default=None)
+_user_pat: ContextVar[str | None] = ContextVar("_user_pat", default=None)
 
 
 def set_user_token(token: str | None) -> None:
@@ -23,6 +26,31 @@ def set_user_token(token: str | None) -> None:
 
 def get_user_token() -> str | None:
     return _user_token.get()
+
+
+def set_user_pat(pat: str | None) -> None:
+    _user_pat.set(pat)
+
+
+def get_user_pat() -> str | None:
+    return _user_pat.get()
+
+
+def get_data_client() -> WorkspaceClient:
+    """Return a WorkspaceClient for data-access operations (VS, Genie, UC).
+
+    Credential priority:
+    1. **User PAT** — full permissions, no scope gaps. Preferred when available.
+    2. **SP** — fallback. Requires the resource to be registered as an app
+       resource (see :mod:`app_resources`).
+
+    OBO tokens are not used here because the required scopes
+    (``vector-search``, ``unity-catalog``) are not available.
+    """
+    pat = _user_pat.get()
+    if pat:
+        return create_pat_client(pat)
+    return get_sp_workspace_client()
 
 
 def get_workspace_client() -> WorkspaceClient:
