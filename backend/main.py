@@ -158,8 +158,13 @@ def _extract_resources(graph: GraphDef) -> list:
     # The auth passthrough docs require these to be explicitly declared.
     for room_id in genie_room_ids:
         try:
-            sp = get_sp_workspace_client()
-            space = sp.genie.get_space(room_id)
+            # Use SP client on the app, fall back to default for local deploys
+            try:
+                w = get_sp_workspace_client()
+            except RuntimeError:
+                from databricks.sdk import WorkspaceClient
+                w = WorkspaceClient()
+            space = w.genie.get_space(room_id, include_serialized_space=True)
 
             # SQL warehouse
             if space.warehouse_id and ("warehouse", space.warehouse_id) not in seen:
