@@ -336,46 +336,76 @@ class AgentGraphModel(ResponsesAgent):
         content_index = 0
         full_text = ""
 
-        # Stream node-by-node from the compiled graph.
-        # stream() does NOT raise GraphInterrupt — it yields a chunk with
-        # __interrupt__ key when the graph pauses for human input.
-        for chunk in self.compiled_graph.stream(invoke_input, config=config):
-            # Check for interrupt chunk
-            interrupts = chunk.get("__interrupt__")
-            if interrupts:
-                prompt = str(interrupts[0].value) if interrupts else "Input needed"
-                yield ResponsesAgentStreamEvent(
-                    type="response.output_text.delta",
-                    delta=prompt,
-                    item_id=msg_id,
-                    output_index=output_index,
-                    content_index=content_index,
-                )
-                full_text += prompt
-                continue
+        is_resume = isinstance(invoke_input, Command)
 
-            # Each chunk is {node_name: state_update_dict}
-            for node_name, state_update in chunk.items():
-                if not isinstance(state_update, dict):
+        if is_resume:
+            # On resume, use invoke() to get the clean final result.
+            # Streaming a resume would replay messages from the interrupted
+            # node (e.g. the human_input prompt the user already saw),
+            # concatenating them with the next interrupt or final output.
+            result = self.compiled_graph.invoke(invoke_input, config=config)
+            interrupts = result.get("__interrupt__")
+            if interrupts:
+                full_text = str(interrupts[0].value)
+            else:
+                full_text, _ = filter_output(result, self.graph_def)
+                if not full_text:
+                    messages = result.get("messages", [])
+                    for msg in reversed(messages):
+                        if isinstance(msg, dict) and msg.get("role") == "assistant":
+                            full_text = msg.get("content", "")
+                            break
+                        elif hasattr(msg, "type") and msg.type == "ai":
+                            full_text = msg.content
+                            break
+            yield ResponsesAgentStreamEvent(
+                type="response.output_text.delta",
+                delta=str(full_text),
+                item_id=msg_id,
+                output_index=output_index,
+                content_index=content_index,
+            )
+        else:
+            # Fresh invocation — stream node-by-node.
+            # stream() does NOT raise GraphInterrupt — it yields a chunk
+            # with __interrupt__ key when the graph pauses for human input.
+            for chunk in self.compiled_graph.stream(invoke_input, config=config):
+                # Check for interrupt chunk
+                interrupts = chunk.get("__interrupt__")
+                if interrupts:
+                    prompt = str(interrupts[0].value)
+                    yield ResponsesAgentStreamEvent(
+                        type="response.output_text.delta",
+                        delta=prompt,
+                        item_id=msg_id,
+                        output_index=output_index,
+                        content_index=content_index,
+                    )
+                    full_text += prompt
                     continue
 
-                # Extract any assistant messages produced by this node
-                messages = state_update.get("messages", [])
-                for msg in messages:
-                    text = ""
-                    if isinstance(msg, dict) and msg.get("role") == "assistant":
-                        text = msg.get("content", "")
-                    elif hasattr(msg, "type") and msg.type == "ai":
-                        text = msg.content
-                    if text:
-                        yield ResponsesAgentStreamEvent(
-                            type="response.output_text.delta",
-                            delta=str(text),
-                            item_id=msg_id,
-                            output_index=output_index,
-                            content_index=content_index,
-                        )
-                        full_text += str(text)
+                # Each chunk is {node_name: state_update_dict}
+                for node_name, state_update in chunk.items():
+                    if not isinstance(state_update, dict):
+                        continue
+
+                    # Extract any assistant messages produced by this node
+                    messages = state_update.get("messages", [])
+                    for msg in messages:
+                        text = ""
+                        if isinstance(msg, dict) and msg.get("role") == "assistant":
+                            text = msg.get("content", "")
+                        elif hasattr(msg, "type") and msg.type == "ai":
+                            text = msg.content
+                        if text:
+                            yield ResponsesAgentStreamEvent(
+                                type="response.output_text.delta",
+                                delta=str(text),
+                                item_id=msg_id,
+                                output_index=output_index,
+                                content_index=content_index,
+                            )
+                            full_text += str(text)
 
         # Emit the completed output item
         yield ResponsesAgentStreamEvent(
