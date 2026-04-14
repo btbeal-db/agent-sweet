@@ -369,19 +369,19 @@ class AgentGraphModel(ResponsesAgent):
             # Fresh invocation — stream node-by-node.
             # stream() does NOT raise GraphInterrupt — it yields a chunk
             # with __interrupt__ key when the graph pauses for human input.
+            #
+            # If the graph ends with an interrupt, the interrupt prompt is
+            # the authoritative response (it typically embeds the node output
+            # via template variables like {draft_email}). We discard any
+            # previously streamed text to avoid duplication.
+            streamed_parts: list[str] = []
+            interrupt_text: str | None = None
+
             for chunk in self.compiled_graph.stream(invoke_input, config=config):
                 # Check for interrupt chunk
                 interrupts = chunk.get("__interrupt__")
                 if interrupts:
-                    prompt = str(interrupts[0].value)
-                    yield ResponsesAgentStreamEvent(
-                        type="response.output_text.delta",
-                        delta=prompt,
-                        item_id=msg_id,
-                        output_index=output_index,
-                        content_index=content_index,
-                    )
-                    full_text += prompt
+                    interrupt_text = str(interrupts[0].value)
                     continue
 
                 # Each chunk is {node_name: state_update_dict}
@@ -398,14 +398,22 @@ class AgentGraphModel(ResponsesAgent):
                         elif hasattr(msg, "type") and msg.type == "ai":
                             text = msg.content
                         if text:
-                            yield ResponsesAgentStreamEvent(
-                                type="response.output_text.delta",
-                                delta=str(text),
-                                item_id=msg_id,
-                                output_index=output_index,
-                                content_index=content_index,
-                            )
-                            full_text += str(text)
+                            streamed_parts.append(str(text))
+
+            # If the graph interrupted, return only the interrupt prompt.
+            # Otherwise return the streamed node outputs.
+            if interrupt_text is not None:
+                full_text = interrupt_text
+            else:
+                full_text = "".join(streamed_parts)
+
+            yield ResponsesAgentStreamEvent(
+                type="response.output_text.delta",
+                delta=full_text,
+                item_id=msg_id,
+                output_index=output_index,
+                content_index=content_index,
+            )
 
         # Emit the completed output item
         yield ResponsesAgentStreamEvent(
