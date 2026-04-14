@@ -208,16 +208,18 @@ def _build_auth_policy(graph: GraphDef) -> AuthPolicy:
 
         # VS → user scope
         if config.get("index_name"):
-            user_scopes.add("vectorsearch.vector-search-indexes")
+            user_scopes.add("vector-search")
 
-        # Genie → user scopes (SQL warehouse + serving API)
+        # Genie → user scopes
         if config.get("room_id"):
+            user_scopes.add("genie")
             user_scopes.add("sql")
-            user_scopes.add("serving.serving-endpoints")
+            user_scopes.add("model-serving")
 
         # UC Functions → user scope
         if config.get("function_name"):
             user_scopes.add("sql")
+            user_scopes.add("unity-catalog")
 
     for node in graph.nodes:
         _scan_config(node.config)
