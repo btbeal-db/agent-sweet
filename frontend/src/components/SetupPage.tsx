@@ -168,18 +168,16 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
               <li>Navigate to <strong>Workspace</strong> in the left sidebar</li>
               <li>Go to <strong>Users &gt; {info?.user_email || "your-email"}</strong></li>
               <li>Click the kebab menu (<strong>&#8942;</strong>) &gt; <strong>Create &gt; Folder</strong></li>
-              <li>Name it <code>agent-sweet</code> (or any name you prefer)</li>
+              <li>Name it <code>agent-sweet</code></li>
             </ol>
           </div>
           <div className="setup-field">
-            <label>Enter the full path of the folder you created:</label>
+            <label>Experiment path:</label>
             <input
               type="text"
               className="deploy-input"
-              placeholder={`/Users/${info?.user_email || "you@company.com"}/agent-sweet`}
+              readOnly
               value={experimentPath}
-              onChange={(e) => setExperimentPath(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handlePathConfirm()}
             />
           </div>
           <div className="setup-actions">

@@ -171,8 +171,7 @@ class ModelInfo(BaseModel):
     deploy_mode: str | None = None
     registered_model_name: str | None = None
     endpoint_name: str | None = None
-    node_count: int | None = None
-    node_types: list[str] = []
+    resources: list[str] = []  # e.g. ["VS: my_index", "Genie: room_id", "Lakebase"]
     has_graph_def: bool = False
     experiment_url: str = ""
 

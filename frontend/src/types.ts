@@ -140,8 +140,7 @@ export interface ModelInfo {
   deploy_mode: string | null;
   registered_model_name: string | null;
   endpoint_name: string | null;
-  node_count: number | null;
-  node_types: string[];
+  resources: string[];
   has_graph_def: boolean;
   experiment_url: string;
 }

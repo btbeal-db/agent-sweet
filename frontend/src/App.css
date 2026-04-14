@@ -3752,7 +3752,7 @@ h4.md-header { font-size: 0.82em; }
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .models-table {
@@ -3838,16 +3838,22 @@ h4.md-header { font-size: 0.82em; }
   color: var(--text-secondary);
 }
 
-.models-nodes {
+.models-resources {
   display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--text-secondary);
+  flex-wrap: wrap;
+  gap: 0.3rem;
 }
 
-.models-node-count {
-  font-size: 0.7rem;
-  margin-left: 0.15rem;
+.models-resource-tag {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-family: var(--font-mono, monospace);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  white-space: nowrap;
 }
 
 .models-actions {

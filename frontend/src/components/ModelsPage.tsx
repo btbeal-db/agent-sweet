@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { ExternalLink, Upload, Loader, Package, Brain, GitBranch, Search, BarChart3, FunctionSquare, User } from "lucide-react";
+import { ExternalLink, Upload, Loader, Package } from "lucide-react";
 import { fetchModels, fetchModelGraph } from "../api";
 import type { ModelInfo, GraphDef, StateFieldDef } from "../types";
 
@@ -8,15 +8,6 @@ interface Props {
   setStateFields: (fields: StateFieldDef[]) => void;
   onSwitchToBuilder: () => void;
 }
-
-const NODE_TYPE_ICONS: Record<string, typeof Brain> = {
-  llm: Brain,
-  router: GitBranch,
-  vector_search: Search,
-  genie: BarChart3,
-  uc_function: FunctionSquare,
-  human_input: User,
-};
 
 const DEPLOY_MODE_LABELS: Record<string, string> = {
   full: "Deployed",
@@ -110,7 +101,7 @@ export default function ModelsPage({ graphImporter, setStateFields, onSwitchToBu
                 <th>Name</th>
                 <th>Last Deployed</th>
                 <th>Status</th>
-                <th>Nodes</th>
+                <th>Resources</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -136,13 +127,11 @@ export default function ModelsPage({ graphImporter, setStateFields, onSwitchToBu
                     )}
                   </td>
                   <td>
-                    {m.node_types.length > 0 ? (
-                      <div className="models-nodes">
-                        {m.node_types.map((t) => {
-                          const Icon = NODE_TYPE_ICONS[t] ?? Brain;
-                          return <span key={t} title={t}><Icon size={14} /></span>;
-                        })}
-                        <span className="models-node-count">{m.node_count}</span>
+                    {m.resources.length > 0 ? (
+                      <div className="models-resources">
+                        {m.resources.map((r) => (
+                          <span key={r} className="models-resource-tag">{r}</span>
+                        ))}
                       </div>
                     ) : (
                       "--"

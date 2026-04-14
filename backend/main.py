@@ -243,6 +243,41 @@ def _build_auth_policy(graph: GraphDef) -> AuthPolicy:
     )
 
 
+def _extract_resource_labels(graph: dict) -> list[str]:
+    """Build human-readable resource labels from a raw graph dict.
+
+    Used by the Models listing to show what Databricks resources a model uses.
+    """
+    labels: list[str] = []
+    seen: set[str] = set()
+
+    def _scan(config: dict) -> None:
+        for key, prefix in [
+            ("endpoint", "LLM"),
+            ("index_name", "VS"),
+            ("room_id", "Genie"),
+            ("function_name", "UC Fn"),
+        ]:
+            val = config.get(key)
+            if val and val not in seen:
+                seen.add(val)
+                # Shorten long names: take last segment for dotted paths
+                short = val.rsplit(".", 1)[-1] if "." in val else val
+                labels.append(f"{prefix}: {short}")
+
+    for node in graph.get("nodes", []):
+        _scan(node.get("config", {}))
+        tools_raw = node.get("config", {}).get("tools_json", "")
+        if tools_raw and str(tools_raw).strip():
+            try:
+                for tc in json.loads(str(tools_raw)):
+                    _scan(tc.get("config", {}))
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    return labels
+
+
 def _collect_code_paths() -> list[str]:
     """Copy backend/ to a clean temp directory (no __pycache__, static, etc.) for MLflow code_paths.
 
@@ -724,6 +759,9 @@ def deploy_graph(req: DeployRequest):
                 if needs_endpoint:
                     mlflow.set_tag("endpoint_name",
                                    req.model_name.split(".")[-1].replace("_", "-"))
+            if lb_project_id:
+                mlflow.set_tag("lakebase_project", lb_project_id)
+            mlflow.set_tag("agent_builder", "AgentSweet")
             try:
                 model_info = mlflow.pyfunc.log_model(
                     artifact_path="agent",
@@ -978,18 +1016,19 @@ def list_models():
                 info.endpoint_name = row.get("tags.endpoint_name")
                 info.has_graph_def = bool(row.get("tags.graph_def_json"))
 
-                # Parse graph_def for summary info
+                # Parse graph_def for resource summary
                 graph_json = row.get("tags.graph_def_json")
                 if graph_json:
                     try:
                         graph = json.loads(graph_json)
-                        nodes = graph.get("nodes", [])
-                        info.node_count = len(nodes)
-                        info.node_types = sorted(
-                            set(n.get("type", "") for n in nodes)
-                        )
+                        info.resources = _extract_resource_labels(graph)
                     except (json.JSONDecodeError, TypeError):
                         pass
+
+                # Lakebase
+                lb_project = row.get("tags.lakebase_project")
+                if lb_project:
+                    info.resources.append(f"Lakebase: {lb_project}")
 
             models.append(info)
 
