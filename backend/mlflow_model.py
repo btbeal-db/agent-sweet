@@ -16,6 +16,7 @@ from collections.abc import Generator
 from typing import TYPE_CHECKING
 
 import mlflow
+from langgraph.types import Command
 from mlflow.pyfunc import ResponsesAgent
 from mlflow.types.responses import (
     ResponsesAgentRequest,
@@ -233,6 +234,25 @@ class AgentGraphModel(ResponsesAgent):
             self.graph_def, checkpointer=self.checkpointer
         )
 
+    def _resolve_invoke_input(self, user_message: str, config: dict | None):
+        """Determine the correct invoke input based on checkpoint state.
+
+        Returns the input to pass to ``invoke()`` or ``stream()``:
+        - ``Command(resume=...)`` if the thread has a pending interrupt
+          (``state.next`` is non-empty after a prior interrupt)
+        - Continuation state if the thread has history but no interrupt
+        - Full initial state for a brand-new thread
+        """
+        if self.checkpointer and config:
+            existing = self.compiled_graph.get_state(config)
+            if existing and existing.values:
+                if existing.next:
+                    # Pending interrupt — resume with the user's message
+                    return Command(resume=user_message)
+                # Normal continuation — send new message
+                return _build_continuation_state(user_message)
+        return _build_initial_state(self.graph_def, user_message)
+
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         """Run the agent graph synchronously and return the full response."""
         user_message = _extract_user_message(request)
@@ -250,21 +270,26 @@ class AgentGraphModel(ResponsesAgent):
 
         thread_id = _get_thread_id(request)
         config = _build_config(self.checkpointer, thread_id)
+        invoke_input = self._resolve_invoke_input(user_message, config)
 
-        # Check if this thread already has conversation history
-        has_history = False
-        if self.checkpointer and config:
-            existing = self.compiled_graph.get_state(config)
-            if existing and existing.values:
-                has_history = True
+        result = self.compiled_graph.invoke(invoke_input, config=config)
 
-        invoke_state = (
-            _build_continuation_state(user_message)
-            if has_history
-            else _build_initial_state(self.graph_def, user_message)
-        )
-
-        result = self.compiled_graph.invoke(invoke_state, config=config)
+        # Check for human-in-the-loop interrupt. invoke() returns normally
+        # with __interrupt__ in the result (it does NOT raise GraphInterrupt).
+        # The checkpointer persists state so the next request can resume.
+        interrupts = result.get("__interrupt__")
+        if interrupts:
+            prompt = str(interrupts[0].value) if interrupts else "Input needed"
+            return ResponsesAgentResponse(
+                output=[
+                    {
+                        "id": _make_msg_id(),
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": prompt}],
+                    }
+                ],
+            )
 
         output, _ = filter_output(result, self.graph_def)
 
@@ -304,27 +329,31 @@ class AgentGraphModel(ResponsesAgent):
 
         thread_id = _get_thread_id(request)
         config = _build_config(self.checkpointer, thread_id)
-
-        # Check if this thread already has conversation history
-        has_history = False
-        if self.checkpointer and config:
-            existing = self.compiled_graph.get_state(config)
-            if existing and existing.values:
-                has_history = True
-
-        invoke_state = (
-            _build_continuation_state(user_message)
-            if has_history
-            else _build_initial_state(self.graph_def, user_message)
-        )
+        invoke_input = self._resolve_invoke_input(user_message, config)
 
         msg_id = _make_msg_id()
         output_index = 0
         content_index = 0
         full_text = ""
 
-        # Stream node-by-node from the compiled graph
-        for chunk in self.compiled_graph.stream(invoke_state, config=config):
+        # Stream node-by-node from the compiled graph.
+        # stream() does NOT raise GraphInterrupt — it yields a chunk with
+        # __interrupt__ key when the graph pauses for human input.
+        for chunk in self.compiled_graph.stream(invoke_input, config=config):
+            # Check for interrupt chunk
+            interrupts = chunk.get("__interrupt__")
+            if interrupts:
+                prompt = str(interrupts[0].value) if interrupts else "Input needed"
+                yield ResponsesAgentStreamEvent(
+                    type="response.output_text.delta",
+                    delta=prompt,
+                    item_id=msg_id,
+                    output_index=output_index,
+                    content_index=content_index,
+                )
+                full_text += prompt
+                continue
+
             # Each chunk is {node_name: state_update_dict}
             for node_name, state_update in chunk.items():
                 if not isinstance(state_update, dict):
@@ -339,14 +368,14 @@ class AgentGraphModel(ResponsesAgent):
                     elif hasattr(msg, "type") and msg.type == "ai":
                         text = msg.content
                     if text:
-                            yield ResponsesAgentStreamEvent(
-                                type="response.output_text.delta",
-                                delta=str(text),
-                                item_id=msg_id,
-                                output_index=output_index,
-                                content_index=content_index,
-                            )
-                            full_text += str(text)
+                        yield ResponsesAgentStreamEvent(
+                            type="response.output_text.delta",
+                            delta=str(text),
+                            item_id=msg_id,
+                            output_index=output_index,
+                            content_index=content_index,
+                        )
+                        full_text += str(text)
 
         # Emit the completed output item
         yield ResponsesAgentStreamEvent(
