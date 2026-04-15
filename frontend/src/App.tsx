@@ -14,8 +14,8 @@ import AIChatDropdown from "./components/AIChatDropdown";
 import SetupPage from "./components/SetupPage";
 import ModelsPage from "./components/ModelsPage";
 import { StateProvider } from "./StateContext";
-import { fetchNodeTypes, getSetupStatus } from "./api";
-import type { NodeTypeMetadata, GraphDef, StateFieldDef, SetupStatusResponse } from "./types";
+import { fetchNodeTypes, fetchModels, getSetupStatus } from "./api";
+import type { NodeTypeMetadata, GraphDef, StateFieldDef, SetupStatusResponse, ModelInfo } from "./types";
 
 type AppView = "home" | "builder" | "models" | "help" | "setup";
 
@@ -44,6 +44,16 @@ export default function App() {
   const [experimentPath, setExperimentPath] = useState<string | null>(null);
   const [pat, setPat] = useState("");
   const [showPatInput, setShowPatInput] = useState(false);
+  const [cachedModels, setCachedModels] = useState<ModelInfo[] | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(false);
+
+  const refreshModels = useCallback(() => {
+    setModelsLoading(true);
+    fetchModels()
+      .then((res) => setCachedModels(res.models))
+      .catch(console.error)
+      .finally(() => setModelsLoading(false));
+  }, []);
 
   const stateVariableNames = stateFields.flatMap((f) => {
     const paths = [f.name];
@@ -364,6 +374,9 @@ export default function App() {
                 setView("builder");
                 hasOpenedBuilder.current = true;
               }}
+              cachedModels={cachedModels}
+              modelsLoading={modelsLoading}
+              onRefresh={refreshModels}
             />
           )}
 
@@ -428,7 +441,7 @@ export default function App() {
         <DeployModal
           graphGetter={graphGetter}
           stateFieldsRef={stateFieldsRef}
-          onClose={() => setShowDeploy(false)}
+          onClose={() => { setShowDeploy(false); refreshModels(); }}
           defaultExperimentPath={experimentPath ?? ""}
           onGoToSetup={() => { setShowDeploy(false); setView("setup"); }}
           defaultPat={pat}

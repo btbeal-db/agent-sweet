@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { ExternalLink, Upload, Loader, Package } from "lucide-react";
-import { fetchModels, fetchModelGraph } from "../api";
+import { fetchModelGraph } from "../api";
 import type { ModelInfo, GraphDef, StateFieldDef } from "../types";
 
 interface Props {
   graphImporter: ((g: GraphDef) => void) | null;
   setStateFields: (fields: StateFieldDef[]) => void;
   onSwitchToBuilder: () => void;
+  cachedModels: ModelInfo[] | null;
+  modelsLoading: boolean;
+  onRefresh: () => void;
 }
 
 const DEPLOY_MODE_LABELS: Record<string, string> = {
@@ -23,18 +26,17 @@ function formatTime(raw: string | null): string {
     + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function ModelsPage({ graphImporter, setStateFields, onSwitchToBuilder }: Props) {
-  const [models, setModels] = useState<ModelInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export default function ModelsPage({ graphImporter, setStateFields, onSwitchToBuilder, cachedModels, modelsLoading, onRefresh }: Props) {
   const [loadingGraph, setLoadingGraph] = useState<string | null>(null);
 
+  // Fetch on first visit only (when cache is empty)
   useEffect(() => {
-    fetchModels()
-      .then((res) => setModels(res.models))
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, []);
+    if (cachedModels === null && !modelsLoading) {
+      onRefresh();
+    }
+  }, [cachedModels, modelsLoading, onRefresh]);
+
+  const models = cachedModels ?? [];
 
   const handleLoadToCanvas = useCallback(async (model: ModelInfo) => {
     if (!model.latest_run_id || !model.has_graph_def || !graphImporter) return;
@@ -53,25 +55,12 @@ export default function ModelsPage({ graphImporter, setStateFields, onSwitchToBu
     }
   }, [graphImporter, setStateFields, onSwitchToBuilder]);
 
-  if (loading) {
+  if (modelsLoading && cachedModels === null) {
     return (
       <div className="models-page">
         <div className="models-loading">
           <Loader size={24} className="spinning" />
           <span>Loading models...</span>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="models-page">
-        <div className="models-header">
-          <h1>Models</h1>
-        </div>
-        <div className="models-empty">
-          <p>Failed to load models: {error}</p>
         </div>
       </div>
     );
