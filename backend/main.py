@@ -247,49 +247,38 @@ def _extract_resource_links(graph: dict, host: str) -> list:
     """Build resource labels with deep links from a raw graph dict.
 
     Used by the Models listing to show what Databricks resources a model uses.
+    To add a new resource type, add an entry to RESOURCE_LINK_MAP below.
     """
     from .schema import ResourceLink
+
+    def _uc_url(val: str) -> str:
+        """Turn a dotted UC path (catalog.schema.object) into a URL path."""
+        parts = val.split(".")
+        return "/".join(parts) if len(parts) == 3 else val
+
+    # Config key → (display prefix, URL builder)
+    # URL builder receives (host, raw_value) and returns the full URL.
+    RESOURCE_LINK_MAP: dict[str, tuple[str, callable]] = {
+        "endpoint":      ("LLM",    lambda h, v: f"{h}/ml/ai-gateway/{v}"),
+        "index_name":    ("VS",     lambda h, v: f"{h}/explore/data/{_uc_url(v)}"),
+        "room_id":       ("Genie",  lambda h, v: f"{h}/genie/rooms/{v}"),
+        "function_name": ("UC Fn",  lambda h, v: f"{h}/explore/data/{_uc_url(v)}"),
+        "table_name":    ("Table",  lambda h, v: f"{h}/explore/data/{_uc_url(v)}"),
+    }
 
     links: list[ResourceLink] = []
     seen: set[str] = set()
 
-    def _add(key: str, val: str) -> None:
-        if not val or val in seen:
-            return
-        seen.add(val)
-        short = val.rsplit(".", 1)[-1] if "." in val else val
-
-        if key == "endpoint":
-            links.append(ResourceLink(
-                label=f"LLM: {short}",
-                url=f"{host}/serving-endpoints/{val}" if host else "",
-            ))
-        elif key == "index_name":
-            # VS index is a UC table: catalog.schema.index
-            parts = val.split(".")
-            uc_path = "/".join(parts) if len(parts) == 3 else val
-            links.append(ResourceLink(
-                label=f"VS: {short}",
-                url=f"{host}/explore/data/{uc_path}" if host else "",
-            ))
-        elif key == "room_id":
-            links.append(ResourceLink(
-                label=f"Genie: {short}",
-                url=f"{host}/genie/rooms/{val}" if host else "",
-            ))
-        elif key == "function_name":
-            parts = val.split(".")
-            uc_path = "/".join(parts) if len(parts) == 3 else val
-            links.append(ResourceLink(
-                label=f"UC Fn: {short}",
-                url=f"{host}/explore/data/{uc_path}" if host else "",
-            ))
-
     def _scan(config: dict) -> None:
-        for key in ("endpoint", "index_name", "room_id", "function_name"):
+        for key, (prefix, url_fn) in RESOURCE_LINK_MAP.items():
             val = config.get(key)
-            if val:
-                _add(key, val)
+            if val and val not in seen:
+                seen.add(val)
+                short = val.rsplit(".", 1)[-1] if "." in val else val
+                links.append(ResourceLink(
+                    label=f"{prefix}: {short}",
+                    url=url_fn(host, val) if host else "",
+                ))
 
     for node in graph.get("nodes", []):
         _scan(node.get("config", {}))
@@ -785,8 +774,11 @@ def deploy_graph(req: DeployRequest):
                 if needs_endpoint:
                     mlflow.set_tag("endpoint_name",
                                    req.model_name.split(".")[-1].replace("_", "-"))
-            if lb_project_id:
+            if lb_config:
+                # Extract UUID from endpoint path: projects/{uuid}/branches/...
+                lb_uuid = lb_config.endpoint.split("/")[1] if "/" in lb_config.endpoint else ""
                 mlflow.set_tag("lakebase_project", lb_project_id)
+                mlflow.set_tag("lakebase_project_uuid", lb_uuid)
             mlflow.set_tag("agent_builder", "AgentSweet")
             try:
                 model_info = mlflow.pyfunc.log_model(
@@ -1062,9 +1054,11 @@ def list_models():
                 lb_project = row.get("tags.lakebase_project")
                 if lb_project:
                     from .schema import ResourceLink
+                    lb_uuid = row.get("tags.lakebase_project_uuid", "")
+                    lb_url = f"{host}/lakebase/projects/{lb_uuid}" if host and lb_uuid else ""
                     info.resources.append(ResourceLink(
                         label=f"Lakebase: {lb_project}",
-                        url=f"{host}/compute/lakebase" if host else "",
+                        url=lb_url,
                     ))
 
             models.append(info)
