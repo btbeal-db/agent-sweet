@@ -20,7 +20,7 @@ import SentinelNode from "./nodes/SentinelNode";
 import ConfigPanel from "./ConfigPanel";
 import ToolConfigPanel from "./ToolConfigPanel";
 import type { NodeTypeMetadata, GraphDef, AttachedTool } from "../types";
-import { useAddField, useStateFields } from "../StateContext";
+import { useAddField, useRemoveField, useStateFields } from "../StateContext";
 
 const START_ID = "__start__";
 const END_ID = "__end__";
@@ -92,6 +92,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { screenToFlowPosition, fitView } = useReactFlow();
   const addField = useAddField();
+  const removeField = useRemoveField();
   const currentFields = useStateFields();
   const [selectedTool, setSelectedTool] = useState<{ nodeId: string; toolId: string } | null>(null);
 
@@ -116,15 +117,37 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
       const safe = changes.filter(
         (c) => c.type !== "remove" || !SENTINEL_IDS.has(c.id)
       );
-      const removedIds = safe
-        .filter((c) => c.type === "remove")
-        .map((c) => c.id);
-      if (removedIds.length > 0) {
+      const removedIds = new Set(
+        safe.filter((c) => c.type === "remove").map((c) => c.id)
+      );
+      if (removedIds.size > 0) {
         onNodeSelect(null);
+
+        // Collect fields owned by removed nodes (auto-created + current writes_to)
+        const removedFields = new Set<string>();
+        for (const n of nodes) {
+          if (!removedIds.has(n.id)) continue;
+          if (n.data?.auto_field) removedFields.add(n.data.auto_field as string);
+          if (n.data?.writes_to) removedFields.add(n.data.writes_to as string);
+        }
+        // Only remove fields that no surviving node references
+        if (removedFields.size > 0) {
+          const survivingFields = new Set<string>();
+          for (const n of nodes) {
+            if (removedIds.has(n.id)) continue;
+            if (n.data?.auto_field) survivingFields.add(n.data.auto_field as string);
+            if (n.data?.writes_to) survivingFields.add(n.data.writes_to as string);
+          }
+          for (const field of removedFields) {
+            if (!survivingFields.has(field)) {
+              removeField(field);
+            }
+          }
+        }
       }
       onNodesChange(safe);
     },
-    [onNodesChange, onNodeSelect]
+    [onNodesChange, onNodeSelect, nodes, removeField]
   );
 
   const onConnect = useCallback(
@@ -371,6 +394,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
           config_fields: meta.config_fields,
           is_router: meta.type === "router",
           writes_to: defaultWritesTo,
+          auto_field: defaultWritesTo || undefined,
           config: defaultConfig,
         },
       };

@@ -5,6 +5,7 @@ interface StateContextValue {
   names: string[];
   fields: StateFieldDef[];
   addField: (field: StateFieldDef) => void;
+  removeField: (name: string) => void;
   renameField: (oldName: string, newName: string) => void;
 }
 
@@ -14,6 +15,7 @@ const StateContext = createContext<StateContextValue>({
   names: [],
   fields: [],
   addField: noop,
+  removeField: noop,
   renameField: noop,
 });
 
@@ -33,6 +35,10 @@ export function useStateField(name: string): StateFieldDef | undefined {
 
 export function useAddField(): (field: StateFieldDef) => void {
   return useContext(StateContext).addField;
+}
+
+export function useRemoveField(): (name: string) => void {
+  return useContext(StateContext).removeField;
 }
 
 export function useRenameField(): (oldName: string, newName: string) => void {
