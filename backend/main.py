@@ -775,8 +775,16 @@ def deploy_graph(req: DeployRequest):
                     mlflow.set_tag("endpoint_name",
                                    req.model_name.split(".")[-1].replace("_", "-"))
             if lb_config:
-                # Extract UUID from endpoint path: projects/{uuid}/branches/...
-                lb_uuid = lb_config.endpoint.split("/")[1] if "/" in lb_config.endpoint else ""
+                # Look up the project UUID from the Lakebase API
+                lb_uuid = ""
+                try:
+                    w_lb = create_pat_client(req.pat) if req.pat else get_sp_workspace_client()
+                    for proj in w_lb.postgres.list_projects():
+                        if proj.name == f"projects/{lb_project_id}":
+                            lb_uuid = proj.uid or ""
+                            break
+                except Exception:
+                    pass
                 mlflow.set_tag("lakebase_project", lb_project_id)
                 mlflow.set_tag("lakebase_project_uuid", lb_uuid)
             mlflow.set_tag("agent_builder", "AgentSweet")
