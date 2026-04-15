@@ -187,25 +187,24 @@ def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
 def _get_mcp_token(server_url: str) -> str:
     """Get a Bearer token for MCP calls.
 
-    For **managed MCP** (``/api/2.0/mcp/...``): same priority as VS/Genie/UC
-    — PAT > OBO > SP.  PATs work for workspace API endpoints.
+    Same credential priority as VS, Genie, and UC Function nodes:
+    PAT > OBO > SP (via ``get_data_client()``).
 
-    For **Databricks Apps** (``*.databricksapps.com``): Apps reject PATs and
-    require OAuth.  We prefer the OBO token (OAuth, from the Apps proxy) or
-    SP credentials, then fall back to PAT for non-Apps cases.
+    For Databricks Apps URLs the OBO token from the Apps proxy is
+    preferred because it is an OAuth token that Apps accept reliably.
+    The PAT from the banner is used as a fallback.
     """
     from urllib.parse import urlparse
-    from .auth import get_user_token, get_user_pat
+    from .auth import get_user_token
 
-    is_apps_url = urlparse(server_url).netloc.endswith(".databricksapps.com")
-
-    if is_apps_url:
-        # OBO token IS OAuth and works for Apps (verified via curl)
+    # On the deployed app, the OBO token (OAuth) is the most reliable
+    # credential for Apps URLs.  Try it first before the general path.
+    if urlparse(server_url).netloc.endswith(".databricksapps.com"):
         obo = get_user_token()
         if obo:
             return obo
-        # Fall through to get_data_client() which tries PAT > OBO > SP
 
+    # General path: PAT > OBO > SP
     w = get_data_client()
     headers = w.config.authenticate()
     return headers["Authorization"].split("Bearer ", 1)[1]

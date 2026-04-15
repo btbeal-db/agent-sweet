@@ -31,6 +31,7 @@ Drag nodes onto the canvas, connect them, define a state model. Available node t
 - **Vector Search** -- query a VS index with optional reranking and filters
 - **Genie** -- query a Databricks Genie room, formats SQL results as text
 - **UC Function** -- call a Unity Catalog function with JSON parameters
+- **MCP Server** -- connect to an MCP server and expose its tools to LLM nodes
 - **Human Input** -- pause the graph, prompt the user, resume with their answer
 
 State model: user-defined fields (`str`, `int`, `float`, `bool`, `list[str]`, `structured`). The `messages` field uses LangGraph's `add_messages` reducer for multi-turn history.
@@ -93,12 +94,31 @@ Users link the GitHub repo to a Databricks App and deploy. No custom scopes, no 
 | Operation | Credential | Why |
 |---|---|---|
 | Preview -- VS, Genie, UC Functions | PAT > OBO | PAT preferred; OBO lacks `vector-search` scope |
+| Preview -- MCP (managed URLs) | PAT > OBO | Same as VS/Genie; managed MCP is a workspace API |
+| Preview -- MCP (Databricks Apps) | OBO > PAT | Apps URLs prefer OBO (OAuth); PAT is fallback |
 | Preview -- LLM inference | SP | FMAPI rejects OBO and PAT |
 | User identity | OBO | Default `iam.current-user:read` scope works |
 | MLflow experiment logging | SP | No OBO scope for MLflow |
 | Setup config persistence | SP | Workspace file write (SP has Can Manage) |
 | UC model registration | PAT | No UC write OBO scopes |
 | Serving endpoint creation | PAT | `model-serving` OBO scope unreliable |
+
+## MCP Server Node
+
+Connects to MCP servers and exposes their tools to LLM nodes. One URL auto-discovers all available tools — unlike UC Function nodes where each function is configured individually.
+
+### Supported MCP URL types
+
+- **Managed MCP** (`<host>/api/2.0/mcp/functions/<catalog>/<schema>`, `.../vector-search/...`, `.../genie/...`) -- Databricks-hosted, PAT works directly.
+- **Custom MCP on Databricks Apps** (`*.databricksapps.com/mcp`) -- user-deployed FastMCP servers. On the deployed app, auth flows through automatically via the OBO token.
+- **External MCP** (`<host>/api/2.0/mcp/external/<connection>`) -- UC connection proxy to external servers. Requires connection setup in Unity Catalog (not yet wired into the node config).
+
+### Implementation notes
+
+- Bypasses `DatabricksMCPClient` from `databricks_mcp` for the data path. That SDK rejects PAT auth for Apps URLs (client-side validation), but PAT/OBO tokens work fine at the HTTP level. We use the raw MCP SDK (`streamablehttp_client` + `ClientSession`) directly.
+- All MCP calls run in `_run_mcp_in_thread()` because the MCP SDK uses `asyncio.run()` internally, which crashes inside FastAPI's event loop.
+- `_get_mcp_token(server_url)` selects the right credential: OBO first for Apps URLs, then the standard PAT > OBO > SP chain via `get_data_client()`.
+- Deploy-time resource extraction (`_extract_resources` in `main.py`) still uses `DatabricksMCPClient.get_databricks_resources()` with SP credentials, since that runs in a thread pool and needs programmatic resource resolution.
 
 ## Known Gotchas
 
@@ -124,10 +144,10 @@ backend/
   mlflow_model.py  -- MLflow ResponsesAgent wrapper (entry point for serving)
   lakebase.py      -- Lakebase provisioning + Postgres connection pool
   setup.py         -- Setup endpoints
-  tools.py         -- Tool factories (VS, Genie, UC Function)
+  tools.py         -- Tool factories (VS, Genie, UC Function, MCP)
   nodes/           -- Pluggable node types (auto-discovered via pkgutil)
     base.py        -- BaseNode ABC, NodeConfigField, resolve_state()
-    llm_node.py, router_node.py, vector_search_node.py, etc.
+    llm_node.py, router_node.py, vector_search_node.py, mcp_node.py, etc.
 
 frontend/src/
   App.tsx           -- Main shell, view routing, state management
