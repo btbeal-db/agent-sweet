@@ -2,39 +2,6 @@ import { useState } from "react";
 import { Plus, Check, X } from "lucide-react";
 import type { StateFieldDef, StateSubField } from "../types";
 
-// ── Presets ─────────────────────────────────────────────────────────
-interface Preset {
-  label: string;
-  fields: StateFieldDef[];
-}
-
-const PRESETS: Preset[] = [
-  {
-    label: "Joke Agent",
-    fields: [
-      { name: "input", type: "str", description: "The initial input", sub_fields: [] },
-      { name: "is_funny", type: "bool", description: "Whether the joke is genuinely funny", sub_fields: [] },
-      {
-        name: "verdict",
-        type: "structured",
-        description: "The judge's verdict on the joke",
-        sub_fields: [
-          { name: "is_funny", type: "bool", description: "Whether the joke is genuinely funny" },
-          { name: "reasoning", type: "str", description: "Brief explanation of the verdict" },
-        ],
-      },
-      {
-        name: "rewrite",
-        type: "structured",
-        description: "Critique and rewrite of a bad joke",
-        sub_fields: [
-          { name: "critique", type: "str", description: "What makes the original joke fall flat" },
-          { name: "rewritten_joke", type: "str", description: "An improved version of the joke" },
-        ],
-      },
-    ],
-  },
-];
 
 const FIELD_TYPES = [
   { value: "str", label: "Text" },
@@ -127,20 +94,6 @@ export default function StateModelModal({ fields, onChange, onClose }: Props) {
             <strong> Structured</strong> type for fields that need a defined
             shape (e.g. a judgment with score and critique).
           </p>
-          <div className="modal-presets">
-            <label>Load a preset:</label>
-            <div className="modal-preset-buttons">
-              {PRESETS.map((p) => (
-                <button
-                  key={p.label}
-                  className="btn btn-sm btn-preset"
-                  onClick={() => onChange(p.fields)}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
 
         <div className="modal-body">
