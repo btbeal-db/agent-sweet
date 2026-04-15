@@ -187,7 +187,65 @@ def _extract_resources(graph: GraphDef) -> list:
         except Exception as exc:
             logger.warning("Could not resolve Genie room %s dependencies: %s", room_id, exc)
 
+    # Resolve MCP server resources.
+    # DatabricksMCPClient.get_databricks_resources() parses the MCP URL to
+    # determine the resource type (UC functions, VS indexes, Genie spaces,
+    # UC connections) and returns the corresponding MLflow resource objects.
+    # This runs in a thread because get_databricks_resources() calls
+    # list_tools() which uses asyncio.run() — incompatible with the
+    # FastAPI event loop on the calling thread.
+    mcp_urls = _collect_mcp_urls(graph)
+    if mcp_urls:
+        import concurrent.futures
+        from databricks_mcp import DatabricksMCPClient
+
+        try:
+            w = get_sp_workspace_client()
+        except RuntimeError:
+            from databricks.sdk import WorkspaceClient
+            w = WorkspaceClient()
+
+        def _resolve_mcp(url: str) -> list:
+            try:
+                client = DatabricksMCPClient(server_url=url, workspace_client=w)
+                return client.get_databricks_resources()
+            except Exception as exc:
+                logger.warning("Could not resolve MCP resources for %s: %s", url, exc)
+                return []
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            futures = {pool.submit(_resolve_mcp, url): url for url in mcp_urls}
+            for future in concurrent.futures.as_completed(futures):
+                for resource in future.result():
+                    key = (type(resource).__name__, str(resource))
+                    if key not in seen:
+                        seen.add(key)
+                        resources.append(resource)
+
     return resources
+
+
+def _collect_mcp_urls(graph: GraphDef) -> list[str]:
+    """Collect all MCP server URLs from the graph (nodes + tools_json)."""
+    urls: list[str] = []
+    for node in graph.nodes:
+        url = node.config.get("server_url")
+        if url and node.type == "mcp_server":
+            urls.append(url)
+
+        tools_json_raw = node.config.get("tools_json", "")
+        if tools_json_raw and str(tools_json_raw).strip():
+            try:
+                tool_configs = json.loads(str(tools_json_raw))
+                if isinstance(tool_configs, list):
+                    for tc in tool_configs:
+                        if tc.get("type") == "mcp_server":
+                            tc_url = tc.get("config", {}).get("server_url")
+                            if tc_url:
+                                urls.append(tc_url)
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return urls
 
 
 def _build_auth_policy(graph: GraphDef) -> AuthPolicy:
@@ -201,7 +259,7 @@ def _build_auth_policy(graph: GraphDef) -> AuthPolicy:
     user_scopes: set[str] = set()
     seen_endpoints: set[str] = set()
 
-    def _scan_config(config: dict) -> None:
+    def _scan_config(config: dict, tool_type: str | None = None) -> None:
         # LLM endpoints → system auth
         endpoint = config.get("endpoint")
         if endpoint and endpoint not in seen_endpoints:
@@ -223,8 +281,13 @@ def _build_auth_policy(graph: GraphDef) -> AuthPolicy:
             user_scopes.add("sql")
             user_scopes.add("unity-catalog")
 
+        # MCP servers → scopes depend on MCP type (UC functions, VS, Genie, etc.)
+        # Add broad scopes since the MCP server may access multiple resource types.
+        if config.get("server_url") and tool_type == "mcp_server":
+            user_scopes.update(["unity-catalog", "vector-search", "sql", "model-serving"])
+
     for node in graph.nodes:
-        _scan_config(node.config)
+        _scan_config(node.config, tool_type=node.type)
 
         # Tools attached to LLM nodes via tools_json
         tools_json_raw = node.config.get("tools_json", "")
@@ -233,7 +296,7 @@ def _build_auth_policy(graph: GraphDef) -> AuthPolicy:
                 tool_configs = json.loads(str(tools_json_raw))
                 if isinstance(tool_configs, list):
                     for tc in tool_configs:
-                        _scan_config(tc.get("config", {}))
+                        _scan_config(tc.get("config", {}), tool_type=tc.get("type"))
             except (json.JSONDecodeError, TypeError):
                 pass
 

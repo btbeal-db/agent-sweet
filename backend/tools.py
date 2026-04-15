@@ -15,7 +15,7 @@ from databricks.sdk.service.dashboards import MessageStatus
 from .auth import get_data_client
 from databricks.sdk.service.vectorsearch import RerankerConfig, RerankerConfigRerankerParameters
 from databricks_langchain import UCFunctionToolkit
-from langchain_core.tools import BaseTool, tool
+from langchain_core.tools import BaseTool, StructuredTool, tool
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +184,93 @@ def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
     return tools
 
 
+def _get_mcp_client(server_url: str):
+    """Create a ``DatabricksMCPClient`` with the right auth for the URL.
+
+    * **Databricks Apps** (``*.databricksapps.com``) require OAuth.
+      ``get_data_client()`` may return a PAT client, which the MCP SDK
+      rejects.  We fall back to the OBO workspace client (OAuth) or SP.
+    * **Managed MCP** (``/api/2.0/mcp/...``) works with any credential.
+    """
+    from urllib.parse import urlparse
+    from databricks_mcp import DatabricksMCPClient
+
+    is_apps_url = urlparse(server_url).netloc.endswith(".databricksapps.com")
+
+    if is_apps_url:
+        # Apps require OAuth; try OBO first (workspace client), then SP
+        from .auth import get_workspace_client, get_sp_workspace_client
+        for factory in (get_workspace_client, get_sp_workspace_client):
+            try:
+                return DatabricksMCPClient(server_url=server_url, workspace_client=factory())
+            except (ValueError, RuntimeError):
+                continue
+        # Last resort: try data client anyway (may work in deployed OBO mode)
+        return DatabricksMCPClient(server_url=server_url, workspace_client=get_data_client())
+
+    return DatabricksMCPClient(server_url=server_url, workspace_client=get_data_client())
+
+
+def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
+    """Create LangChain tools from a Databricks MCP server.
+
+    Uses ``DatabricksMCPClient`` which handles auth via the
+    ``WorkspaceClient``, auto-detects transport, and provides proper
+    Databricks resource declarations for deployment.
+
+    ``DatabricksMCPClient.list_tools()`` and ``call_tool()`` are sync
+    methods (they use ``asyncio.run()`` internally).  This is safe because
+    LangGraph executes sync node functions in a thread pool where no event
+    loop is running.
+    """
+    server_url = config.get("server_url", "")
+    if not server_url:
+        logger.warning("MCP tool config missing server_url")
+        return []
+
+    # Discover tools from the MCP server
+    try:
+        mcp_client = _get_mcp_client(server_url)
+        mcp_tools = mcp_client.list_tools()
+    except Exception as exc:
+        logger.warning("Failed to discover MCP tools from %s: %s", server_url, exc)
+        return []
+
+    # Apply tool name filter
+    tool_filter = config.get("tool_filter", "")
+    if tool_filter and str(tool_filter).strip():
+        allowed = {t.strip() for t in str(tool_filter).split(",") if t.strip()}
+        mcp_tools = [t for t in mcp_tools if t.name in allowed]
+
+    custom_desc = config.get("tool_description", "")
+    sync_tools: list[BaseTool] = []
+
+    for mcp_tool in mcp_tools:
+        # Each tool call creates a fresh client with current auth credentials
+        def _make_fn(tool_name: str = mcp_tool.name) -> Any:
+            def call_tool(**kwargs: Any) -> str:
+                client = _get_mcp_client(server_url)
+                result = client.call_tool(tool_name, kwargs)
+                parts = [c.text for c in result.content if hasattr(c, "text")]
+                return "\n".join(parts) if parts else "(no output)"
+            return call_tool
+
+        desc = mcp_tool.description or ""
+        if custom_desc and len(mcp_tools) == 1:
+            desc = custom_desc
+
+        sync_tools.append(
+            StructuredTool(
+                name=mcp_tool.name,
+                description=desc,
+                args_schema=mcp_tool.inputSchema,
+                func=_make_fn(),
+            )
+        )
+
+    return sync_tools
+
+
 def make_tools(tool_configs: list[dict[str, Any]]) -> list[BaseTool]:
     """Convert a list of tool config dicts into LangChain tools.
 
@@ -199,6 +286,8 @@ def make_tools(tool_configs: list[dict[str, Any]]) -> list[BaseTool]:
             tools.append(_make_vector_search_tool(config))
         elif tool_type == "genie":
             tools.append(_make_genie_tool(config))
+        elif tool_type == "mcp_server":
+            tools.extend(_make_mcp_tools(config))
         else:
             logger.warning("Unknown tool type: %s", tool_type)
     return tools
