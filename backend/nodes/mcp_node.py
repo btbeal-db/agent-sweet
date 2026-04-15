@@ -96,10 +96,10 @@ class MCPServerNode(BaseNode):
         query = resolve_state(state, config.get("query_from", "input"))
 
         try:
-            from ..tools import _get_mcp_client
+            from ..tools import _get_mcp_client, _run_mcp_in_thread
 
             mcp_client = _get_mcp_client(server_url)
-            result = mcp_client.call_tool(tool_name, {"query": str(query)})
+            result = _run_mcp_in_thread(mcp_client.call_tool, tool_name, {"query": str(query)})
             parts = [c.text for c in result.content if hasattr(c, "text")]
             result_text = "\n".join(parts) if parts else "(no output)"
 

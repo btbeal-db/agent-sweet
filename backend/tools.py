@@ -211,30 +211,43 @@ def _get_mcp_client(server_url: str):
     return DatabricksMCPClient(server_url=server_url, workspace_client=get_data_client())
 
 
+def _run_mcp_in_thread(fn, *args, **kwargs):
+    """Run a ``DatabricksMCPClient`` method in a dedicated thread.
+
+    ``DatabricksMCPClient.list_tools()`` and ``call_tool()`` call
+    ``asyncio.run()`` internally, which crashes if an event loop is
+    already running (e.g. inside a FastAPI handler).  Running in a
+    separate thread guarantees no existing event loop.
+    """
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(fn, *args, **kwargs).result()
+
+
 def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
     """Create LangChain tools from a Databricks MCP server.
 
     Uses ``DatabricksMCPClient`` which handles auth via the
     ``WorkspaceClient``, auto-detects transport, and provides proper
     Databricks resource declarations for deployment.
-
-    ``DatabricksMCPClient.list_tools()`` and ``call_tool()`` are sync
-    methods (they use ``asyncio.run()`` internally).  This is safe because
-    LangGraph executes sync node functions in a thread pool where no event
-    loop is running.
     """
     server_url = config.get("server_url", "")
     if not server_url:
         logger.warning("MCP tool config missing server_url")
         return []
 
-    # Discover tools from the MCP server
+    # Discover tools from the MCP server.
+    # Runs in a thread because DatabricksMCPClient uses asyncio.run()
+    # internally, which fails inside an existing event loop (FastAPI).
     try:
         mcp_client = _get_mcp_client(server_url)
-        mcp_tools = mcp_client.list_tools()
+        mcp_tools = _run_mcp_in_thread(mcp_client.list_tools)
     except Exception as exc:
-        logger.warning("Failed to discover MCP tools from %s: %s", server_url, exc)
+        logger.exception("Failed to discover MCP tools from %s", server_url)
         return []
+
+    logger.info("Discovered %d MCP tools from %s: %s",
+                len(mcp_tools), server_url, [t.name for t in mcp_tools])
 
     # Apply tool name filter
     tool_filter = config.get("tool_filter", "")
@@ -246,11 +259,12 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
     sync_tools: list[BaseTool] = []
 
     for mcp_tool in mcp_tools:
-        # Each tool call creates a fresh client with current auth credentials
+        # Each tool call creates a fresh client with current auth credentials,
+        # and runs in a thread to avoid event loop conflicts.
         def _make_fn(tool_name: str = mcp_tool.name) -> Any:
             def call_tool(**kwargs: Any) -> str:
                 client = _get_mcp_client(server_url)
-                result = client.call_tool(tool_name, kwargs)
+                result = _run_mcp_in_thread(client.call_tool, tool_name, kwargs)
                 parts = [c.text for c in result.content if hasattr(c, "text")]
                 return "\n".join(parts) if parts else "(no output)"
             return call_tool
