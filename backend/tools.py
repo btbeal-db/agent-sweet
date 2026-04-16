@@ -275,14 +275,25 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
         logger.warning("MCP tool config missing server_url")
         return []
 
-    # Discover tools — runs in a thread to avoid event loop conflicts
-    try:
-        token = _get_mcp_token(server_url)
-        logger.info("MCP token obtained for %s (length=%d, prefix=%s)",
-                     server_url, len(token), token[:10])
-        mcp_tools = _run_mcp_in_thread(_mcp_list_tools, server_url, token)
-    except Exception:
-        logger.exception("Failed to discover MCP tools from %s", server_url)
+    # Discover tools — runs in a thread to avoid event loop conflicts.
+    # Retry once on failure: the MCP server (especially Databricks Apps)
+    # may need a moment to wake up on the first connection attempt.
+    mcp_tools = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            token = _get_mcp_token(server_url)
+            if attempt == 0:
+                logger.info("MCP token obtained for %s (length=%d, prefix=%s)",
+                            server_url, len(token), token[:10])
+            mcp_tools = _run_mcp_in_thread(_mcp_list_tools, server_url, token)
+            break
+        except Exception as exc:
+            last_err = exc
+            if attempt == 0:
+                logger.warning("MCP discovery attempt 1 failed for %s, retrying: %s", server_url, exc)
+    if mcp_tools is None:
+        logger.exception("Failed to discover MCP tools from %s after 2 attempts", server_url)
         return []
 
     logger.info("Discovered %d MCP tools from %s: %s",
