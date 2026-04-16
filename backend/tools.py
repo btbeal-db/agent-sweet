@@ -278,6 +278,8 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
     # Discover tools — runs in a thread to avoid event loop conflicts
     try:
         token = _get_mcp_token(server_url)
+        logger.info("MCP token obtained for %s (length=%d, prefix=%s)",
+                     server_url, len(token), token[:10])
         mcp_tools = _run_mcp_in_thread(_mcp_list_tools, server_url, token)
     except Exception:
         logger.exception("Failed to discover MCP tools from %s", server_url)

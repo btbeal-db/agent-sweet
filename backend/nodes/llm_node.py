@@ -224,7 +224,14 @@ class LLMNode(BaseNode):
         if tools_json_raw and str(tools_json_raw).strip():
             try:
                 from ..tools import make_tools_from_json
+                import logging as _logging
+                _llm_logger = _logging.getLogger(__name__)
                 tools = make_tools_from_json(str(tools_json_raw))
+                if not tools:
+                    _llm_logger.warning("tools_json was configured but no tools were created. "
+                                        "tools_json=%s", str(tools_json_raw)[:200])
+                else:
+                    _llm_logger.info("Bound %d tools: %s", len(tools), [t.name for t in tools])
                 llm = llm.bind_tools(tools)
             except Exception as exc:
                 return {
