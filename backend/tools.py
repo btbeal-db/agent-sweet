@@ -6,16 +6,22 @@ but exposed as a callable tool for the ReAct agent.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from databricks.sdk.service.dashboards import MessageStatus
-
-from .auth import get_data_client
 from databricks.sdk.service.vectorsearch import RerankerConfig, RerankerConfigRerankerParameters
 from databricks_langchain import UCFunctionToolkit
+from databricks_langchain.uc_ai import DatabricksFunctionClient
 from langchain_core.tools import BaseTool, StructuredTool, tool
+from mcp.client.session import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+from .auth import get_data_client, get_user_token
 
 logger = logging.getLogger(__name__)
 
@@ -170,8 +176,6 @@ def _make_genie_tool(config: dict[str, Any]) -> BaseTool:
 
 def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
     """Create tool(s) from a Unity Catalog function."""
-    from databricks_langchain.uc_ai import DatabricksFunctionClient
-
     function_name = config.get("function_name", "")
     custom_desc = config.get("tool_description", "")
     # Pass the data client so UC functions use OBO auth when configured
@@ -184,6 +188,9 @@ def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
     return tools
 
 
+# ── MCP helpers ──────────────────────────────────────────────────────────────
+
+
 def _get_mcp_token(server_url: str) -> str:
     """Get a Bearer token for MCP calls.
 
@@ -192,52 +199,45 @@ def _get_mcp_token(server_url: str) -> str:
 
     For Databricks Apps URLs the OBO token from the Apps proxy is
     preferred because it is an OAuth token that Apps accept reliably.
-    The PAT from the banner is used as a fallback.
     """
-    from urllib.parse import urlparse
-    from .auth import get_user_token
-
-    # On the deployed app, the OBO token (OAuth) is the most reliable
-    # credential for Apps URLs.  Try it first before the general path.
     if urlparse(server_url).netloc.endswith(".databricksapps.com"):
         obo = get_user_token()
         if obo:
             return obo
 
-    # General path: PAT > OBO > SP
     w = get_data_client()
     headers = w.config.authenticate()
     return headers["Authorization"].split("Bearer ", 1)[1]
 
 
 def _run_mcp_in_thread(fn, *args, **kwargs):
-    """Run an async MCP operation in a dedicated thread.
+    """Run a function in a dedicated thread.
 
     The MCP SDK uses ``asyncio.run()`` internally, which crashes if an
     event loop is already running (e.g. inside a FastAPI handler).
     Running in a separate thread guarantees no existing event loop.
     """
-    import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(fn, *args, **kwargs).result()
 
 
-def _mcp_list_tools(server_url: str, token: str):
-    """Discover tools from an MCP server using the raw MCP SDK.
+def _mcp_session(server_url: str, token: str):
+    """Open an authenticated MCP session via Streamable HTTP.
 
-    Bypasses ``DatabricksMCPClient`` which rejects PAT auth for Apps URLs.
-    PAT works fine as a Bearer token at the HTTP level.
+    Uses the raw MCP SDK rather than ``DatabricksMCPClient`` because the
+    latter rejects PAT auth for Databricks Apps URLs.
     """
-    import asyncio
-    import httpx
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
+    return streamablehttp_client(
+        url=server_url,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def _mcp_list_tools(server_url: str, token: str):
+    """Discover tools from an MCP server."""
 
     async def _discover():
-        async with streamablehttp_client(
-            url=server_url,
-            headers={"Authorization": f"Bearer {token}"},
-        ) as (read, write, _):
+        async with _mcp_session(server_url, token) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 return (await session.list_tools()).tools
@@ -246,16 +246,10 @@ def _mcp_list_tools(server_url: str, token: str):
 
 
 def _mcp_call_tool(server_url: str, token: str, tool_name: str, arguments: dict):
-    """Call a tool on an MCP server using the raw MCP SDK."""
-    import asyncio
-    from mcp.client.streamable_http import streamablehttp_client
-    from mcp.client.session import ClientSession
+    """Call a tool on an MCP server."""
 
     async def _call():
-        async with streamablehttp_client(
-            url=server_url,
-            headers={"Authorization": f"Bearer {token}"},
-        ) as (read, write, _):
+        async with _mcp_session(server_url, token) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 return await session.call_tool(tool_name, arguments)

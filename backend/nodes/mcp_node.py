@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from ..tools import _get_mcp_token, _mcp_call_tool, _run_mcp_in_thread
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
 
@@ -96,8 +97,6 @@ class MCPServerNode(BaseNode):
         query = resolve_state(state, config.get("query_from", "input"))
 
         try:
-            from ..tools import _get_mcp_token, _mcp_call_tool, _run_mcp_in_thread
-
             token = _get_mcp_token(server_url)
             result = _run_mcp_in_thread(
                 _mcp_call_tool, server_url, token, tool_name, {"query": str(query)},
