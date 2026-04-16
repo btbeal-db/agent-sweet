@@ -751,6 +751,11 @@ def deploy_graph(req: DeployRequest):
         lb_project_id = req.lakebase_project_id or req.lakebase_existing_project_id
         lb_is_create = bool(req.lakebase_project_id)
 
+        # Capture SP client_id early, before any create_pat_client() call
+        # masks the env var.  Concurrent deploys share os.environ, so reading
+        # DATABRICKS_CLIENT_ID after masking causes a race condition.
+        sp_client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
+
         if lb_project_id:
             action = "Provisioning" if lb_is_create else "Resolving"
             yield _emit("provision_lakebase", DeployStepStatus.RUNNING,
@@ -758,7 +763,6 @@ def deploy_graph(req: DeployRequest):
             try:
                 if not req.pat:
                     raise ValueError("A PAT is required for Lakebase setup")
-                sp_client_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
                 w = create_pat_client(req.pat)
                 lb_fn = provision_lakebase if lb_is_create else resolve_lakebase
                 lb_config = lb_fn(
