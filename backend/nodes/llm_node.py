@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from pydantic import Field, create_model
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from databricks_langchain import ChatDatabricks
 
 from .base import BaseNode, NodeConfigField
 from . import register
+
+logger = logging.getLogger(__name__)
 
 _TYPE_MAP: dict[str, type] = {
     "str": str,
@@ -23,11 +26,7 @@ _TYPE_MAP: dict[str, type] = {
 
 
 def build_pydantic_model(sub_fields: list[dict[str, str]], model_name: str = "StructuredOutput") -> type | None:
-    """Build a Pydantic model from sub-field definitions.
-
-    Works for both structured types (multiple sub-fields) and primitive
-    types wrapped as a single-field model (e.g. bool, int, float).
-    """
+    """Build a Pydantic model from sub-field definitions."""
     if not sub_fields:
         return None
 
@@ -67,35 +66,28 @@ def _build_state_context(state: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _format_conversation_history(state: dict[str, Any], last_n: int = 0) -> str:
-    """Format prior user/assistant turns as a readable text block.
+def _get_message_history(state: dict[str, Any], last_n: int = 0) -> list[BaseMessage]:
+    """Extract user/assistant message objects from state for the LLM context.
 
-    Args:
-        state: The full agent state (messages may be BaseMessage or dict).
-        last_n: Number of recent messages to include. 0 means all.
-
-    Returns:
-        A formatted string like:
-            User: hello
-            Assistant: Hi there!
+    Filters to only HumanMessage and AIMessage — skips system, tool, and
+    any non-standard messages that other nodes may have added.
     """
-    _TYPE_TO_ROLE = {"human": "User", "ai": "Assistant"}
-    turns: list[str] = []
+    messages: list[BaseMessage] = []
     for msg in state.get("messages", []):
-        if isinstance(msg, BaseMessage):
-            role = _TYPE_TO_ROLE.get(msg.type)
-            if role:
-                turns.append(f"{role}: {msg.content}")
+        if isinstance(msg, (HumanMessage, AIMessage)):
+            messages.append(msg)
         elif isinstance(msg, dict):
             role = msg.get("role", "")
-            if role in ("user", "assistant"):
-                label = "User" if role == "user" else "Assistant"
-                turns.append(f"{label}: {msg.get('content', '')}")
+            content = msg.get("content", "")
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
 
     if last_n and last_n > 0:
-        turns = turns[-last_n:]
+        messages = messages[-last_n:]
 
-    return "\n".join(turns)
+    return messages
 
 
 def _build_schema_instruction(sub_fields: list[dict[str, str]], field_name: str) -> str:
@@ -205,14 +197,11 @@ class LLMNode(BaseNode):
         # Resolve {field_name} templates in the system prompt from state
         system_prompt = _resolve_templates(raw_prompt, state)
 
-        # Either pass all state fields automatically, or rely on templates only
-        state_context = _build_state_context(state) if include_state_vars else ""
-
-        # Optionally append conversation history to the context
-        if include_msg_history:
-            history_text = _format_conversation_history(state, last_n=last_n)
-            if history_text:
-                state_context = f"{state_context}\n\nConversation History:\n{history_text}" if state_context else f"Conversation History:\n{history_text}"
+        # Optionally inject state fields into the system prompt
+        if include_state_vars:
+            state_context = _build_state_context(state)
+            if state_context:
+                system_prompt = f"{system_prompt}\n\nCurrent state:\n{state_context}"
 
         # LLM calls use the SP credentials (default env vars). FMAPI's data-plane
         # does not accept OBO tokens. Data-access nodes (VS, Genie, UC) use OBO.
@@ -225,45 +214,52 @@ class LLMNode(BaseNode):
             try:
                 from ..tools import make_tools_from_json
                 tools = make_tools_from_json(str(tools_json_raw))
+                if not tools:
+                    logger.warning("tools_json was configured but no tools were created. "
+                                   "tools_json=%s", str(tools_json_raw)[:200])
+                else:
+                    logger.info("Bound %d tools: %s", len(tools), [t.name for t in tools])
                 llm = llm.bind_tools(tools)
             except Exception as exc:
-                return {
-                    writes_to: f"Error binding tools: {exc}",
-                    "messages": [{"role": "system", "content": f"LLM: tool binding error: {exc}", "node": "llm"}],
-                }
+                return {writes_to: f"Error binding tools: {exc}"}
 
         # Auto-detect structured output from the state field definition.
-        # Covers both multi-field structured types and primitive types
-        # (bool, int, float) that need typed extraction via with_structured_output.
         target_type = getattr(target_field, "type", "str") if target_field else "str"
 
         if target_type == "structured":
             sub_fields = getattr(target_field, "sub_fields", [])
         elif target_type in _TYPE_MAP and target_type != "str":
-            # Wrap primitive as a single-field structured output
             sub_fields = [{"name": writes_to, "type": target_type, "description": getattr(target_field, "description", "") or writes_to}]
         else:
             sub_fields = []
 
+        # Build messages for the LLM. When message history is enabled,
+        # pass real message objects (like the standard LangGraph pattern)
+        # instead of formatting them as text.
+        if include_msg_history:
+            history = _get_message_history(state, last_n=last_n)
+            messages_for_llm = [SystemMessage(content=system_prompt)] + history
+        else:
+            messages_for_llm = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=state.get("input", "")),
+            ]
+
+        # Structured output path
         if sub_fields and writes_to:
             model_cls = build_pydantic_model(sub_fields, model_name=writes_to.title().replace("_", ""))
             if model_cls is None:
-                return {
-                    writes_to: "Error: structured field has no valid sub-fields",
-                    "messages": [{"role": "system", "content": "LLM: invalid structured field schema.", "node": "llm"}],
-                }
+                return {writes_to: "Error: structured field has no valid sub-fields"}
 
             schema_instruction = _build_schema_instruction(sub_fields, writes_to)
-            system_prompt = f"{system_prompt}\n\n{schema_instruction}"
+            messages_for_llm[0] = SystemMessage(
+                content=f"{system_prompt}\n\n{schema_instruction}"
+            )
 
             structured_llm = llm.with_structured_output(model_cls)
-            result = structured_llm.invoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=state_context or state.get("input", "")),
-            ])
+            result = structured_llm.invoke(messages_for_llm)
 
             result_dict = result.model_dump()
-            # Single-field primitives: extract the value directly
             if target_type != "structured":
                 response_text = str(result_dict[writes_to])
             else:
@@ -271,39 +267,24 @@ class LLMNode(BaseNode):
 
             return {
                 writes_to: response_text,
-                "messages": [
-                    {"role": "assistant", "content": response_text, "node": "llm"},
-                ],
+                "messages": [AIMessage(content=response_text)],
             }
 
-        # Plain text / tool-calling path
+        # Plain text / tool-calling path — loop stays local, only
+        # the final AIMessage is returned to state.
         max_iterations = int(config.get("max_tool_iterations", 10) or 10)
-        messages_for_llm = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=state_context or state.get("input", "")),
-        ]
-        trace_messages: list[dict[str, Any]] = []
 
-        for _iteration in range(max_iterations):
+        for _ in range(max_iterations):
             response = llm.invoke(messages_for_llm)
 
-            # If no tools or no tool calls, we have our final answer
             if not tools or not hasattr(response, "tool_calls") or not response.tool_calls:
-                response_text = response.content
-                trace_messages.append({"role": "assistant", "content": response_text, "node": "llm"})
                 return {
-                    writes_to: response_text,
-                    "messages": trace_messages,
+                    writes_to: response.content,
+                    "messages": [AIMessage(content=response.content)],
                 }
 
-            # LLM wants to call tools — execute them and loop
+            # Tool-calling loop — intermediates stay local
             messages_for_llm.append(response)
-            trace_messages.append({
-                "role": "system",
-                "content": f"[Tool calls: {', '.join(tc['name'] for tc in response.tool_calls)}]",
-                "node": "tool",
-            })
-
             tool_map = {t.name: t for t in tools}
             for tool_call in response.tool_calls:
                 tool_name = tool_call.get("name", "")
@@ -320,18 +301,9 @@ class LLMNode(BaseNode):
                     except Exception as exc:
                         result_str = f"Error calling {tool_name}: {exc}"
 
-                from langchain_core.messages import ToolMessage
                 messages_for_llm.append(ToolMessage(content=result_str, tool_call_id=tool_id))
-                trace_messages.append({
-                    "role": "system",
-                    "content": f"[{tool_name}] {result_str}",
-                    "node": "tool",
-                })
 
-        # Max iterations reached — return whatever we have
-        response_text = "(max tool iterations reached)"
-        trace_messages.append({"role": "assistant", "content": response_text, "node": "llm"})
         return {
-            writes_to: response_text,
-            "messages": trace_messages,
+            writes_to: "(max tool iterations reached)",
+            "messages": [AIMessage(content="(max tool iterations reached)")],
         }

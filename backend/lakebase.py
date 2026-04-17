@@ -91,7 +91,10 @@ def _ensure_sp_role(
             logger.info("SP role already exists for %s", sp_client_id)
             return
 
-    logger.info("Creating Lakebase role for SP %s", sp_client_id)
+    # role_id must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ — prefix the
+    # UUID with "sp-" so it always starts with a letter.
+    role_id = f"sp-{sp_client_id}"
+    logger.info("Creating Lakebase role for SP %s (role_id=%s)", sp_client_id, role_id)
     w.postgres.create_role(
         parent=branch_path,
         role=Role(
@@ -100,7 +103,7 @@ def _ensure_sp_role(
                 postgres_role=sp_client_id,
             ),
         ),
-        role_id=sp_client_id,
+        role_id=role_id,
     ).wait()
     logger.info("SP role created")
 
@@ -117,7 +120,7 @@ def _ensure_database(
     """
     from google.protobuf.field_mask_pb2 import FieldMask
 
-    sp_role = f"{branch_path}/roles/{sp_client_id}"
+    sp_role = f"{branch_path}/roles/sp-{sp_client_id}"
     db_path = f"{branch_path}/databases/{database_id}"
 
     for db in w.postgres.list_databases(parent=branch_path):

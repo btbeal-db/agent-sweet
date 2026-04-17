@@ -6,16 +6,22 @@ but exposed as a callable tool for the ReAct agent.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from databricks.sdk.service.dashboards import MessageStatus
-
-from .auth import get_data_client
 from databricks.sdk.service.vectorsearch import RerankerConfig, RerankerConfigRerankerParameters
 from databricks_langchain import UCFunctionToolkit
-from langchain_core.tools import BaseTool, tool
+from databricks_langchain.uc_ai import DatabricksFunctionClient
+from langchain_core.tools import BaseTool, StructuredTool, tool
+from mcp.client.session import ClientSession
+from mcp.client.streamable_http import streamablehttp_client
+
+from .auth import get_data_client, get_user_token
 
 logger = logging.getLogger(__name__)
 
@@ -170,8 +176,6 @@ def _make_genie_tool(config: dict[str, Any]) -> BaseTool:
 
 def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
     """Create tool(s) from a Unity Catalog function."""
-    from databricks_langchain.uc_ai import DatabricksFunctionClient
-
     function_name = config.get("function_name", "")
     custom_desc = config.get("tool_description", "")
     # Pass the data client so UC functions use OBO auth when configured
@@ -182,6 +186,147 @@ def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
     if custom_desc and tools:
         tools[0].description = custom_desc
     return tools
+
+
+# ── MCP helpers ──────────────────────────────────────────────────────────────
+
+
+def _get_mcp_token(server_url: str) -> str:
+    """Get a Bearer token for MCP calls.
+
+    Same credential priority as VS, Genie, and UC Function nodes:
+    PAT > OBO > SP (via ``get_data_client()``).
+
+    For Databricks Apps URLs the OBO token from the Apps proxy is
+    preferred because it is an OAuth token that Apps accept reliably.
+    """
+    if urlparse(server_url).netloc.endswith(".databricksapps.com"):
+        obo = get_user_token()
+        if obo:
+            return obo
+
+    w = get_data_client()
+    headers = w.config.authenticate()
+    return headers["Authorization"].split("Bearer ", 1)[1]
+
+
+def _run_mcp_in_thread(fn, *args, **kwargs):
+    """Run a function in a dedicated thread.
+
+    The MCP SDK uses ``asyncio.run()`` internally, which crashes if an
+    event loop is already running (e.g. inside a FastAPI handler).
+    Running in a separate thread guarantees no existing event loop.
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(fn, *args, **kwargs).result()
+
+
+def _mcp_session(server_url: str, token: str):
+    """Open an authenticated MCP session via Streamable HTTP.
+
+    Uses the raw MCP SDK rather than ``DatabricksMCPClient`` because the
+    latter rejects PAT auth for Databricks Apps URLs.
+    """
+    return streamablehttp_client(
+        url=server_url,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+
+def _mcp_list_tools(server_url: str, token: str):
+    """Discover tools from an MCP server."""
+
+    async def _discover():
+        async with _mcp_session(server_url, token) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return (await session.list_tools()).tools
+
+    return asyncio.run(_discover())
+
+
+def _mcp_call_tool(server_url: str, token: str, tool_name: str, arguments: dict):
+    """Call a tool on an MCP server."""
+
+    async def _call():
+        async with _mcp_session(server_url, token) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                return await session.call_tool(tool_name, arguments)
+
+    return asyncio.run(_call())
+
+
+def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
+    """Create LangChain tools from an MCP server.
+
+    Uses the user's PAT (via ``get_data_client()``) as a Bearer token,
+    same auth model as VS, Genie, and UC Function nodes.  Bypasses
+    ``DatabricksMCPClient`` which rejects PAT for Apps URLs.
+    """
+    server_url = config.get("server_url", "")
+    if not server_url:
+        logger.warning("MCP tool config missing server_url")
+        return []
+
+    # Discover tools — runs in a thread to avoid event loop conflicts.
+    # Retry once on failure: the MCP server (especially Databricks Apps)
+    # may need a moment to wake up on the first connection attempt.
+    mcp_tools = None
+    last_err = None
+    for attempt in range(2):
+        try:
+            token = _get_mcp_token(server_url)
+            if attempt == 0:
+                logger.info("MCP token obtained for %s (length=%d, prefix=%s)",
+                            server_url, len(token), token[:10])
+            mcp_tools = _run_mcp_in_thread(_mcp_list_tools, server_url, token)
+            break
+        except Exception as exc:
+            last_err = exc
+            if attempt == 0:
+                logger.warning("MCP discovery attempt 1 failed for %s, retrying: %s", server_url, exc)
+    if mcp_tools is None:
+        logger.exception("Failed to discover MCP tools from %s after 2 attempts", server_url)
+        return []
+
+    logger.info("Discovered %d MCP tools from %s: %s",
+                len(mcp_tools), server_url, [t.name for t in mcp_tools])
+
+    # Apply tool name filter
+    tool_filter = config.get("tool_filter", "")
+    if tool_filter and str(tool_filter).strip():
+        allowed = {t.strip() for t in str(tool_filter).split(",") if t.strip()}
+        mcp_tools = [t for t in mcp_tools if t.name in allowed]
+
+    custom_desc = config.get("tool_description", "")
+    sync_tools: list[BaseTool] = []
+
+    for mcp_tool in mcp_tools:
+        def _make_fn(tool_name: str = mcp_tool.name) -> Any:
+            def call_tool(**kwargs: Any) -> str:
+                tok = _get_mcp_token(server_url)  # fresh token per call
+                result = _run_mcp_in_thread(
+                    _mcp_call_tool, server_url, tok, tool_name, kwargs,
+                )
+                parts = [c.text for c in result.content if hasattr(c, "text")]
+                return "\n".join(parts) if parts else "(no output)"
+            return call_tool
+
+        desc = mcp_tool.description or ""
+        if custom_desc and len(mcp_tools) == 1:
+            desc = custom_desc
+
+        sync_tools.append(
+            StructuredTool(
+                name=mcp_tool.name,
+                description=desc,
+                args_schema=mcp_tool.inputSchema,
+                func=_make_fn(),
+            )
+        )
+
+    return sync_tools
 
 
 def make_tools(tool_configs: list[dict[str, Any]]) -> list[BaseTool]:
@@ -199,6 +344,8 @@ def make_tools(tool_configs: list[dict[str, Any]]) -> list[BaseTool]:
             tools.append(_make_vector_search_tool(config))
         elif tool_type == "genie":
             tools.append(_make_genie_tool(config))
+        elif tool_type == "mcp_server":
+            tools.extend(_make_mcp_tools(config))
         else:
             logger.warning("Unknown tool type: %s", tool_type)
     return tools

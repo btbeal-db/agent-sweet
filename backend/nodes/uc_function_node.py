@@ -69,10 +69,7 @@ class UCFunctionNode(BaseNode):
         function_name = config.get("function_name", "")
 
         if not function_name:
-            return {
-                writes_to: "Error: no UC function configured.",
-                "messages": [{"role": "system", "content": "UC Function: missing function_name.", "node": "uc_function"}],
-            }
+            return {writes_to: "Error: no UC function configured."}
 
         # Resolve parameters from state
         params: dict[str, Any] = {}
@@ -96,26 +93,15 @@ class UCFunctionNode(BaseNode):
             toolkit = UCFunctionToolkit(function_names=[function_name], client=client)
             tools = toolkit.tools
             if not tools:
-                return {
-                    writes_to: f"Error: function '{function_name}' not found or not accessible.",
-                    "messages": [{"role": "system", "content": f"UC Function: '{function_name}' not found.", "node": "uc_function"}],
-                }
+                return {writes_to: f"Error: function '{function_name}' not found or not accessible."}
 
             tool = tools[0]
             result = tool.invoke(params)
 
         except Exception as exc:
             logger.exception("UC Function execution failed")
-            return {
-                writes_to: f"UC Function error: {exc}",
-                "messages": [{"role": "system", "content": f"UC Function error: {exc}", "node": "uc_function"}],
-            }
+            return {writes_to: f"UC Function error: {exc}"}
 
         result_text = result if isinstance(result, str) else json.dumps(result, indent=2)
 
-        return {
-            writes_to: result_text,
-            "messages": [
-                {"role": "system", "content": f"[UC Function: {function_name}]\n{result_text}", "node": "uc_function"}
-            ],
-        }
+        return {writes_to: result_text}

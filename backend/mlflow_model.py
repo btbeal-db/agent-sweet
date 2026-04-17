@@ -22,6 +22,8 @@ from mlflow.types.responses import (
     ResponsesAgentRequest,
     ResponsesAgentResponse,
     ResponsesAgentStreamEvent,
+    create_text_delta,
+    create_text_output_item,
 )
 
 if TYPE_CHECKING:
@@ -202,6 +204,10 @@ def _make_msg_id() -> str:
     return f"msg_{uuid.uuid4().hex[:24]}"
 
 
+def _make_resp_id() -> str:
+    return f"resp_{uuid.uuid4().hex[:24]}"
+
+
 class AgentGraphModel(ResponsesAgent):
     """Wraps a compiled LangGraph agent as an MLflow ResponsesAgent for serving."""
 
@@ -262,6 +268,7 @@ class AgentGraphModel(ResponsesAgent):
         user_message = _extract_user_message(request)
         if not user_message:
             return ResponsesAgentResponse(
+                id=_make_resp_id(),
                 output=[
                     {
                         "id": _make_msg_id(),
@@ -285,6 +292,7 @@ class AgentGraphModel(ResponsesAgent):
         if interrupts:
             prompt = str(interrupts[0].value) if interrupts else "Input needed"
             return ResponsesAgentResponse(
+                id=_make_resp_id(),
                 output=[
                     {
                         "id": _make_msg_id(),
@@ -309,6 +317,7 @@ class AgentGraphModel(ResponsesAgent):
                     break
 
         return ResponsesAgentResponse(
+            id=_make_resp_id(),
             output=[
                 {
                     "id": _make_msg_id(),
@@ -322,12 +331,26 @@ class AgentGraphModel(ResponsesAgent):
     def predict_stream(
         self, request: ResponsesAgentRequest
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
-        """Stream the agent graph execution, yielding events as each node completes."""
+        """Stream the agent graph, yielding token-level deltas from LLM nodes.
+
+        Uses stream_mode=["messages", "updates"] so we get both:
+        - AIMessageChunk tokens for real-time streaming
+        - Node updates to build the final result (for non-LLM nodes)
+
+        Follows the MLflow ResponsesAgent streaming pattern:
+        https://mlflow.org/docs/latest/genai/serving/responses-agent#basic-text-streaming
+        """
+        from langchain_core.messages import AIMessage, AIMessageChunk
+
         user_message = _extract_user_message(request)
         if not user_message:
+            msg_id = _make_msg_id()
             yield ResponsesAgentStreamEvent(
-                type="response.output_text.delta",
-                delta="No user message provided.",
+                **create_text_delta("No user message provided.", msg_id)
+            )
+            yield ResponsesAgentStreamEvent(
+                type="response.output_item.done",
+                item=create_text_output_item("No user message provided.", msg_id),
             )
             return
 
@@ -336,112 +359,70 @@ class AgentGraphModel(ResponsesAgent):
         invoke_input = self._resolve_invoke_input(user_message, config)
 
         msg_id = _make_msg_id()
-        output_index = 0
-        content_index = 0
-        full_text = ""
+        streamed_parts: list[str] = []
+        final_state: dict = {}
 
-        is_resume = isinstance(invoke_input, Command)
+        for chunk in self.compiled_graph.stream(
+            invoke_input, config=config,
+            stream_mode=["messages", "updates"],
+        ):
+            mode, data = chunk
 
-        if is_resume:
-            # On resume, use invoke() to get the clean final result.
-            # Streaming a resume would replay messages from the interrupted
-            # node (e.g. the human_input prompt the user already saw),
-            # concatenating them with the next interrupt or final output.
-            result = self.compiled_graph.invoke(invoke_input, config=config)
-            interrupts = result.get("__interrupt__")
+            if mode == "messages":
+                msg, metadata = data
+                # Stream AI message content chunks (skip tool calls)
+                if isinstance(msg, (AIMessage, AIMessageChunk)):
+                    if msg.content and not getattr(msg, "tool_calls", None):
+                        streamed_parts.append(str(msg.content))
+                        yield ResponsesAgentStreamEvent(
+                            **create_text_delta(str(msg.content), msg_id)
+                        )
+
+            elif mode == "updates":
+                # Accumulate state from node updates
+                if isinstance(data, dict):
+                    for node_output in data.values():
+                        if isinstance(node_output, dict):
+                            final_state.update(node_output)
+
+        # If nothing was streamed (non-LLM graphs, structured output,
+        # interrupts), emit the final output from accumulated state.
+        if not streamed_parts:
+            interrupts = final_state.get("__interrupt__")
             if interrupts:
-                full_text = str(interrupts[0].value)
+                full_text = str(interrupts[0].value) if interrupts else ""
             else:
-                full_text, _ = filter_output(result, self.graph_def)
+                full_text, _ = filter_output(final_state, self.graph_def)
                 if not full_text:
-                    messages = result.get("messages", [])
-                    for msg in reversed(messages):
-                        if isinstance(msg, dict) and msg.get("role") == "assistant":
-                            full_text = msg.get("content", "")
+                    messages = final_state.get("messages", [])
+                    for m in reversed(messages):
+                        if isinstance(m, AIMessage) and m.content:
+                            full_text = m.content
                             break
-                        elif hasattr(msg, "type") and msg.type == "ai":
-                            full_text = msg.content
-                            break
+            full_text = str(full_text or "")
             yield ResponsesAgentStreamEvent(
-                type="response.output_text.delta",
-                delta=str(full_text),
-                item_id=msg_id,
-                output_index=output_index,
-                content_index=content_index,
+                **create_text_delta(full_text, msg_id)
             )
         else:
-            # Fresh invocation — stream node-by-node.
-            # stream() does NOT raise GraphInterrupt — it yields a chunk
-            # with __interrupt__ key when the graph pauses for human input.
-            #
-            # If the graph ends with an interrupt, the interrupt prompt is
-            # the authoritative response (it typically embeds the node output
-            # via template variables like {draft_email}). We discard any
-            # previously streamed text to avoid duplication.
-            streamed_parts: list[str] = []
-            interrupt_text: str | None = None
+            full_text = "".join(streamed_parts)
 
-            for chunk in self.compiled_graph.stream(invoke_input, config=config):
-                # Check for interrupt chunk
-                interrupts = chunk.get("__interrupt__")
-                if interrupts:
-                    interrupt_text = str(interrupts[0].value)
-                    continue
-
-                # Each chunk is {node_name: state_update_dict}
-                for node_name, state_update in chunk.items():
-                    if not isinstance(state_update, dict):
-                        continue
-
-                    # Extract any assistant messages produced by this node
-                    messages = state_update.get("messages", [])
-                    for msg in messages:
-                        text = ""
-                        if isinstance(msg, dict) and msg.get("role") == "assistant":
-                            text = msg.get("content", "")
-                        elif hasattr(msg, "type") and msg.type == "ai":
-                            text = msg.content
-                        if text:
-                            streamed_parts.append(str(text))
-
-            # If the graph interrupted, return only the interrupt prompt.
-            # Otherwise return the streamed node outputs.
-            if interrupt_text is not None:
-                full_text = interrupt_text
-            else:
-                full_text = "".join(streamed_parts)
-
-            yield ResponsesAgentStreamEvent(
-                type="response.output_text.delta",
-                delta=full_text,
-                item_id=msg_id,
-                output_index=output_index,
-                content_index=content_index,
-            )
-
-        # Emit the completed output item
+        # Final output item (same item_id as the deltas)
         yield ResponsesAgentStreamEvent(
             type="response.output_item.done",
-            item={
-                "id": msg_id,
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": full_text}],
-            },
+            item=create_text_output_item(full_text, msg_id),
         )
 
-        # Emit the final response.completed event
+        # Final completion event with the full response object
         yield ResponsesAgentStreamEvent(
             type="response.completed",
             response=ResponsesAgentResponse(
-                output=[
-                    {
-                        "id": msg_id,
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": full_text}],
-                    }
-                ],
+                id=_make_resp_id(),
+                output=[{
+                    "id": msg_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": full_text}],
+                }],
             ).model_dump(),
         )
 

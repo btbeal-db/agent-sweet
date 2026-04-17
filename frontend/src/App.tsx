@@ -87,6 +87,10 @@ export default function App() {
     });
   }, []);
 
+  const removeField = useCallback((name: string) => {
+    setStateFields((prev) => prev.filter((f) => f.name !== name));
+  }, []);
+
   const renameField = useCallback((oldName: string, newName: string) => {
     if (!newName || oldName === newName) return;
     setStateFields((prev) =>
@@ -213,7 +217,7 @@ export default function App() {
 
   return (
     <ReactFlowProvider>
-      <StateProvider value={{ names: stateVariableNames, fields: stateFields, addField, renameField }}>
+      <StateProvider value={{ names: stateVariableNames, fields: stateFields, addField, removeField, renameField }}>
       <div className={`app${showStateModal && view === "builder" ? " app-blurred" : ""}`}>
         <header className="header">
           <div className="header-left">
