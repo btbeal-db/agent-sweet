@@ -65,10 +65,11 @@ class HumanInputNode(BaseNode):
         # After resume: returns the user's response.
         answer = interrupt(prompt)
 
+        from langchain_core.messages import AIMessage, HumanMessage
         return {
             writes_to: answer,
             "messages": [
-                {"role": "assistant", "content": prompt, "node": "human_input"},
-                {"role": "user", "content": answer, "node": "human_input"},
+                AIMessage(content=prompt),
+                HumanMessage(content=answer),
             ],
         }

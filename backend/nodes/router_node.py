@@ -104,10 +104,7 @@ class RouterNode(BaseNode):
         routes = _parse_routes(config)
 
         if not routes:
-            return {
-                "_route": "default",
-                "messages": [{"role": "system", "content": "Router: no routes defined.", "node": "router"}],
-            }
+            return {"_route": "default"}
 
         value_str = str(value).strip().lower()
         field_label = f"{eval_var}{'.' + sub_field if sub_field else ''}"
@@ -147,11 +144,4 @@ class RouterNode(BaseNode):
             chosen_label = routes[-1].get("label", "default")
             chosen_key = routes[-1].get("match_value") or chosen_label
 
-        return {
-            "_route": chosen_key,
-            "messages": [{
-                "role": "system",
-                "content": f"Router → {chosen_label} ({match_reason})",
-                "node": "router",
-            }],
-        }
+        return {"_route": chosen_key}

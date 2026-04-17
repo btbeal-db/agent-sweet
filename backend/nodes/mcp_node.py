@@ -84,15 +84,9 @@ class MCPServerNode(BaseNode):
         tool_name = config.get("tool_name", "")
 
         if not server_url:
-            return {
-                writes_to: "Error: no MCP server URL configured.",
-                "messages": [{"role": "system", "content": "MCP Server: missing server_url.", "node": "mcp_server"}],
-            }
+            return {writes_to: "Error: no MCP server URL configured."}
         if not tool_name:
-            return {
-                writes_to: "Error: no tool_name configured for standalone MCP node.",
-                "messages": [{"role": "system", "content": "MCP Server: missing tool_name for standalone execution.", "node": "mcp_server"}],
-            }
+            return {writes_to: "Error: no tool_name configured for standalone MCP node."}
 
         query = resolve_state(state, config.get("query_from", "input"))
 
@@ -106,14 +100,6 @@ class MCPServerNode(BaseNode):
 
         except Exception as exc:
             logger.exception("MCP tool call failed (server=%s, tool=%s)", server_url, tool_name)
-            return {
-                writes_to: f"MCP Server error: {exc}",
-                "messages": [{"role": "system", "content": f"MCP Server error: {exc}", "node": "mcp_server"}],
-            }
+            return {writes_to: f"MCP Server error: {exc}"}
 
-        return {
-            writes_to: result_text,
-            "messages": [
-                {"role": "system", "content": f"[MCP: {tool_name}]\n{result_text}", "node": "mcp_server"}
-            ],
-        }
+        return {writes_to: result_text}

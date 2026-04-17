@@ -121,27 +121,15 @@ class VectorSearchNode(BaseNode):
         columns_raw = config.get("columns", "")
 
         if not index_name:
-            return {
-                writes_to: "Error: no Vector Search index configured.",
-                "messages": [{"role": "system", "content": "Vector Search: missing index_name.", "node": "vector_search"}],
-            }
+            return {writes_to: "Error: no Vector Search index configured."}
         if not endpoint_name:
-            return {
-                writes_to: "Error: no Vector Search endpoint configured.",
-                "messages": [{"role": "system", "content": "Vector Search: missing endpoint_name.", "node": "vector_search"}],
-            }
+            return {writes_to: "Error: no Vector Search endpoint configured."}
         if not query:
-            return {
-                writes_to: "Error: no query provided.",
-                "messages": [{"role": "system", "content": "Vector Search: empty query.", "node": "vector_search"}],
-            }
+            return {writes_to: "Error: no query provided."}
 
         columns = [c.strip() for c in columns_raw.split(",") if c.strip()] if columns_raw else []
         if not columns:
-            return {
-                writes_to: "Error: no columns specified.",
-                "messages": [{"role": "system", "content": "Vector Search: columns are required.", "node": "vector_search"}],
-            }
+            return {writes_to: "Error: no columns specified."}
 
         # Optional: score threshold
         score_threshold = config.get("score_threshold")
@@ -192,10 +180,7 @@ class VectorSearchNode(BaseNode):
                 "Vector Search query failed (index=%s)",
                 index_name,
             )
-            return {
-                writes_to: f"Vector Search error: {exc}",
-                "messages": [{"role": "system", "content": f"Vector Search error: {exc}", "node": "vector_search"}],
-            }
+            return {writes_to: f"Vector Search error: {exc}"}
 
         result_dict = response.as_dict()
         docs: list[str] = []
@@ -208,9 +193,4 @@ class VectorSearchNode(BaseNode):
 
         result_text = "\n\n---\n\n".join(docs) if docs else "(no results)"
 
-        return {
-            writes_to: result_text,
-            "messages": [
-                {"role": "system", "content": f"Retrieved {len(docs)} documents from '{index_name}'.\n\n{result_text}", "node": "vector_search"}
-            ],
-        }
+        return {writes_to: result_text}

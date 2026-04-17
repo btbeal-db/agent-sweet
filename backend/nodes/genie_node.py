@@ -117,15 +117,9 @@ class GenieNode(BaseNode):
         space_id = config.get("room_id", "")
 
         if not space_id:
-            return {
-                writes_to: "Error: no Genie Room ID configured.",
-                "messages": [{"role": "system", "content": "Genie: missing room_id.", "node": "genie"}],
-            }
+            return {writes_to: "Error: no Genie Room ID configured."}
         if not query:
-            return {
-                writes_to: "Error: no question provided.",
-                "messages": [{"role": "system", "content": "Genie: empty question.", "node": "genie"}],
-            }
+            return {writes_to: "Error: no question provided."}
 
         try:
             w = get_data_client()
@@ -139,17 +133,11 @@ class GenieNode(BaseNode):
                 "Genie API call failed (space=%s, query=%s): %s",
                 space_id, query[:100], error_detail,
             )
-            return {
-                writes_to: f"Genie API error: {error_detail}",
-                "messages": [{"role": "system", "content": f"Genie error: {error_detail}", "node": "genie"}],
-            }
+            return {writes_to: f"Genie API error: {error_detail}"}
 
         if message.status == MessageStatus.FAILED:
             error_text = message.error.message if message.error else "Unknown error"
-            return {
-                writes_to: f"Genie error: {error_text}",
-                "messages": [{"role": "system", "content": f"Genie failed: {error_text}", "node": "genie"}],
-            }
+            return {writes_to: f"Genie error: {error_text}"}
 
         # Parse attachments
         parts: list[str] = []
@@ -172,9 +160,4 @@ class GenieNode(BaseNode):
 
         result_text = "\n\n".join(parts) if parts else "(Genie returned no content)"
 
-        return {
-            writes_to: result_text,
-            "messages": [
-                {"role": "system", "content": f"[Genie Room {space_id}]\n{result_text}", "node": "genie"},
-            ],
-        }
+        return {writes_to: result_text}
