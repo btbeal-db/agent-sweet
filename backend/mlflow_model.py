@@ -202,6 +202,10 @@ def _make_msg_id() -> str:
     return f"msg_{uuid.uuid4().hex[:24]}"
 
 
+def _make_resp_id() -> str:
+    return f"resp_{uuid.uuid4().hex[:24]}"
+
+
 class AgentGraphModel(ResponsesAgent):
     """Wraps a compiled LangGraph agent as an MLflow ResponsesAgent for serving."""
 
@@ -262,6 +266,7 @@ class AgentGraphModel(ResponsesAgent):
         user_message = _extract_user_message(request)
         if not user_message:
             return ResponsesAgentResponse(
+                id=_make_resp_id(),
                 output=[
                     {
                         "id": _make_msg_id(),
@@ -285,6 +290,7 @@ class AgentGraphModel(ResponsesAgent):
         if interrupts:
             prompt = str(interrupts[0].value) if interrupts else "Input needed"
             return ResponsesAgentResponse(
+                id=_make_resp_id(),
                 output=[
                     {
                         "id": _make_msg_id(),
@@ -309,6 +315,7 @@ class AgentGraphModel(ResponsesAgent):
                     break
 
         return ResponsesAgentResponse(
+            id=_make_resp_id(),
             output=[
                 {
                     "id": _make_msg_id(),
