@@ -350,7 +350,7 @@ class AgentGraphModel(ResponsesAgent):
         invoke_input = self._resolve_invoke_input(user_message, config)
 
         msg_id = _make_msg_id()
-        streamed = False
+        streamed_parts: list[str] = []
         final_state: dict = {}
 
         for chunk in self.compiled_graph.stream(
@@ -364,7 +364,7 @@ class AgentGraphModel(ResponsesAgent):
                 # Stream AI message content chunks (skip tool calls)
                 if isinstance(msg, (AIMessage, AIMessageChunk)):
                     if msg.content and not getattr(msg, "tool_calls", None):
-                        streamed = True
+                        streamed_parts.append(str(msg.content))
                         yield ResponsesAgentStreamEvent(
                             **create_text_delta(str(msg.content), msg_id)
                         )
@@ -378,21 +378,38 @@ class AgentGraphModel(ResponsesAgent):
 
         # If nothing was streamed (non-LLM graphs, structured output,
         # interrupts), emit the final output from accumulated state.
-        if not streamed:
+        if not streamed_parts:
             interrupts = final_state.get("__interrupt__")
             if interrupts:
-                text = str(interrupts[0].value) if interrupts else ""
+                full_text = str(interrupts[0].value) if interrupts else ""
             else:
-                text, _ = filter_output(final_state, self.graph_def)
-                if not text:
+                full_text, _ = filter_output(final_state, self.graph_def)
+                if not full_text:
                     messages = final_state.get("messages", [])
                     for m in reversed(messages):
                         if isinstance(m, AIMessage) and m.content:
-                            text = m.content
+                            full_text = m.content
                             break
+            full_text = str(full_text or "")
             yield ResponsesAgentStreamEvent(
-                **create_text_delta(str(text or ""), msg_id)
+                **create_text_delta(full_text, msg_id)
             )
+        else:
+            full_text = "".join(streamed_parts)
+
+        # Final completion event with the full response object
+        yield ResponsesAgentStreamEvent(
+            type="response.completed",
+            response=ResponsesAgentResponse(
+                id=_make_resp_id(),
+                output=[{
+                    "id": msg_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": full_text}],
+                }],
+            ).model_dump(),
+        )
 
 
 # Register this model for MLflow "models from code" loading
