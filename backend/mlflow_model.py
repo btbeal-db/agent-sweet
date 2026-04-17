@@ -360,8 +360,13 @@ class AgentGraphModel(ResponsesAgent):
 
             if mode == "messages":
                 msg, metadata = data
-                # Stream AI message content chunks (skip tool calls)
-                if isinstance(msg, (AIMessage, AIMessageChunk)):
+                # Only stream AIMessageChunk (incremental tokens).
+                # AIMessageChunk is a subclass of AIMessage, so
+                # isinstance(chunk, AIMessage) is True — but we must
+                # skip plain AIMessage instances because LangGraph
+                # yields the full completed message at the end of each
+                # node, which would duplicate the already-streamed text.
+                if type(msg) is AIMessageChunk:
                     if msg.content and not getattr(msg, "tool_calls", None):
                         streamed_parts.append(str(msg.content))
                         yield ResponsesAgentStreamEvent(
