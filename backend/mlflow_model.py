@@ -23,6 +23,7 @@ from mlflow.types.responses import (
     ResponsesAgentResponse,
     ResponsesAgentStreamEvent,
     create_text_delta,
+    create_text_output_item,
 )
 
 if TYPE_CHECKING:
@@ -335,13 +336,21 @@ class AgentGraphModel(ResponsesAgent):
         Uses stream_mode=["messages", "updates"] so we get both:
         - AIMessageChunk tokens for real-time streaming
         - Node updates to build the final result (for non-LLM nodes)
+
+        Follows the MLflow ResponsesAgent streaming pattern:
+        https://mlflow.org/docs/latest/genai/serving/responses-agent#basic-text-streaming
         """
         from langchain_core.messages import AIMessage, AIMessageChunk
 
         user_message = _extract_user_message(request)
         if not user_message:
+            msg_id = _make_msg_id()
             yield ResponsesAgentStreamEvent(
-                **create_text_delta("No user message provided.", _make_msg_id())
+                **create_text_delta("No user message provided.", msg_id)
+            )
+            yield ResponsesAgentStreamEvent(
+                type="response.output_item.done",
+                item=create_text_output_item("No user message provided.", msg_id),
             )
             return
 
@@ -396,6 +405,12 @@ class AgentGraphModel(ResponsesAgent):
             )
         else:
             full_text = "".join(streamed_parts)
+
+        # Final output item (same item_id as the deltas)
+        yield ResponsesAgentStreamEvent(
+            type="response.output_item.done",
+            item=create_text_output_item(full_text, msg_id),
+        )
 
         # Final completion event with the full response object
         yield ResponsesAgentStreamEvent(
