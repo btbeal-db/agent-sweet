@@ -14,6 +14,7 @@ import os
 from contextvars import ContextVar
 
 from databricks.sdk import WorkspaceClient
+from databricks_ai_bridge import ModelServingUserCredentials
 
 # Per-request credential storage (set by middleware / endpoint, read by nodes)
 _user_token: ContextVar[str | None] = ContextVar("_user_token", default=None)
@@ -65,7 +66,6 @@ def get_data_client() -> WorkspaceClient:
         return create_pat_client(pat)
 
     if _auth_mode == "obo":
-        from databricks_ai_bridge import ModelServingUserCredentials
         return WorkspaceClient(credentials_strategy=ModelServingUserCredentials())
 
     return get_workspace_client()

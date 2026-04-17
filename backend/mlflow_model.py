@@ -13,9 +13,12 @@ import os
 import sys
 import uuid
 from collections.abc import Generator
-from typing import TYPE_CHECKING
 
 import mlflow
+import psycopg
+from databricks.sdk import WorkspaceClient
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.types import Command
 from mlflow.pyfunc import ResponsesAgent
 from mlflow.types.responses import (
@@ -25,9 +28,8 @@ from mlflow.types.responses import (
     create_text_delta,
     create_text_output_item,
 )
-
-if TYPE_CHECKING:
-    from langgraph.checkpoint.postgres import PostgresSaver
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 # Ensure the backend package is importable when MLflow loads this file
 # from the code/ directory in the serving container.
@@ -36,6 +38,7 @@ _parent_dir = os.path.dirname(_this_dir)
 if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
+from backend.auth import set_auth_mode
 from backend.graph_builder import build_graph, filter_output
 from backend.schema import GraphDef
 
@@ -53,12 +56,6 @@ def _create_lakebase_checkpointer(
     fresh 1-hour token.  Existing connections remain valid even after the token
     that opened them expires (Lakebase enforces expiry only at login).
     """
-    import psycopg
-    from databricks.sdk import WorkspaceClient
-    from langgraph.checkpoint.postgres import PostgresSaver
-    from psycopg.rows import dict_row
-    from psycopg_pool import ConnectionPool
-
     # Use the app's SP (which has a Lakebase role) rather than the
     # serving endpoint's auto-generated SP (which does not).
     sp_client_id = os.environ.get("LAKEBASE_SP_CLIENT_ID", "")
@@ -110,10 +107,6 @@ def _create_connstring_checkpointer(conn_string: str) -> PostgresSaver:
     Use this only for non-Lakebase Postgres instances or manual overrides.
     Note that Lakebase OAuth tokens embedded in the URI expire after 1 hour.
     """
-    from langgraph.checkpoint.postgres import PostgresSaver
-    from psycopg.rows import dict_row
-    from psycopg_pool import ConnectionPool
-
     pool = ConnectionPool(
         conninfo=conn_string,
         min_size=1,
@@ -221,7 +214,6 @@ class AgentGraphModel(ResponsesAgent):
         self.graph_def = GraphDef(**raw)
 
         # Set auth mode so get_data_client() returns the right client type
-        from backend.auth import set_auth_mode
         set_auth_mode(self.graph_def.auth_mode)
 
         # Prefer dynamic token refresh (LAKEBASE_ENDPOINT/HOST/DATABASE),
@@ -340,8 +332,6 @@ class AgentGraphModel(ResponsesAgent):
         Follows the MLflow ResponsesAgent streaming pattern:
         https://mlflow.org/docs/latest/genai/serving/responses-agent#basic-text-streaming
         """
-        from langchain_core.messages import AIMessage, AIMessageChunk
-
         user_message = _extract_user_message(request)
         if not user_message:
             msg_id = _make_msg_id()
