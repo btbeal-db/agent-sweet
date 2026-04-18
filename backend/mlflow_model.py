@@ -401,15 +401,10 @@ class AgentGraphModel(ResponsesAgent):
         else:
             full_text = "".join(streamed_parts)
 
-        # Final output item (same item_id as the deltas).
-        # Do NOT emit response.completed — the Playground renders its
-        # output array as additional text, duplicating everything that
-        # was already streamed via deltas.  The serving layer's [DONE]
-        # signal is sufficient to end the stream.
-        yield ResponsesAgentStreamEvent(
-            type="response.output_item.done",
-            item=create_text_output_item(full_text, msg_id),
-        )
+        # Do NOT emit response.completed or response.output_item.done —
+        # the Databricks AI Playground renders their content as additional
+        # text, duplicating everything already streamed via deltas.
+        # The serving layer's [DONE] signal is sufficient to end the stream.
 
 
 # Register this model for MLflow "models from code" loading
