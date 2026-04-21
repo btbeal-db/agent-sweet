@@ -4,8 +4,7 @@ import json
 import logging
 from typing import Any
 
-from databricks_langchain import UCFunctionToolkit
-
+from ..tools import _get_mcp_client, _mcp_discover_and_call, _run_mcp_in_thread, _uc_function_mcp_url
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
 
@@ -24,7 +23,7 @@ class UCFunctionNode(BaseNode):
 
     @property
     def description(self) -> str:
-        return "Execute a Unity Catalog function with parameters from state."
+        return "Execute a Unity Catalog function via managed MCP."
 
     @property
     def category(self) -> str:
@@ -53,7 +52,7 @@ class UCFunctionNode(BaseNode):
                 name="function_name",
                 label="UC Function",
                 placeholder="catalog.schema.function_name",
-                help_text="Fully qualified name of a Unity Catalog function.",
+                help_text="Fully qualified UC function name. Uses managed MCP — no PAT required.",
             ),
             NodeConfigField(
                 name="parameters_from",
@@ -86,22 +85,13 @@ class UCFunctionNode(BaseNode):
                         logger.warning("Invalid parameters JSON from '%s': %s", params_from, raw_params)
 
         try:
-            from databricks_langchain.uc_ai import DatabricksFunctionClient
-            from ..auth import get_data_client
-            w = get_data_client()
-            client = DatabricksFunctionClient(client=w)
-            toolkit = UCFunctionToolkit(function_names=[function_name], client=client)
-            tools = toolkit.tools
-            if not tools:
-                return {writes_to: f"Error: function '{function_name}' not found or not accessible."}
-
-            tool = tools[0]
-            result = tool.invoke(params)
-
+            url = _uc_function_mcp_url(function_name)
+            client = _get_mcp_client(url)
+            result_text = _run_mcp_in_thread(
+                _mcp_discover_and_call, url, client, params,
+            )
         except Exception as exc:
-            logger.exception("UC Function execution failed")
+            logger.exception("UC Function MCP call failed (function=%s)", function_name)
             return {writes_to: f"UC Function error: {exc}"}
-
-        result_text = result if isinstance(result, str) else json.dumps(result, indent=2)
 
         return {writes_to: result_text}

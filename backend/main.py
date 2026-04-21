@@ -48,7 +48,7 @@ from .auth import (
 )
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
 from .graph_builder import build_graph, filter_output, run_graph
-from .tools import discover_mcp_tool_metadata
+from .tools import discover_mcp_tool_metadata, managed_mcp_url_for_tool
 from .nodes import get_all_metadata
 from .lakebase import LakebaseConfig, provision_lakebase, resolve_lakebase
 from .setup import router as setup_router
@@ -242,12 +242,25 @@ def _extract_resources(
 
 
 def _collect_mcp_urls(graph: GraphDef) -> list[str]:
-    """Collect all MCP server URLs from the graph (nodes + tools_json)."""
+    """Collect all MCP server URLs from the graph (nodes + tools_json).
+
+    Includes explicit ``mcp_server`` URLs and managed MCP URLs derived
+    from VS / Genie / UC Function node configs.
+    """
     urls: list[str] = []
+
+    def _add_from_config(config: dict, tool_type: str) -> None:
+        if tool_type == "mcp_server":
+            url = config.get("server_url")
+            if url:
+                urls.append(url)
+        else:
+            url = managed_mcp_url_for_tool(tool_type, config)
+            if url:
+                urls.append(url)
+
     for node in graph.nodes:
-        url = node.config.get("server_url")
-        if url and node.type == "mcp_server":
-            urls.append(url)
+        _add_from_config(node.config, node.type)
 
         tools_json_raw = node.config.get("tools_json", "")
         if tools_json_raw and str(tools_json_raw).strip():
@@ -255,10 +268,7 @@ def _collect_mcp_urls(graph: GraphDef) -> list[str]:
                 tool_configs = json.loads(str(tools_json_raw))
                 if isinstance(tool_configs, list):
                     for tc in tool_configs:
-                        if tc.get("type") == "mcp_server":
-                            tc_url = tc.get("config", {}).get("server_url")
-                            if tc_url:
-                                urls.append(tc_url)
+                        _add_from_config(tc.get("config", {}), tc.get("type", ""))
             except (json.JSONDecodeError, TypeError):
                 pass
     return urls
@@ -270,6 +280,9 @@ def _persist_mcp_tool_metadata(graph: GraphDef, pat: str = "") -> None:
     Called at deploy time so the served model has tool metadata baked in
     and never needs to re-contact the MCP server for discovery.  Mutates
     the graph in place (caller should pass a deep copy).
+
+    Handles all MCP-routed tool types: ``mcp_server`` (explicit MCP nodes)
+    and ``vector_search``, ``genie``, ``uc_function`` (managed MCP routing).
 
     Uses a PAT-authenticated WorkspaceClient for discovery (same credential
     that works during preview).  Falls back to SP if no PAT is provided.
@@ -287,20 +300,44 @@ def _persist_mcp_tool_metadata(graph: GraphDef, pat: str = "") -> None:
                 client = WorkspaceClient()
         return discover_mcp_tool_metadata(url, client)
 
-    for node in graph.nodes:
-        # Standalone MCP nodes (not attached as tools)
-        if node.type == "mcp_server" and node.config.get("server_url"):
-            url = node.config["server_url"]
-            try:
-                metadata = _discover(url)
-                node.config["discovered_tools"] = metadata
-                logger.info("Persisted %d MCP tools for standalone node %s (%s)",
-                            len(metadata), node.id, url)
-            except Exception as exc:
-                logger.warning("Failed to pre-discover MCP tools for node %s (%s): %s",
-                               node.id, url, exc)
+    def _persist_for_config(
+        tc_config: dict,
+        tool_type: str,
+        label: str,
+    ) -> bool:
+        """Discover and inject ``discovered_tools`` for one tool config.
 
-        # MCP tools attached to LLM nodes via tools_json
+        Returns True if the config was modified.
+        """
+        # Explicit MCP server URL
+        url = tc_config.get("server_url", "") if tool_type == "mcp_server" else None
+
+        # VS / Genie / UC Function → build managed MCP URL
+        if not url:
+            url = managed_mcp_url_for_tool(tool_type, tc_config)
+
+        if not url:
+            return False
+
+        try:
+            metadata = _discover(url)
+            tc_config["discovered_tools"] = metadata
+            logger.info("Persisted %d MCP tools for %s (%s)", len(metadata), label, url)
+            return True
+        except Exception as exc:
+            logger.warning("Failed to pre-discover MCP tools for %s (%s): %s",
+                           label, url, exc)
+            return False
+
+    # Eligible types for MCP tool persistence
+    _MCP_TYPES = {"mcp_server", "vector_search", "genie", "uc_function"}
+
+    for node in graph.nodes:
+        # Standalone nodes (not attached as tools)
+        if node.type in _MCP_TYPES:
+            _persist_for_config(node.config, node.type, f"node {node.id}")
+
+        # Tools attached to LLM nodes via tools_json
         tools_json_raw = node.config.get("tools_json", "")
         if not (tools_json_raw and str(tools_json_raw).strip()):
             continue
@@ -314,21 +351,11 @@ def _persist_mcp_tool_metadata(graph: GraphDef, pat: str = "") -> None:
 
         modified = False
         for tc in tool_configs:
-            if tc.get("type") != "mcp_server":
+            tc_type = tc.get("type", "")
+            if tc_type not in _MCP_TYPES:
                 continue
-            tc_config = tc.get("config", {})
-            url = tc_config.get("server_url", "")
-            if not url:
-                continue
-            try:
-                metadata = _discover(url)
-                tc_config["discovered_tools"] = metadata
+            if _persist_for_config(tc.get("config", {}), tc_type, f"LLM tool on {node.id}"):
                 modified = True
-                logger.info("Persisted %d MCP tools for LLM-attached tool on node %s (%s)",
-                            len(metadata), node.id, url)
-            except Exception as exc:
-                logger.warning("Failed to pre-discover MCP tools for LLM-attached tool "
-                               "on node %s (%s): %s", node.id, url, exc)
 
         if modified:
             node.config["tools_json"] = json.dumps(tool_configs)
@@ -346,10 +373,11 @@ def _build_auth_policy(
       - LLM serving endpoints (FMAPI rejects user tokens)
       - Genie spaces + their downstream SQL warehouses and tables
 
-    **UserAuthPolicy.api_scopes** — OAuth scopes for the user's token:
-      - ``vector-search`` for VS index queries
-      - ``genie`` for Genie API calls on behalf of the user
-      - ``sql`` / ``unity-catalog`` for UC functions
+    **UserAuthPolicy.api_scopes** — ``mcp.*`` scopes for the user's token:
+      - ``mcp.vectorsearch`` for VS index queries via managed MCP
+      - ``mcp.genie`` for Genie API calls via managed MCP
+      - ``mcp.functions`` for UC function execution via managed MCP
+      - ``mcp.external`` for external MCP connections
 
     ``_extract_resources()`` resolves all resources (including Genie
     downstream dependencies); this function then classifies each one as
@@ -379,19 +407,20 @@ def _build_auth_policy(
     user_scopes: set[str] = set()
 
     def _scan_config(config: dict, tool_type: str | None = None) -> None:
+        # All data-access nodes are now routed through managed MCP, so
+        # the user token needs the corresponding mcp.* scopes.
         if config.get("index_name"):
-            user_scopes.add("vector-search")
+            user_scopes.add("mcp.vectorsearch")
 
         if config.get("room_id"):
-            user_scopes.add("genie")
+            user_scopes.add("mcp.genie")
 
         if config.get("function_name"):
-            user_scopes.add("sql")
-            user_scopes.add("unity-catalog")
+            user_scopes.add("mcp.functions")
 
-        # MCP servers may access multiple resource types.
+        # Explicit MCP server nodes may access any managed or external MCP.
         if config.get("server_url") and tool_type == "mcp_server":
-            user_scopes.update(["unity-catalog", "vector-search", "sql", "genie"])
+            user_scopes.update(["mcp.functions", "mcp.vectorsearch", "mcp.genie", "mcp.external"])
 
     for node in graph.nodes:
         _scan_config(node.config, tool_type=node.type)

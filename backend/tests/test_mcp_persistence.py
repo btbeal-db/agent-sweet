@@ -209,7 +209,7 @@ class TestMakeToolsFromJSONWithPersistedMCP:
         assert tools[1].name == "get_schema"
 
     def test_mixed_tool_types_with_persisted_mcp(self):
-        """MCP tools alongside other tool types (e.g. genie)."""
+        """MCP tools alongside other tool types (e.g. genie) — both use persisted metadata."""
         tools_json = json.dumps([
             {
                 "type": "mcp_server",
@@ -220,15 +220,18 @@ class TestMakeToolsFromJSONWithPersistedMCP:
             },
             {
                 "type": "genie",
-                "config": {"room_id": "test-room"},
+                "config": {
+                    "room_id": "test-room",
+                    "discovered_tools": [FAKE_PERSISTED[1]],
+                },
             },
         ])
         tools = make_tools_from_json(tools_json)
-        # 1 MCP tool + 1 Genie tool
+        # 1 MCP tool + 1 Genie tool (both from persisted metadata)
         assert len(tools) == 2
         names = {t.name for t in tools}
         assert "search_docs" in names
-        assert "genie_test-room" in names
+        assert "get_schema" in names
 
 
 # ── _persist_mcp_tool_metadata ──────────────────────────────────────────────
@@ -324,6 +327,78 @@ class TestPersistMCPToolMetadata:
         _persist_mcp_tool_metadata(graph, pat="fake-pat")
         # discovered_tools should NOT be present since discovery failed
         assert "discovered_tools" not in graph.nodes[0].config
+
+    @patch("backend.tools._run_mcp_in_thread", return_value=FAKE_MCP_TOOLS)
+    @patch("backend.main.create_pat_client", return_value=MagicMock())
+    def test_injects_into_vs_node(self, mock_pat_client, mock_thread):
+        """VS nodes now route through managed MCP and need persisted tools."""
+        from backend.main import _persist_mcp_tool_metadata
+
+        graph = GraphDef(
+            nodes=[
+                NodeDef(
+                    id="vs_1", type="vector_search", writes_to="docs",
+                    config={"index_name": "catalog.schema.my_index"},
+                ),
+            ],
+            edges=[
+                EdgeDef(id="e1", source="__start__", target="vs_1"),
+                EdgeDef(id="e2", source="vs_1", target="__end__"),
+            ],
+        )
+        _persist_mcp_tool_metadata(graph, pat="fake-pat")
+        assert "discovered_tools" in graph.nodes[0].config
+        assert len(graph.nodes[0].config["discovered_tools"]) == 2
+
+    @patch("backend.tools._run_mcp_in_thread", return_value=FAKE_MCP_TOOLS)
+    @patch("backend.main.create_pat_client", return_value=MagicMock())
+    def test_injects_into_genie_node(self, mock_pat_client, mock_thread):
+        """Genie nodes now route through managed MCP and need persisted tools."""
+        from backend.main import _persist_mcp_tool_metadata
+
+        graph = GraphDef(
+            nodes=[
+                NodeDef(
+                    id="genie_1", type="genie", writes_to="result",
+                    config={"room_id": "abc123"},
+                ),
+            ],
+            edges=[
+                EdgeDef(id="e1", source="__start__", target="genie_1"),
+                EdgeDef(id="e2", source="genie_1", target="__end__"),
+            ],
+        )
+        _persist_mcp_tool_metadata(graph, pat="fake-pat")
+        assert "discovered_tools" in graph.nodes[0].config
+
+    @patch("backend.tools._run_mcp_in_thread", return_value=FAKE_MCP_TOOLS)
+    @patch("backend.main.create_pat_client", return_value=MagicMock())
+    def test_injects_into_uc_function_in_tools_json(self, mock_pat_client, mock_thread):
+        """UC function tools in tools_json now route through managed MCP."""
+        from backend.main import _persist_mcp_tool_metadata
+
+        tools_json = json.dumps([{
+            "type": "uc_function",
+            "config": {"function_name": "catalog.schema.my_func"},
+        }])
+        graph = GraphDef(
+            nodes=[
+                NodeDef(
+                    id="llm_1", type="llm", writes_to="output",
+                    config={
+                        "endpoint": "databricks-meta-llama-3-3-70b-instruct",
+                        "tools_json": tools_json,
+                    },
+                ),
+            ],
+            edges=[
+                EdgeDef(id="e1", source="__start__", target="llm_1"),
+                EdgeDef(id="e2", source="llm_1", target="__end__"),
+            ],
+        )
+        _persist_mcp_tool_metadata(graph, pat="fake-pat")
+        updated = json.loads(graph.nodes[0].config["tools_json"])
+        assert "discovered_tools" in updated[0]["config"]
 
     @patch("backend.main.create_pat_client", return_value=MagicMock())
     def test_non_mcp_nodes_untouched(self, mock_pat_client):
