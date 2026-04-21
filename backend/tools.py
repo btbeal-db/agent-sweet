@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 def _managed_mcp_url(resource_type: str, *parts: str) -> str:
     """Build a managed MCP server URL on the current workspace host."""
     host = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
+    if host and not host.startswith("https://"):
+        host = f"https://{host}"
     return f"{host}/api/2.0/mcp/{resource_type}/{'/'.join(parts)}"
 
 
@@ -47,7 +49,7 @@ def _vs_mcp_url(index_name: str) -> str:
 
 def _genie_mcp_url(room_id: str) -> str:
     """Build MCP URL for a Genie space."""
-    return _managed_mcp_url("genie", room_id)
+    return _managed_mcp_url("genie", room_id.strip())
 
 
 def _uc_function_mcp_url(function_name: str) -> str:
