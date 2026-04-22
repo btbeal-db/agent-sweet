@@ -377,11 +377,13 @@ def _build_auth_policy(
       - LLM serving endpoints (FMAPI rejects user tokens)
       - Genie spaces + their downstream SQL warehouses and tables
 
-    **UserAuthPolicy.api_scopes** — ``mcp.*`` scopes for the user's token:
-      - ``mcp.vectorsearch`` for VS index queries via managed MCP
-      - ``mcp.genie`` for Genie API calls via managed MCP
-      - ``mcp.functions`` for UC function execution via managed MCP
-      - ``mcp.external`` for external MCP connections
+    **UserAuthPolicy.api_scopes** — direct SDK scopes for the user's
+    token.  Serving endpoints use the direct SDK (not MCP), so they
+    need the SDK-level scopes.  (The app's ``mcp.*`` scopes in
+    ``databricks.yml`` are separate — those are for app preview only.)
+      - ``vector-search`` for VS index queries
+      - ``genie`` for Genie API calls
+      - ``sql`` / ``unity-catalog`` for UC function execution
 
     ``_extract_resources()`` resolves all resources (including Genie
     downstream dependencies); this function then classifies each one as
@@ -411,20 +413,23 @@ def _build_auth_policy(
     user_scopes: set[str] = set()
 
     def _scan_config(config: dict, tool_type: str | None = None) -> None:
-        # All data-access nodes are now routed through managed MCP, so
-        # the user token needs the corresponding mcp.* scopes.
+        # Serving endpoints use the direct SDK, so the user token needs
+        # direct SDK scopes (not the app's mcp.* scopes).
         if config.get("index_name"):
-            user_scopes.add("mcp.vectorsearch")
+            user_scopes.add("vector-search")
 
         if config.get("room_id"):
-            user_scopes.add("mcp.genie")
+            user_scopes.add("genie")
 
         if config.get("function_name"):
-            user_scopes.add("mcp.functions")
+            user_scopes.add("sql")
+            user_scopes.add("unity-catalog")
 
-        # Explicit MCP server nodes may access any managed or external MCP.
+        # MCP server nodes still use MCP in serving, so add both scope
+        # families to cover all resource types the server might access.
         if config.get("server_url") and tool_type == "mcp_server":
-            user_scopes.update(["mcp.functions", "mcp.vectorsearch", "mcp.genie", "mcp.external"])
+            user_scopes.update(["unity-catalog", "vector-search", "sql", "genie",
+                                "mcp.functions", "mcp.vectorsearch", "mcp.genie", "mcp.external"])
 
     for node in graph.nodes:
         _scan_config(node.config, tool_type=node.type)
