@@ -65,8 +65,6 @@ class VectorSearchNode(BaseNode):
             NodeConfigField(
                 name="index_name",
                 label="Vector Search Index",
-                field_type="searchable_select",
-                fetch_endpoint="/api/discover/vector-search-indexes",
                 placeholder="catalog.schema.my_vs_index",
                 help_text="Fully qualified index name (catalog.schema.index).",
             ),

@@ -10,7 +10,6 @@ frontend can degrade gracefully to manual text entry.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -83,31 +82,6 @@ def list_serving_endpoints() -> DiscoveryResponse:
         return DiscoveryResponse(options=options)
     except Exception as exc:
         logger.warning("Failed to list serving endpoints: %s", exc)
-        return DiscoveryResponse(error=str(exc))
-
-
-@router.get("/vector-search-indexes", response_model=DiscoveryResponse)
-def list_vector_search_indexes() -> DiscoveryResponse:
-    """List all vector search indexes across all VS endpoints."""
-    try:
-        w = get_workspace_client()
-        options: list[DiscoveryOption] = []
-        for vs_ep in w.vector_search_endpoints.list_endpoints():
-            ep_name = vs_ep.name
-            try:
-                for idx in w.vector_search_indexes.list_indexes(endpoint_name=ep_name):
-                    options.append(
-                        DiscoveryOption(
-                            value=idx.name,
-                            label=idx.name,
-                            description=f"Endpoint: {ep_name}",
-                        )
-                    )
-            except Exception as idx_exc:
-                logger.warning("Failed to list indexes for VS endpoint %s: %s", ep_name, idx_exc)
-        return DiscoveryResponse(options=options)
-    except Exception as exc:
-        logger.warning("Failed to list VS endpoints: %s", exc)
         return DiscoveryResponse(error=str(exc))
 
 
