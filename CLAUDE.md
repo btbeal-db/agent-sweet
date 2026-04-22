@@ -55,14 +55,12 @@ Three credential types. All data-access operations (VS, Genie, UC Functions) are
 
 ### Managed MCP routing (OBO, no PAT)
 
-All data-access nodes (Vector Search, Genie, UC Functions) call through managed MCP endpoints (`/api/2.0/mcp/vector-search/...`, `/api/2.0/mcp/genie/...`, `/api/2.0/mcp/functions/...`) instead of the direct SDK APIs. The OBO token from the Apps proxy has the required `mcp.*` scopes declared in `databricks.yml`:
+Data-access nodes (Vector Search, Genie, UC Functions) have two execution paths controlled by `is_serving()` in `auth.py`:
 
-- `mcp.vectorsearch` -- Vector Search index queries
-- `mcp.genie` -- Genie space queries
-- `mcp.functions` -- UC function execution
-- `mcp.external` -- External MCP connections (UC connection proxy)
+- **App preview** (`is_serving()=False`): routes through managed MCP endpoints. The Apps OBO token only has `mcp.*` scopes (`mcp.vectorsearch`, `mcp.genie`, `mcp.functions`, `mcp.external`), declared in `databricks.yml`.
+- **Serving** (`is_serving()=True`): uses the Databricks SDK directly. Serving credentials (user OBO or SP) work with the SDK — no MCP overhead.
 
-`_get_mcp_client()` in `tools.py` prefers the OBO token for managed MCP URLs. Falls back to `get_data_client()` (PAT > OBO > SP) for other URLs and local dev.
+`is_serving()` is set once by `mlflow_model.py` at model load time. Tool factories and node `execute()` methods branch on it (e.g. `_make_vector_search_tool_sdk` vs `_make_vector_search_tool_mcp`). If direct SDK OBO scopes become available for Apps, the MCP path can be removed.
 
 ### Deployment prerequisites
 

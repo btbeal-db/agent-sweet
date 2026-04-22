@@ -103,19 +103,35 @@ These scopes are declared in `databricks.yml` under `user_api_scopes`. The OBO t
 
 **If direct SDK OBO scopes (`vector-search`, `genie`, etc.) become available in the future**, the MCP routing can be replaced with direct SDK calls — the auth fallback path through `get_data_client()` is still in place. This would eliminate the ~1-2s per-tool MCP protocol overhead (see Latency section below).
 
-### Latency tradeoff
+### Dual execution paths (SDK vs MCP)
 
-MCP routing adds a **fixed overhead per tool call** — roughly 1-2 seconds for MCP session setup (TCP connect → HTTP POST → initialize handshake → tool call → close). This overhead is constant regardless of tool execution time.
+Serving endpoints don't need MCP — their credentials (user OBO or SP) work with the SDK directly. Only the app preview needs MCP because the Apps OBO token only has `mcp.*` scopes. So we maintain two execution paths to avoid unnecessary latency:
 
-Measured on serving endpoints (`mcp-test` vs `medical-assistant`, same graph, April 2026):
-
-| Query type | MCP | Direct SDK | Delta |
+| Context | `is_serving()` | Tool path | Why |
 |---|---|---|---|
-| VS + Genie (fast Genie) | 21.6s | 16.6s | +5.0s (+30%) |
-| Genie-heavy | 15.9s | 12.0s | +3.9s (+33%) |
-| Long Genie query | 22.3s | 21.7s | +0.6s (+3%) |
+| App preview | `False` | Managed MCP | Apps OBO token only has `mcp.*` scopes |
+| Serving — OBO | `True` | Direct SDK | `ModelServingUserCredentials` works with SDK |
+| Serving — Passthrough | `True` | Direct SDK | SP credentials work with SDK |
 
-The overhead is most visible on fast queries and negligible when Genie SQL execution dominates. Optimization opportunities (session reuse, parallel tool execution, skip discovery for known tools) are tracked in issue #14.
+`is_serving()` is a process-global flag in `auth.py`, set once by `mlflow_model.py` at model load time. In the app process it stays `False`. The tool factories (`_make_vector_search_tool`, etc.) and node `execute()` methods branch on this flag.
+
+Each tool factory has two implementations suffixed `_sdk` and `_mcp` (e.g., `_make_vector_search_tool_sdk` and `_make_vector_search_tool_mcp`). The public function routes between them. Same pattern in the node files (`_execute_sdk` / `_execute_mcp` methods).
+
+### MCP latency (app preview only)
+
+MCP adds ~1-2s fixed overhead per tool call (session setup). This only affects the playground, not deployed endpoints. Measured April 2026:
+
+| Query type | MCP (preview) | Direct SDK (serving) | Delta |
+|---|---|---|---|
+| VS + Genie (fast Genie) | 21.6s | 16.6s | +5.0s |
+| Genie-heavy | 15.9s | 12.0s | +3.9s |
+| Long Genie query | 22.3s | 21.7s | +0.6s |
+
+The overhead is constant per tool call, not proportional to execution time. Optimization opportunities (session reuse, parallel execution) are tracked in #14.
+
+### Reversibility
+
+If Databricks adds direct SDK OBO scopes (`vector-search`, `genie`, etc.) for Apps, the MCP path can be removed entirely — just delete the `_mcp` variants, the `is_serving()` checks, and the MCP URL builders. The `_sdk` implementations would become the only path.
 
 ### VS configuration via `_meta`
 
@@ -158,8 +174,9 @@ Env vars `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET` i
 
 ### Implementation details
 
-- `_managed_mcp_url()` in `tools.py` builds MCP URLs from node config. Ensures `https://` prefix since `DATABRICKS_HOST` may not include it in Apps/serving environments.
-- `_persist_mcp_tool_metadata()` in `main.py` runs at deploy time: discovers MCP tools and persists both `discovered_tools` (tool schemas) and `mcp_server_url` (fully-qualified URL) into the graph artifact. This is critical — serving containers may not have `DATABRICKS_HOST` set correctly.
+- `is_serving()` in `auth.py` — process-global flag set by `mlflow_model.py`. Tool factories and node `execute()` methods branch on this to choose SDK vs MCP path.
+- `_managed_mcp_url()` in `tools.py` builds MCP URLs from node config. Ensures `https://` prefix since `DATABRICKS_HOST` may not include it in Apps environments.
+- `_persist_mcp_tool_metadata()` in `main.py` runs at deploy time: discovers MCP tools and persists both `discovered_tools` (tool schemas) and `mcp_server_url` (fully-qualified URL) into the graph artifact. Serving containers use the `_sdk` path so these are mainly for the MCP fallback.
 - `create_pat_client()` in `auth.py` handles PAT-authenticated `WorkspaceClient` creation with env var masking. For `mlflow.register_model()`, we run in a subprocess because MLflow caches `DatabricksConfig` via `@lru_cache` — env-var masking in the same process doesn't override it.
 
 ## Lakebase Connection Handling

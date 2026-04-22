@@ -24,6 +24,19 @@ _user_pat: ContextVar[str | None] = ContextVar("_user_pat", default=None)
 # "obo" = on-behalf-of (user identity), "passthrough" = system SP.
 _auth_mode: str = "passthrough"
 
+# Serving flag — True when running inside an MLflow serving container.
+# Set once by mlflow_model.py at load time.  Used by tool factories to
+# choose between direct SDK calls (serving — no MCP overhead) and MCP
+# routing (app preview — needs mcp.* OBO scopes).
+#
+# Why the split:
+#   - App preview: the Apps OBO token only has mcp.* scopes, so data
+#     access must go through managed MCP servers.
+#   - Serving (both OBO and passthrough): the endpoint's credentials
+#     (user OBO via ModelServingUserCredentials, or SP) work with the
+#     direct SDK — no MCP indirection needed, saving ~1-2s per tool call.
+_is_serving: bool = False
+
 
 def set_auth_mode(mode: str) -> None:
     global _auth_mode
@@ -32,6 +45,15 @@ def set_auth_mode(mode: str) -> None:
 
 def get_auth_mode() -> str:
     return _auth_mode
+
+
+def set_serving(value: bool) -> None:
+    global _is_serving
+    _is_serving = value
+
+
+def is_serving() -> bool:
+    return _is_serving
 
 
 def set_user_token(token: str | None) -> None:

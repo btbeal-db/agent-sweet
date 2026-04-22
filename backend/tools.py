@@ -1,10 +1,15 @@
 """Factory that converts ToolConfig entries into LangChain BaseTool instances.
 
-All data-access tools (Vector Search, Genie, UC Functions) are routed through
-Databricks managed MCP servers.  This lets the app use OBO tokens with
-``mcp.*`` scopes instead of requiring a user PAT.
+Two execution paths exist for data-access tools (VS, Genie, UC Functions):
 
-MCP Server nodes use the same infrastructure directly.
+* **App preview** — routes through Databricks managed MCP servers so the
+  app's OBO token (which only has ``mcp.*`` scopes) can reach VS/Genie/UC.
+* **Serving** — uses the Databricks SDK directly. Serving credentials
+  (user OBO via ``ModelServingUserCredentials``, or SP in passthrough mode)
+  work with the SDK out of the box, avoiding ~1-2s MCP protocol overhead.
+
+``is_serving()`` (set by ``mlflow_model.py`` at load time) selects the path.
+MCP Server nodes always use MCP regardless of context.
 """
 
 from __future__ import annotations
@@ -19,11 +24,11 @@ from urllib.parse import urlparse
 
 from databricks.sdk import WorkspaceClient
 from databricks_mcp import DatabricksOAuthClientProvider
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools import BaseTool, StructuredTool, tool
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-from .auth import get_data_client, get_user_token
+from .auth import get_data_client, get_user_token, is_serving
 
 logger = logging.getLogger(__name__)
 
@@ -365,10 +370,169 @@ def _build_vs_meta(config: dict[str, Any]) -> dict[str, Any] | None:
     return meta or None
 
 
-def _make_vector_search_tool(config: dict[str, Any]) -> list[BaseTool]:
-    """Create tool(s) for a Vector Search index via managed MCP."""
-    # Prefer the persisted URL (set at deploy time) over rebuilding from
-    # DATABRICKS_HOST, which may lack https:// in serving containers.
+# ── Direct SDK tool factories (serving) ───────────────────────────────────
+# Used when is_serving() is True.  Serving credentials (user OBO or SP)
+# work with the SDK directly — no MCP indirection, no protocol overhead.
+
+
+def _make_vector_search_tool_sdk(config: dict[str, Any]) -> list[BaseTool]:
+    """Create a VS tool using the Databricks SDK directly."""
+    from databricks.sdk.service.vectorsearch import (
+        RerankerConfig,
+        RerankerConfigRerankerParameters,
+    )
+
+    index_name = config.get("index_name", "")
+    columns_raw = config.get("columns", "")
+    columns = [c.strip() for c in columns_raw.split(",") if c.strip()] if columns_raw else []
+    num_results = int(config.get("num_results", 3))
+
+    score_threshold = config.get("score_threshold")
+    if score_threshold is not None and score_threshold != "":
+        score_threshold = float(score_threshold)
+    else:
+        score_threshold = None
+
+    enable_reranker = str(config.get("enable_reranker", "true")).lower() == "true"
+
+    @tool
+    def vector_search(query: str, filters: str = "") -> str:
+        """Search for relevant documents in a vector index."""
+        reranker = None
+        if enable_reranker:
+            rerank_cols_raw = config.get("columns_to_rerank", "")
+            rerank_cols = (
+                [c.strip() for c in rerank_cols_raw.split(",") if c.strip()]
+                if rerank_cols_raw
+                else None
+            )
+            if rerank_cols:
+                reranker = RerankerConfig(
+                    model="databricks_reranker",
+                    parameters=RerankerConfigRerankerParameters(columns_to_rerank=rerank_cols),
+                )
+
+        filters_json = None
+        if filters and filters.strip():
+            try:
+                json.loads(filters)
+                filters_json = filters
+            except json.JSONDecodeError:
+                pass
+
+        w = get_data_client()
+        response = w.vector_search_indexes.query_index(
+            index_name=index_name,
+            columns=columns,
+            query_text=query,
+            num_results=num_results,
+            score_threshold=score_threshold,
+            filters_json=filters_json,
+            reranker=reranker,
+        )
+
+        result_dict = response.as_dict()
+        docs: list[str] = []
+        data_chunk = result_dict.get("result", {}).get("data_array", [])
+        col_names = [c["name"] for c in result_dict.get("manifest", {}).get("columns", [])]
+        for row in data_chunk:
+            row_parts = [f"{col_names[i]}: {row[i]}" for i in range(len(row)) if i < len(col_names)]
+            docs.append("\n".join(row_parts))
+        return "\n\n---\n\n".join(docs) if docs else "(no results)"
+
+    vector_search.name = f"search_{index_name.replace('.', '_')}"
+    custom_desc = config.get("tool_description", "")
+    vector_search.description = custom_desc or (
+        f"Search the vector index '{index_name}' for relevant documents. "
+        f"Returns the top {num_results} results."
+    )
+    return [vector_search]
+
+
+def _make_genie_tool_sdk(config: dict[str, Any]) -> list[BaseTool]:
+    """Create a Genie tool using the Databricks SDK directly."""
+    from databricks.sdk.service.dashboards import MessageStatus
+
+    room_id = config.get("room_id", "")
+
+    @tool
+    def genie_query(question: str) -> str:
+        """Ask a natural-language question to get structured data answers."""
+        w = get_data_client()
+        try:
+            message = w.genie.start_conversation_and_wait(room_id, question)
+        except Exception as exc:
+            return f"Genie error: {exc}"
+
+        if message.status == MessageStatus.FAILED:
+            error_text = message.error.message if message.error else "Unknown error"
+            return f"Genie error: {error_text}"
+
+        parts: list[str] = []
+        for attachment in message.attachments or []:
+            if attachment.text and attachment.text.content:
+                parts.append(attachment.text.content)
+            if attachment.query and attachment.attachment_id:
+                try:
+                    result = w.genie.get_message_attachment_query_result(
+                        room_id, message.conversation_id,
+                        message.message_id, attachment.attachment_id,
+                    )
+                    query_parts: list[str] = []
+                    if attachment.query.description:
+                        query_parts.append(attachment.query.description)
+                    if attachment.query.query:
+                        query_parts.append(f"```sql\n{attachment.query.query}\n```")
+                    stmt = result.statement_response if result else None
+                    if stmt and stmt.result and stmt.result.data_array:
+                        cols = []
+                        if stmt.manifest and stmt.manifest.schema and stmt.manifest.schema.columns:
+                            cols = [c.name or f"col_{i}" for i, c in enumerate(stmt.manifest.schema.columns)]
+                        rows = stmt.result.data_array[:50]
+                        if cols:
+                            header = "| " + " | ".join(cols) + " |"
+                            sep = "| " + " | ".join("---" for _ in cols) + " |"
+                            table_rows = [
+                                "| " + " | ".join(str(v) if v is not None else "" for v in row) + " |"
+                                for row in rows
+                            ]
+                            query_parts.append("\n".join([header, sep, *table_rows]))
+                    parts.append("\n\n".join(query_parts))
+                except Exception as exc:
+                    parts.append(f"(failed to fetch query result: {exc})")
+        return "\n\n".join(parts) if parts else "(Genie returned no content)"
+
+    genie_query.name = f"genie_{room_id}"
+    custom_desc = config.get("tool_description", "")
+    genie_query.description = custom_desc or (
+        f"Query Genie Room '{room_id}' with a natural-language question."
+    )
+    return [genie_query]
+
+
+def _make_uc_function_tools_sdk(config: dict[str, Any]) -> list[BaseTool]:
+    """Create UC Function tools using the Databricks SDK directly."""
+    from databricks_langchain import UCFunctionToolkit
+    from databricks_langchain.uc_ai import DatabricksFunctionClient
+
+    function_name = config.get("function_name", "")
+    custom_desc = config.get("tool_description", "")
+    w = get_data_client()
+    client = DatabricksFunctionClient(client=w)
+    toolkit = UCFunctionToolkit(function_names=[function_name], client=client)
+    tools = toolkit.tools
+    if custom_desc and tools:
+        tools[0].description = custom_desc
+    return tools
+
+
+# ── MCP tool factories (app preview) ─────────────────────────────────────
+# Used when is_serving() is False.  The app's OBO token only has mcp.*
+# scopes, so data access must route through managed MCP servers.
+
+
+def _make_vector_search_tool_mcp(config: dict[str, Any]) -> list[BaseTool]:
+    """Create VS tool(s) via managed MCP."""
     url = config.get("mcp_server_url")
     if not url:
         index_name = config.get("index_name", "")
@@ -389,8 +553,8 @@ def _make_vector_search_tool(config: dict[str, Any]) -> list[BaseTool]:
     return _make_mcp_tools(mcp_config)
 
 
-def _make_genie_tool(config: dict[str, Any]) -> list[BaseTool]:
-    """Create tool(s) for a Genie Room via managed MCP."""
+def _make_genie_tool_mcp(config: dict[str, Any]) -> list[BaseTool]:
+    """Create Genie tool(s) via managed MCP."""
     url = config.get("mcp_server_url")
     if not url:
         room_id = config.get("room_id", "")
@@ -406,8 +570,8 @@ def _make_genie_tool(config: dict[str, Any]) -> list[BaseTool]:
     return _make_mcp_tools(mcp_config)
 
 
-def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
-    """Create tool(s) for a UC Function via managed MCP."""
+def _make_uc_function_tools_mcp(config: dict[str, Any]) -> list[BaseTool]:
+    """Create UC Function tool(s) via managed MCP."""
     url = config.get("mcp_server_url")
     if not url:
         function_name = config.get("function_name", "")
@@ -425,6 +589,27 @@ def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
         "discovered_tools": config.get("discovered_tools"),
     }
     return _make_mcp_tools(mcp_config)
+
+
+# ── Public routing ────────────────────────────────────────────────────────
+
+
+def _make_vector_search_tool(config: dict[str, Any]) -> list[BaseTool]:
+    if is_serving():
+        return _make_vector_search_tool_sdk(config)
+    return _make_vector_search_tool_mcp(config)
+
+
+def _make_genie_tool(config: dict[str, Any]) -> list[BaseTool]:
+    if is_serving():
+        return _make_genie_tool_sdk(config)
+    return _make_genie_tool_mcp(config)
+
+
+def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
+    if is_serving():
+        return _make_uc_function_tools_sdk(config)
+    return _make_uc_function_tools_mcp(config)
 
 
 def make_tools(tool_configs: list[dict[str, Any]]) -> list[BaseTool]:

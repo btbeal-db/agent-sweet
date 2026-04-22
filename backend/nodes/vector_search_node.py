@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Any
 
+from ..auth import get_data_client, is_serving
 from ..tools import (
     _build_vs_meta,
     _get_mcp_client,
@@ -29,7 +30,7 @@ class VectorSearchNode(BaseNode):
 
     @property
     def description(self) -> str:
-        return "Query a Databricks Vector Search index via managed MCP."
+        return "Query a Databricks Vector Search index."
 
     @property
     def category(self) -> str:
@@ -64,7 +65,7 @@ class VectorSearchNode(BaseNode):
                 name="index_name",
                 label="Vector Search Index",
                 placeholder="catalog.schema.my_vs_index",
-                help_text="Fully qualified index name (catalog.schema.index). Uses managed MCP — no PAT required.",
+                help_text="Fully qualified index name (catalog.schema.index).",
             ),
             NodeConfigField(
                 name="columns",
@@ -131,10 +132,82 @@ class VectorSearchNode(BaseNode):
         if not query:
             return {writes_to: "Error: no query provided."}
 
-        # Build _meta from config (num_results, columns, reranker, etc.)
+        if is_serving():
+            return self._execute_sdk(state, config, writes_to, query, index_name)
+        return self._execute_mcp(state, config, writes_to, query, index_name)
+
+    def _execute_sdk(
+        self, state: dict, config: dict, writes_to: str, query: str, index_name: str,
+    ) -> dict[str, Any]:
+        """Direct SDK path — used by serving endpoints (no MCP overhead)."""
+        from databricks.sdk.service.vectorsearch import (
+            RerankerConfig,
+            RerankerConfigRerankerParameters,
+        )
+
+        num_results = int(config.get("num_results", 3))
+        columns_raw = config.get("columns", "")
+        columns = [c.strip() for c in columns_raw.split(",") if c.strip()] if columns_raw else []
+
+        score_threshold = config.get("score_threshold")
+        if score_threshold is not None and score_threshold != "":
+            score_threshold = float(score_threshold)
+        else:
+            score_threshold = None
+
+        # Filters from state
+        filters_json = None
+        filters_from = config.get("filters_from")
+        if filters_from:
+            raw_filters = resolve_state(state, filters_from)
+            if raw_filters:
+                if isinstance(raw_filters, dict):
+                    filters_json = json.dumps(raw_filters)
+                elif isinstance(raw_filters, str):
+                    try:
+                        json.loads(raw_filters)
+                        filters_json = raw_filters
+                    except json.JSONDecodeError:
+                        pass
+
+        # Reranker
+        reranker = None
+        if str(config.get("enable_reranker", "true")).lower() == "true":
+            rerank_cols_raw = config.get("columns_to_rerank", "")
+            rerank_cols = [c.strip() for c in rerank_cols_raw.split(",") if c.strip()] if rerank_cols_raw else None
+            if rerank_cols:
+                reranker = RerankerConfig(
+                    model="databricks_reranker",
+                    parameters=RerankerConfigRerankerParameters(columns_to_rerank=rerank_cols),
+                )
+
+        try:
+            w = get_data_client()
+            response = w.vector_search_indexes.query_index(
+                index_name=index_name, columns=columns, query_text=query,
+                num_results=num_results, score_threshold=score_threshold,
+                filters_json=filters_json, reranker=reranker,
+            )
+        except Exception as exc:
+            logger.exception("VS SDK call failed (index=%s)", index_name)
+            return {writes_to: f"Vector Search error: {exc}"}
+
+        result_dict = response.as_dict()
+        docs: list[str] = []
+        data_chunk = result_dict.get("result", {}).get("data_array", [])
+        col_names = [c["name"] for c in result_dict.get("manifest", {}).get("columns", [])]
+        for row in data_chunk:
+            row_parts = [f"{col_names[i]}: {row[i]}" for i in range(len(row)) if i < len(col_names)]
+            docs.append("\n".join(row_parts))
+        return {writes_to: "\n\n---\n\n".join(docs) if docs else "(no results)"}
+
+    def _execute_mcp(
+        self, state: dict, config: dict, writes_to: str, query: str, index_name: str,
+    ) -> dict[str, Any]:
+        """MCP path — used by the app preview (OBO token needs mcp.* scopes)."""
         meta = _build_vs_meta(config)
 
-        # Dynamic filters from state (e.g. LLM-generated)
+        # Dynamic filters from state
         filters_from = config.get("filters_from")
         if filters_from:
             raw_filters = resolve_state(state, filters_from)
@@ -145,10 +218,10 @@ class VectorSearchNode(BaseNode):
                     meta["filters"] = json.dumps(raw_filters)
                 elif isinstance(raw_filters, str):
                     try:
-                        json.loads(raw_filters)  # validate
+                        json.loads(raw_filters)
                         meta["filters"] = raw_filters
                     except json.JSONDecodeError:
-                        logger.warning("Invalid filters JSON from '%s': %s", filters_from, raw_filters)
+                        pass
 
         try:
             url = config.get("mcp_server_url") or _vs_mcp_url(index_name)
