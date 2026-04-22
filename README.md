@@ -27,19 +27,7 @@ This lets the app log MLflow models on your behalf when you deploy.
 2. The Setup page shows the app's service principal name — grant it **Can Manage** on your folder
 3. Click **Validate** to confirm
 
-### 2. Connect your PAT (each session, in the builder banner)
-
-Click **Connect PAT** and paste a Personal Access Token. This lets the app access your workspace resources under your identity. See [Using the App](#using-the-app) for details.
-
 ## Using the App
-
-### Connect your PAT
-
-Before building, click **Connect PAT** in the banner at the top of the builder. Paste a Personal Access Token — this lets the app access your workspace resources (Vector Search indexes, Genie rooms, UC functions) under your identity.
-
-**How to generate a PAT:** Go to **Settings > Developer > Access tokens** in your Databricks workspace ([docs](https://docs.databricks.com/en/dev-tools/auth/pat.html)).
-
-**Safety:** Your token is held in browser memory only — it is never stored to disk, never logged, and is cleared when you close the tab or refresh. Treat it like a password: don't share it, and set a short expiration when possible.
 
 ### Build
 
@@ -47,28 +35,38 @@ Drag nodes onto the canvas, wire them together, and configure each node. Define 
 
 ### Preview
 
-Click **Playground** to test your agent with live data. If you've connected your PAT, previews run under your identity — you only see data you have access to.
+Click **Playground** to test your agent with live data. Previews run under your identity using your workspace's on-behalf-of (OBO) credentials — no PAT needed. You only see data you have access to.
 
 ### Deploy
 
 Click **Deploy** and choose a deploy mode:
 
 - **Log Only** — saves the agent as an MLflow model in your experiment folder. No PAT required.
-- **Log & Register** or **Full Deploy** — also registers in Unity Catalog and (optionally) creates a serving endpoint.
-
-If you've already connected your PAT in the banner, the deploy modal will pre-fill it.
+- **Log & Register** or **Full Deploy** — requires a PAT for UC registration and serving endpoint creation. Paste it in the deploy modal.
 
 ## Security and Governance
 
 Agent Sweet respects your existing Unity Catalog permissions. Here's how credentials work:
 
-- **Your PAT** authenticates playground previews and deployment operations. The app uses it to access workspace resources (Vector Search, Genie, UC) under your identity. It is held in browser memory only for the duration of your session — never stored, never logged.
+- **Preview** uses your workspace identity automatically. All data-access nodes (Vector Search, Genie, UC Functions) route through [Databricks managed MCP servers](https://docs.databricks.com/aws/en/generative-ai/mcp/managed-mcp), which accept the app's on-behalf-of (OBO) token with `mcp.*` scopes. No PAT is needed for building or previewing agents.
+- **Deploy** (Log & Register or Full Deploy) requires a PAT for UC model registration and serving endpoint creation, since OBO scopes for these operations are not yet available. Paste it in the deploy modal — it is held in browser memory only and never stored or logged.
 - **MLflow experiment logging** uses the app's service principal, scoped to folders you've explicitly shared during setup. The SP cannot access anything you haven't granted it.
 - **Collaboration** is built in. If teammates complete setup, you can load each other's deployed graph definitions, iterate on them, and deploy to your own experiments.
 
-### Why a PAT?
+### How data-access auth works
 
-Databricks Apps support on-behalf-of (OBO) tokens for some APIs, but several critical scopes — including Vector Search, Unity Catalog writes, and model serving — are not available as OBO scopes. Rather than using the app's service principal as a proxy (which would require granting the SP access to every resource every user might reference), the app uses your PAT so that your own permissions apply directly. This is a platform limitation, not a design choice — if these OBO scopes become available in the future, the PAT requirement can be removed.
+All data-access nodes route through Databricks managed MCP servers instead of calling the SDK directly. This is what eliminates the PAT requirement for preview:
+
+| Node | MCP endpoint | OBO scope |
+|---|---|---|
+| Vector Search | `/api/2.0/mcp/vector-search/{catalog}/{schema}/{index}` | `mcp.vectorsearch` |
+| Genie Room | `/api/2.0/mcp/genie/{room_id}` | `mcp.genie` |
+| UC Function | `/api/2.0/mcp/functions/{catalog}/{schema}/{function}` | `mcp.functions` |
+| MCP Server | User-specified URL | `mcp.external` (for external connections) |
+
+The app declares these scopes in `databricks.yml`. When you log in to the app, your browser's OAuth flow grants a token with these scopes. The app passes this token to the MCP servers, which enforce Unity Catalog permissions — you only see data you have access to.
+
+VS configuration options (reranker, columns, score threshold, query type) are passed via the MCP `_meta` parameter. See the [managed MCP meta parameter docs](https://docs.databricks.com/aws/en/generative-ai/mcp/managed-mcp-meta-param) for details.
 
 ### Deployed endpoint permissions
 
@@ -78,7 +76,9 @@ The app never creates shadow admin roles, never bypasses UC permissions, and nev
 
 ## MCP Server Tools
 
-The **MCP Server** node connects your agent to any [Model Context Protocol](https://modelcontextprotocol.io/) server and exposes its tools to LLM nodes. Drop an MCP Server onto an LLM node to give the LLM access to all of the server's tools — one URL is all you need.
+All data-access nodes (Vector Search, Genie, UC Functions) use [Databricks managed MCP servers](https://docs.databricks.com/aws/en/generative-ai/mcp/managed-mcp) under the hood. You don't need to configure this — the app builds the MCP URL from your node config automatically.
+
+The **MCP Server** node lets you connect to _additional_ MCP servers beyond the built-in node types. Drop an MCP Server onto an LLM node to give the LLM access to all of the server's tools — one URL is all you need.
 
 ### Supported server types
 
