@@ -38,7 +38,7 @@ _parent_dir = os.path.dirname(_this_dir)
 if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
-from backend.auth import set_auth_mode
+from backend.auth import set_auth_mode, set_serving
 from backend.graph_builder import build_graph, filter_output
 from backend.schema import GraphDef
 
@@ -213,8 +213,12 @@ class AgentGraphModel(ResponsesAgent):
             raw = json.load(f)
         self.graph_def = GraphDef(**raw)
 
-        # Set auth mode so get_data_client() returns the right client type
+        # Set auth mode so get_data_client() returns the right client type.
+        # set_serving() tells tool factories to use direct SDK calls instead
+        # of MCP routing — serving credentials work with the SDK directly,
+        # avoiding ~1-2s MCP protocol overhead per tool call.
         set_auth_mode(self.graph_def.auth_mode)
+        set_serving(True)
 
         # Prefer dynamic token refresh (LAKEBASE_ENDPOINT/HOST/DATABASE),
         # fall back to static connection string (LAKEBASE_CONN_STRING).

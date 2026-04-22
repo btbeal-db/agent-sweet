@@ -27,9 +27,13 @@ resources:
           - 0.0.0.0
           - --port
           - "8000"
-      # No user_api_scopes needed — default scopes (iam.current-user:read,
-      # iam.access-control:read) are sufficient. All data-access operations
-      # use the user's PAT, not the OBO token.
+      # Managed MCP scopes let the OBO token access VS, Genie, UC Functions,
+      # and external MCP servers — no PAT required for preview.
+      user_api_scopes:
+        - mcp.functions
+        - mcp.vectorsearch
+        - mcp.genie
+        - mcp.external
 
 targets:
   dev:

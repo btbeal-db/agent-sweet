@@ -35,7 +35,7 @@ cd frontend && npm run dev
 
 The Vite dev server runs on `:3000` and proxies `/api` requests to the backend on `:8000`.
 
-**Auth in local dev:** There is no OBO token locally. `get_workspace_client()` falls back to your Databricks CLI credentials (from `databricks auth login`). You can also paste a PAT in the builder banner — this works the same locally as in production.
+**Auth in local dev:** There is no OBO token locally. `_get_mcp_client()` falls through to `get_data_client()` which uses your Databricks CLI credentials (from `databricks auth login`). MCP URLs are built from `DATABRICKS_HOST` in your environment. You can also paste a PAT in the builder banner for testing.
 
 ### Building for deployment
 
@@ -55,7 +55,7 @@ backend/
   graph_builder.py     Compiles GraphDef → LangGraph StateGraph
   mlflow_model.py      MLflow ResponsesAgent wrapper for Model Serving
   notebook_gen.py      Generates deployment notebooks
-  tools.py             LangChain tool factory (VS, Genie, UC Function)
+  tools.py             LangChain tool factory (all tools route through managed MCP)
   ai_chat.py           AI chat assistant for graph building
   lakebase.py          Lakebase provisioning + Postgres connection pool
   nodes/               Pluggable node types (auto-discovered)
@@ -84,40 +84,74 @@ pyproject.toml         Python package definition (hatchling)
 
 ## Authentication Model
 
-This is important to understand before contributing. The app uses three credential types, and the reasons for each are rooted in platform limitations — not design preference.
+This is important to understand before contributing. The app uses three credential types.
 
-### Why the PAT?
+### Managed MCP routing (the key design decision)
 
-Databricks Apps inject an on-behalf-of (OBO) OAuth token for each logged-in user. In theory, this token should let the app call any Databricks API as the user. In practice, many critical OBO scopes either don't exist or don't work:
+All data-access nodes (Vector Search, Genie, UC Functions) route through [Databricks managed MCP servers](https://docs.databricks.com/aws/en/generative-ai/mcp/managed-mcp) instead of calling the SDK directly. This is the mechanism that eliminates the PAT requirement for preview.
 
-| Scope needed | Status (as of April 2026) |
-|---|---|
-| `vector-search` | **Not a valid OBO scope.** The Vector Search API requires it, but the Apps platform rejects it as an invalid scope when configured. |
-| `unity-catalog` | **Scope exists but returns 403.** Catalog read scopes (`catalog.*:read`) work; write operations and `tables.get` do not. |
-| `model-serving` (write) | **Unreliable.** Appears in OAuth discovery but doesn't grant access. |
-| `mlflow` / `ml.experiments` | **Does not exist** as an OBO scope. |
+**Background:** The direct SDK APIs require OBO scopes (`vector-search`, `genie`, etc.) that Databricks Apps cannot configure — the platform rejects them. We verified this empirically with a diagnostic endpoint. However, Databricks _does_ support `mcp.*` OBO scopes that route requests through the MCP proxy gateway:
 
-We verified this empirically: a bare-bones `/api/test-vs` endpoint (still in `main.py`) creates a `WorkspaceClient` directly from the OBO token and calls `query_index`. Every auth combination (with/without `auth_type="pat"`, with/without env var masking) returns the same scope error. The test endpoint is kept for future regression testing as the platform evolves.
+| Node type | MCP URL pattern | OBO scope |
+|---|---|---|
+| Vector Search | `/api/2.0/mcp/vector-search/{catalog}/{schema}/{index}` | `mcp.vectorsearch` |
+| Genie | `/api/2.0/mcp/genie/{room_id}` | `mcp.genie` |
+| UC Functions | `/api/2.0/mcp/functions/{catalog}/{schema}/{function}` | `mcp.functions` |
+| External MCP | `/api/2.0/mcp/external/{connection}` | `mcp.external` |
 
-Because of these gaps, the app asks users to provide a Personal Access Token (PAT) via a banner in the builder UI. The PAT has full permissions under the user's identity, bypassing all scope limitations. **If these OBO scopes become available in the future, the PAT requirement can be removed** — the fallback path through `get_workspace_client()` (OBO) is already in place.
+These scopes are declared in `databricks.yml` under `user_api_scopes`. The OBO token from the Apps proxy carries these scopes, and the MCP servers enforce Unity Catalog permissions server-side.
+
+**If direct SDK OBO scopes (`vector-search`, `genie`, etc.) become available in the future**, the MCP routing can be replaced with direct SDK calls — the auth fallback path through `get_data_client()` is still in place. This would eliminate the ~1-2s per-tool MCP protocol overhead (see Latency section below).
+
+### Dual execution paths (SDK vs MCP)
+
+Serving endpoints don't need MCP — their credentials (user OBO or SP) work with the SDK directly. Only the app preview needs MCP because the Apps OBO token only has `mcp.*` scopes. So we maintain two execution paths to avoid unnecessary latency:
+
+| Context | `is_serving()` | Tool path | Why |
+|---|---|---|---|
+| App preview | `False` | Managed MCP | Apps OBO token only has `mcp.*` scopes |
+| Serving — OBO | `True` | Direct SDK | `ModelServingUserCredentials` works with SDK |
+| Serving — Passthrough | `True` | Direct SDK | SP credentials work with SDK |
+
+`is_serving()` is a process-global flag in `auth.py`, set once by `mlflow_model.py` at model load time. In the app process it stays `False`. The tool factories (`_make_vector_search_tool`, etc.) and node `execute()` methods branch on this flag.
+
+Each tool factory has two implementations suffixed `_sdk` and `_mcp` (e.g., `_make_vector_search_tool_sdk` and `_make_vector_search_tool_mcp`). The public function routes between them. Same pattern in the node files (`_execute_sdk` / `_execute_mcp` methods).
+
+### MCP latency (app preview only)
+
+MCP adds ~1-2s fixed overhead per tool call (session setup). This only affects the playground, not deployed endpoints. Measured April 2026:
+
+| Query type | MCP (preview) | Direct SDK (serving) | Delta |
+|---|---|---|---|
+| VS + Genie (fast Genie) | 21.6s | 16.6s | +5.0s |
+| Genie-heavy | 15.9s | 12.0s | +3.9s |
+| Long Genie query | 22.3s | 21.7s | +0.6s |
+
+The overhead is constant per tool call, not proportional to execution time. Optimization opportunities (session reuse, parallel execution) are tracked in #14.
+
+### Reversibility
+
+If Databricks adds direct SDK OBO scopes (`vector-search`, `genie`, etc.) for Apps, the MCP path can be removed entirely — just delete the `_mcp` variants, the `is_serving()` checks, and the MCP URL builders. The `_sdk` implementations would become the only path.
+
+### VS configuration via `_meta`
+
+Vector Search config options (reranker, columns, score threshold, filters, query type) are passed to the MCP server via the MCP spec's [`_meta` parameter](https://docs.databricks.com/aws/en/generative-ai/mcp/managed-mcp-meta-param), not as tool arguments. This separates user-preset configuration from LLM-generated query parameters. See `_build_vs_meta()` in `tools.py`. Genie and UC Functions do not currently support `_meta` parameters.
 
 ### Credential types
 
-#### User PAT (preferred for data access)
+#### OBO (On-Behalf-Of) Token — primary for data access
 
-Users paste their PAT in the builder banner. It's stored in a React `useState` (browser memory only — no localStorage, no cookies, no disk) and sent with each preview/deploy request. On the backend, it's held in a `ContextVar` for the request lifetime and explicitly cleared in `finally`.
+Injected by the Apps proxy via `x-forwarded-access-token`. `OBOMiddleware` stores it in a contextvar. `_get_mcp_client()` in `tools.py` prefers this token for managed MCP URLs and Databricks Apps URLs.
 
-`get_data_client()` in `auth.py` checks for a PAT first, then falls back to OBO. All data-access nodes (Vector Search, Genie) and their tool equivalents call `get_data_client()`.
-
-**Used for:** Preview/playground (VS, Genie, UC Functions), model registration, schema creation, serving endpoint creation.
-
-#### OBO (On-Behalf-Of) Token
-
-Injected by the Apps proxy via `x-forwarded-access-token`. `OBOMiddleware` stores it in a contextvar. `get_workspace_client()` creates a user-scoped `WorkspaceClient` from it, masking SP env vars and passing `auth_type="pat"` (both required — see below).
-
-**Used for:** User identity resolution (setup status, `current_user.me()`), SQL queries, Genie (when no PAT is provided). Also serves as the fallback in `get_data_client()` when no PAT is available — works for APIs with valid OBO scopes, fails for VS.
+**Used for:** All data access in preview (VS, Genie, UC Functions via managed MCP), user identity resolution.
 
 **Important SDK behavior:** The Databricks SDK loads `DATABRICKS_CLIENT_ID`/`SECRET` from the environment into its Config even when you pass `token=`. If both are present, the server treats the request as an SP OAuth call (wrong scopes). `get_workspace_client()` masks these env vars before creating the client and passes `auth_type="pat"` to force bearer-token auth. Both are required.
+
+#### User PAT (deploy operations only)
+
+Users paste a PAT in the deploy modal for UC model registration and serving endpoint creation. Stored in browser memory only — no localStorage, no cookies, no disk. On the backend, held in a `ContextVar` for the request lifetime and cleared in `finally`.
+
+**Used for:** UC model registration, serving endpoint creation (OBO scopes for these don't work).
 
 #### Service Principal (SP)
 
@@ -129,7 +163,8 @@ Env vars `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET` i
 
 | Operation | Auth | Why |
 |---|---|---|
-| Preview — VS, Genie, UC Functions | PAT > OBO | PAT preferred; OBO lacks `vector-search` scope |
+| Preview — VS, Genie, UC Functions | OBO (via managed MCP) | `mcp.*` scopes in `databricks.yml` |
+| Preview — MCP Server nodes | OBO > PAT | `DatabricksOAuthClientProvider`; managed URLs prefer OBO |
 | Preview — LLM inference | SP | FMAPI rejects OBO and PAT |
 | User identity | OBO | `iam.current-user:read` scope works |
 | MLflow experiment logging | SP | No OBO scope for MLflow |
@@ -137,9 +172,12 @@ Env vars `DATABRICKS_HOST`, `DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET` i
 | UC model registration | PAT | No UC write OBO scopes |
 | Serving endpoint creation | PAT | `model-serving` OBO scope unreliable |
 
-### Implementation detail
+### Implementation details
 
-`create_pat_client()` in `auth.py` handles PAT-authenticated `WorkspaceClient` creation with env var masking and `auth_type="pat"`. For `mlflow.register_model()`, we run in a subprocess because MLflow caches `DatabricksConfig` via `@lru_cache` — env-var masking in the same process doesn't override it. See `_register_model_with_pat()` in `main.py`.
+- `is_serving()` in `auth.py` — process-global flag set by `mlflow_model.py`. Tool factories and node `execute()` methods branch on this to choose SDK vs MCP path.
+- `_managed_mcp_url()` in `tools.py` builds MCP URLs from node config. Ensures `https://` prefix since `DATABRICKS_HOST` may not include it in Apps environments.
+- `_persist_mcp_tool_metadata()` in `main.py` runs at deploy time: discovers MCP tools and persists both `discovered_tools` (tool schemas) and `mcp_server_url` (fully-qualified URL) into the graph artifact. Serving containers use the `_sdk` path so these are mainly for the MCP fallback.
+- `create_pat_client()` in `auth.py` handles PAT-authenticated `WorkspaceClient` creation with env var masking. For `mlflow.register_model()`, we run in a subprocess because MLflow caches `DatabricksConfig` via `@lru_cache` — env-var masking in the same process doesn't override it.
 
 ## Lakebase Connection Handling
 
@@ -336,7 +374,7 @@ If your node can also be used as a tool attached to an LLM node:
 2. Add a tool factory function in `backend/tools.py` (e.g., `_make_your_tool()`)
 3. Register it in the `make_tools()` switch statement
 
-Tool functions use `get_data_client()` for data access — PAT when available, OBO fallback.
+Tool functions route through managed MCP using `_get_mcp_client()` — OBO preferred for managed MCP URLs, `get_data_client()` fallback for everything else.
 
 ## Config Field Types
 
@@ -384,29 +422,28 @@ It must return a dict with:
 
 ## App Scopes
 
-When adding integrations that call new Databricks APIs via OBO, you may need to add OAuth scopes in `databricks.yml` under `user_api_scopes`.
+The app declares OBO scopes in `databricks.yml` under `user_api_scopes`. These are the scopes the user's OAuth token will carry when they log in to the app.
 
 **Currently configured scopes:**
 
 | Scope | Purpose |
 |---|---|
-| `sql` | SQL warehouse queries, statement execution |
-| `serving.serving-endpoints` | Query serving endpoints (LLM nodes) |
-| `catalog.catalogs:read` | Validate catalog access at deploy time |
-| `catalog.schemas:read` | Validate schema access at deploy time |
-| `catalog.tables:read` | Read UC tables |
-| `vectorsearch.vector-search-endpoints` | Vector Search endpoint access |
-| `vectorsearch.vector-search-indexes` | Vector Search index queries |
+| `mcp.vectorsearch` | Vector Search queries via managed MCP |
+| `mcp.genie` | Genie space queries via managed MCP |
+| `mcp.functions` | UC function execution via managed MCP |
+| `mcp.external` | External MCP connections (UC connection proxy) |
 
-**Discovering available scopes:** Fetch the full list from your workspace's OAuth discovery endpoint:
+Default scopes (`iam.current-user:read`, `iam.access-control:read`) are included automatically.
+
+**When you change scopes**, users must log out and back in (or use an incognito window) to get a new OAuth token with the updated scopes. This is a common gotcha — if preview returns 403 after a scope change, it's usually a stale token.
+
+**Discovering available scopes:**
 
 ```bash
 databricks api get /oidc/.well-known/oauth-authorization-server | jq '.scopes_supported'
 ```
 
-**Important:** Not all scopes listed in the OAuth discovery endpoint work as OBO scopes for Apps. In particular, `vector-search` (required by the VS API) is not a valid configurable scope, and `mlflow`, `unity-catalog`, and `model-serving` appear in the list but do not reliably grant access. This is why the app uses PATs for data-access operations and SP for MLflow — see the Authentication Model section above.
-
-If you get a 403 with "required scopes: X", first check whether the scope is actually available as an OBO scope (it may not be). The `/api/test-vs` diagnostic endpoint in `main.py` can help verify.
+**Important:** Not all scopes listed in the OAuth discovery endpoint work as OBO scopes for Apps. Direct SDK scopes like `vector-search`, `genie`, `unity-catalog`, and `model-serving` appear in the list but do not reliably grant access — this is why all data access routes through managed MCP (`mcp.*` scopes) rather than the direct SDK. If direct SDK OBO scopes become available in the future, the MCP routing can be replaced to eliminate the protocol overhead.
 
 ## Quick Reference
 

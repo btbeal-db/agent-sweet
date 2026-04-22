@@ -4,8 +4,8 @@ import json
 import logging
 from typing import Any
 
-from databricks_langchain import UCFunctionToolkit
-
+from ..auth import get_data_client, is_serving
+from ..tools import _get_mcp_client, _mcp_discover_and_call, _run_mcp_in_thread, _uc_function_mcp_url
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
 
@@ -24,7 +24,7 @@ class UCFunctionNode(BaseNode):
 
     @property
     def description(self) -> str:
-        return "Execute a Unity Catalog function with parameters from state."
+        return "Execute a Unity Catalog function."
 
     @property
     def category(self) -> str:
@@ -53,7 +53,7 @@ class UCFunctionNode(BaseNode):
                 name="function_name",
                 label="UC Function",
                 placeholder="catalog.schema.function_name",
-                help_text="Fully qualified name of a Unity Catalog function.",
+                help_text="Fully qualified UC function name.",
             ),
             NodeConfigField(
                 name="parameters_from",
@@ -68,7 +68,7 @@ class UCFunctionNode(BaseNode):
         writes_to = config.get("_writes_to", "")
         function_name = config.get("function_name", "")
 
-        if not function_name:
+        if not function_name and not config.get("mcp_server_url"):
             return {writes_to: "Error: no UC function configured."}
 
         # Resolve parameters from state
@@ -85,23 +85,43 @@ class UCFunctionNode(BaseNode):
                     except json.JSONDecodeError:
                         logger.warning("Invalid parameters JSON from '%s': %s", params_from, raw_params)
 
+        if is_serving():
+            return self._execute_sdk(writes_to, function_name, params)
+        return self._execute_mcp(config, writes_to, function_name, params)
+
+    def _execute_sdk(
+        self, writes_to: str, function_name: str, params: dict,
+    ) -> dict[str, Any]:
+        """Direct SDK path — used by serving endpoints."""
+        from databricks_langchain import UCFunctionToolkit
+        from databricks_langchain.uc_ai import DatabricksFunctionClient
+
         try:
-            from databricks_langchain.uc_ai import DatabricksFunctionClient
-            from ..auth import get_data_client
             w = get_data_client()
             client = DatabricksFunctionClient(client=w)
             toolkit = UCFunctionToolkit(function_names=[function_name], client=client)
             tools = toolkit.tools
             if not tools:
-                return {writes_to: f"Error: function '{function_name}' not found or not accessible."}
-
-            tool = tools[0]
-            result = tool.invoke(params)
-
+                return {writes_to: f"Error: function '{function_name}' not found."}
+            result = tools[0].invoke(params)
         except Exception as exc:
-            logger.exception("UC Function execution failed")
+            logger.exception("UC Function SDK call failed (function=%s)", function_name)
             return {writes_to: f"UC Function error: {exc}"}
 
-        result_text = result if isinstance(result, str) else json.dumps(result, indent=2)
+        return {writes_to: result if isinstance(result, str) else json.dumps(result, indent=2)}
+
+    def _execute_mcp(
+        self, config: dict, writes_to: str, function_name: str, params: dict,
+    ) -> dict[str, Any]:
+        """MCP path — used by the app preview."""
+        try:
+            url = config.get("mcp_server_url") or _uc_function_mcp_url(function_name)
+            client = _get_mcp_client(url)
+            result_text = _run_mcp_in_thread(
+                _mcp_discover_and_call, url, client, params,
+            )
+        except Exception as exc:
+            logger.exception("UC Function MCP call failed (function=%s)", function_name)
+            return {writes_to: f"UC Function error: {exc}"}
 
         return {writes_to: result_text}

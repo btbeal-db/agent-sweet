@@ -51,38 +51,36 @@ Three modes:
 
 ## Authentication Model
 
-Three credential types. The PAT-first model is a pragmatic response to platform limitations, not a design preference -- if OBO scopes for Vector Search, Unity Catalog writes, and MLflow become available, the PAT requirement can be removed. The OBO fallback path is already wired in via `get_data_client()`.
+Three credential types. All data-access operations (VS, Genie, UC Functions) are routed through Databricks managed MCP servers, which accept OBO tokens with `mcp.*` scopes. This eliminates the PAT requirement for preview. PATs are still needed for deploy operations (UC model registration, serving endpoint creation) where no OBO scopes exist.
 
-### Why PAT instead of OBO?
+### Managed MCP routing (OBO, no PAT)
 
-Databricks Apps inject an OBO token per request, but many critical scopes don't work (as of April 2026):
+Data-access nodes (Vector Search, Genie, UC Functions) have two execution paths controlled by `is_serving()` in `auth.py`:
 
-- `vector-search` -- required by the VS API, but **not a valid configurable OBO scope** (the platform rejects it)
-- `unity-catalog` -- scope exists but returns 403 for `tables.get` and write operations
-- `model-serving` (write) -- appears in OAuth discovery but doesn't grant access
-- `mlflow` / `ml.experiments` -- does not exist as an OBO scope
+- **App preview** (`is_serving()=False`): routes through managed MCP endpoints. The Apps OBO token only has `mcp.*` scopes (`mcp.vectorsearch`, `mcp.genie`, `mcp.functions`, `mcp.external`), declared in `databricks.yml`.
+- **Serving** (`is_serving()=True`): uses the Databricks SDK directly. Serving credentials (user OBO or SP) work with the SDK — no MCP overhead.
 
-We verified this with a bare-bones diagnostic endpoint (`GET /api/test-vs` in `main.py`) that tries every auth combination. The endpoint is kept for future regression testing. No custom `user_api_scopes` are declared in `databricks.yml` -- the default scopes (`iam.current-user:read`, `iam.access-control:read`) are sufficient.
+`is_serving()` is set once by `mlflow_model.py` at model load time. Tool factories and node `execute()` methods branch on it (e.g. `_make_vector_search_tool_sdk` vs `_make_vector_search_tool_mcp`). If direct SDK OBO scopes become available for Apps, the MCP path can be removed.
 
-### Deployment is zero-config
+### Deployment prerequisites
 
-Users link the GitHub repo to a Databricks App and deploy. No custom scopes, no bundle variables, no infrastructure to provision. The only prerequisites are:
+Users link the GitHub repo to a Databricks App and deploy. The only prerequisites are:
 
 1. **MLflow setup (one-time)** -- user creates a workspace folder and grants the SP "Can Manage" so the app can log models during deploy
-2. **PAT (each session)** -- user pastes a PAT in the builder banner so the app can access their workspace resources
+2. **PAT (deploy only)** -- needed for UC model registration and serving endpoint creation (no OBO scopes for these)
 
 ### Credential types
 
-**User PAT** -- provided via the builder banner UI. Stored in React `useState` (browser memory only, never persisted). Sent with preview/deploy requests. Backend holds it in a `ContextVar`, cleared in `finally` after each request.
-
-- `get_data_client()` in `auth.py`: returns a PAT client if available, OBO fallback otherwise
-- All data-access nodes (VS, Genie) and tools call `get_data_client()`
-- Deploy modal pre-fills from the banner PAT
-
 **OBO Token** -- injected by Apps proxy via `x-forwarded-access-token`. Stored per-request in a `ContextVar` by `OBOMiddleware`.
 
+- Primary credential for all data access in preview (via managed MCP)
 - `get_workspace_client()` in `auth.py`: masks SP env vars + `auth_type="pat"` (both required -- without masking, the SDK loads SP creds into its Config and the server treats it as an SP OAuth call)
-- Used for: user identity (`current_user.me()`), and as the fallback in `get_data_client()` when no PAT is provided
+- Used for: user identity, VS/Genie/UC queries (through MCP), MCP tool discovery
+
+**User PAT** -- optionally provided for deploy operations. Stored in React `useState` (browser memory only, never persisted). Backend holds it in a `ContextVar`, cleared in `finally` after each request.
+
+- `get_data_client()` in `auth.py`: returns a PAT client if available, OBO fallback otherwise
+- Used for: UC model registration, serving endpoint creation
 
 **Service Principal (SP)** -- env vars auto-injected by the Apps platform. `get_sp_workspace_client()` in `auth.py`.
 
@@ -93,8 +91,8 @@ Users link the GitHub repo to a Databricks App and deploy. No custom scopes, no 
 
 | Operation | Credential | Why |
 |---|---|---|
-| Preview -- VS, Genie, UC Functions | PAT > OBO | PAT preferred; OBO lacks `vector-search` scope |
-| Preview -- MCP (all URL types) | PAT > OBO (Apps: OBO > PAT) | Uses `DatabricksOAuthClientProvider`; Apps URLs prefer OBO |
+| Preview -- VS, Genie, UC Functions | OBO (via managed MCP) | `mcp.*` scopes in `databricks.yml` |
+| Preview -- MCP Server nodes | OBO > PAT | `DatabricksOAuthClientProvider`; managed MCP URLs prefer OBO |
 | Preview -- LLM inference | SP | FMAPI rejects OBO and PAT |
 | User identity | OBO | Default `iam.current-user:read` scope works |
 | MLflow experiment logging | SP | No OBO scope for MLflow |
@@ -102,23 +100,34 @@ Users link the GitHub repo to a Databricks App and deploy. No custom scopes, no 
 | UC model registration | PAT | No UC write OBO scopes |
 | Serving endpoint creation | PAT | `model-serving` OBO scope unreliable |
 
-## MCP Server Node
+## Managed MCP Integration
 
-Connects to MCP servers and exposes their tools to LLM nodes. One URL auto-discovers all available tools — unlike UC Function nodes where each function is configured individually.
+All data-access nodes (VS, Genie, UC Functions) and the MCP Server node route through Databricks managed MCP servers. This is the core mechanism that enables OBO auth without PATs for preview.
 
-### Supported MCP URL types
+### How it works
+
+Each node type builds a managed MCP URL from its config:
+- **Vector Search**: `index_name` → `/api/2.0/mcp/vector-search/{catalog}/{schema}/{index}`
+- **Genie**: `room_id` → `/api/2.0/mcp/genie/{room_id}`
+- **UC Function**: `function_name` → `/api/2.0/mcp/functions/{catalog}/{schema}/{function}`
+
+URL builders in `tools.py`: `_vs_mcp_url()`, `_genie_mcp_url()`, `_uc_function_mcp_url()`.
+
+For standalone node execution, `_mcp_discover_and_call()` combines tool discovery and invocation in a single MCP session to minimize round-trips.
+
+### MCP Server Node
+
+The MCP Server node supports all URL types directly:
 
 - **Managed MCP** (`<host>/api/2.0/mcp/functions/<catalog>/<schema>`, `.../vector-search/...`, `.../genie/...`) -- Databricks-hosted managed MCP servers for UC functions, Vector Search, and Genie.
 - **External MCP** (`<host>/api/2.0/mcp/external/<connection>`) -- UC connection proxy to external servers (e.g. GitHub, Slack). Requires a Unity Catalog connection to be configured in the workspace.
 - **Custom MCP on Databricks Apps** (`*.databricksapps.com/mcp`) -- user-deployed FastMCP servers on Databricks Apps.
 
-All three URL types are fully supported for both preview and deploy.
-
 ### Authentication
 
 All MCP communication uses `DatabricksOAuthClientProvider` from `databricks_mcp` for proper OAuth auth. This is required by the Databricks MCP proxy — raw Bearer token headers do not work for external MCP connections.
 
-- `_get_mcp_client(server_url)` in `tools.py` returns a `WorkspaceClient` with the right credentials: OBO first for Databricks Apps URLs, then the standard PAT > OBO > SP chain via `get_data_client()`.
+- `_get_mcp_client(server_url)` in `tools.py` returns a `WorkspaceClient` with the right credentials: OBO first for managed MCP URLs and Databricks Apps URLs, then `get_data_client()` (PAT > OBO > SP) for everything else.
 - `_mcp_session(server_url, client)` wraps the MCP SDK's `streamablehttp_client` with `auth=DatabricksOAuthClientProvider(client)`.
 - Each tool **call** gets a fresh `WorkspaceClient` via `_get_mcp_client()` so tokens are never stale.
 
@@ -127,17 +136,29 @@ All MCP communication uses `DatabricksOAuthClientProvider` from `databricks_mcp`
 MCP tool metadata (names, descriptions, input schemas) can be resolved two ways:
 
 - **Live discovery** (preview): connects to the MCP server at execution time via `_mcp_list_tools()`. Retries once for cold-start on Databricks Apps.
-- **Persisted metadata** (deployed models): at deploy time, `_persist_mcp_tool_metadata()` in `main.py` discovers all MCP tools and injects `discovered_tools` into the graph_def artifact. The served model builds LangChain tools from this metadata without ever contacting the MCP server for discovery. Only actual tool **calls** hit the server at inference time.
+- **Persisted metadata** (deployed models): at deploy time, `_persist_mcp_tool_metadata()` in `main.py` discovers tools for **all** MCP-routed types (`mcp_server`, `vector_search`, `genie`, `uc_function`) and injects `discovered_tools` into the graph_def artifact. The served model builds LangChain tools from this metadata without ever contacting the MCP server for discovery. Only actual tool **calls** hit the server at inference time.
 
 This split exists because serving endpoints may not be able to reach MCP servers for discovery (network/auth differences), but they can reach them for individual tool calls with proper resource declarations.
 
-If `discovered_tools` is present in the config, `_make_mcp_tools()` uses it. Otherwise it falls back to live discovery. The `discover_mcp_tool_metadata()` helper returns serializable dicts suitable for JSON persistence.
+If `discovered_tools` is present in the config, `_make_mcp_tools()` uses it. Otherwise it falls back to live discovery. The `discover_mcp_tool_metadata()` helper returns serializable dicts suitable for JSON persistence. `managed_mcp_url_for_tool()` converts VS/Genie/UC configs into managed MCP URLs for persistence.
+
+### MCP `_meta` parameters
+
+The MCP spec's `_meta` field carries preset configuration alongside the LLM-generated `arguments`. Supported by managed MCP servers:
+
+**Vector Search** -- `num_results`, `columns`, `columns_to_rerank`, `filters`, `include_score`, `score_threshold`, `query_type` (ANN/HYBRID). These map directly from the VS node's config fields. Built by `_build_vs_meta()` in `tools.py`.
+
+**UC Functions** -- No `_meta` params. Arguments are passed as kwargs by parameter name in the `arguments` dict (e.g. `{"number_1": 36939.0, "number_2": 8922.4}`). Tool names use `__` separator (e.g. `CATALOG__SCHEMA__function_name`).
+
+**Genie** -- No `_meta` params documented. The MCP server handles query polling internally.
 
 ### Implementation notes
 
 - All MCP calls run in `_run_mcp_in_thread()` because the MCP SDK uses `asyncio.run()` internally, which crashes inside FastAPI's event loop.
 - Tool creation uses `StructuredTool` with the MCP tool's `inputSchema` dict as `args_schema`. LangChain 1.2+ accepts raw JSON Schema dicts here.
 - Deploy-time resource extraction (`_extract_resources` in `main.py`) still uses `DatabricksMCPClient.get_databricks_resources()` with SP credentials, since that runs in a thread pool and needs programmatic resource resolution.
+- Standalone node execution uses `_mcp_discover_and_call()` which combines discovery + invocation in a single session to reduce overhead.
+- MCP URL note: docs specify three-part URLs for VS and UC (`catalog/schema/resource`), but the `databricks_mcp` SDK regex only matches two-part (`catalog/schema`). Both may work — the SDK regex is for resource classification only, not request routing.
 
 ## Known Gotchas
 
