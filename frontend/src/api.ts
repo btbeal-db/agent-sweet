@@ -7,6 +7,7 @@ import type {
   SetupStatusResponse,
   SetupInfoResponse,
   SetupValidateResponse,
+  DiscoveryResponse,
 } from "./types";
 
 const BASE = "/api";
@@ -124,6 +125,28 @@ export async function fetchModelGraph(runId: string): Promise<import("./types").
     throw new Error(detail.detail || "Failed to load graph");
   }
   return res.json();
+}
+
+// ── Resource discovery ────────────────────────────────────────────────────
+
+const _discoveryCache = new Map<string, DiscoveryResponse>();
+
+export function getDiscoveryCache(endpoint: string): DiscoveryResponse | null {
+  return _discoveryCache.get(endpoint) ?? null;
+}
+
+export async function fetchDiscoveryOptions(endpoint: string): Promise<DiscoveryResponse> {
+  const cached = _discoveryCache.get(endpoint);
+  if (cached) return cached;
+  try {
+    const res = await fetch(endpoint);
+    if (!res.ok) return { options: [], error: `HTTP ${res.status}` };
+    const data: DiscoveryResponse = await res.json();
+    if (!data.error) _discoveryCache.set(endpoint, data);
+    return data;
+  } catch {
+    return { options: [], error: "Network error" };
+  }
 }
 
 // ── Setup (MLflow experiment one-time config) ──────────────────────────────

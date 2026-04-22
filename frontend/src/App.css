@@ -112,61 +112,6 @@ code, pre, .mono {
 }
 
 /* ── PAT banner ──────────────────────────────────────────────── */
-.pat-banner {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.3rem 1rem;
-  background: var(--bg-surface);
-  border-bottom: 1px solid var(--border);
-  font-size: 0.78rem;
-  flex-wrap: wrap;
-}
-
-.pat-banner-toggle {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 0.78rem;
-  font-family: inherit;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-.pat-banner-toggle:hover { color: var(--text); }
-
-.pat-banner-dot {
-  display: inline-block;
-  width: 7px; height: 7px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  opacity: 0.35;
-}
-.pat-banner-dot-on { background: #22c55e; opacity: 1; }
-
-.pat-banner-input {
-  width: 220px;
-  background: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  padding: 0.2rem 0.5rem;
-  font-size: 0.78rem;
-  font-family: inherit;
-}
-.pat-banner-input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: var(--ring);
-}
-
-.pat-banner-hint {
-  color: var(--text-muted);
-  font-size: 0.72rem;
-}
-
 .main {
   display: flex;
   flex: 1;
@@ -2058,6 +2003,105 @@ code, pre, .mono {
   opacity: 0.7;
   line-height: 1.4;
   font-family: "JetBrains Mono", monospace;
+}
+
+/* ── Searchable Select ────────────────────────────────────────── */
+
+.searchable-select {
+  position: relative;
+}
+
+.searchable-select-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.searchable-select-input-wrapper input {
+  width: 100%;
+  padding-right: 28px;
+}
+
+.searchable-select-chevron {
+  position: absolute;
+  right: 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+
+.searchable-select-spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.searchable-select-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  z-index: 50;
+  list-style: none;
+  margin-top: 2px;
+  padding: 4px 0;
+}
+
+.searchable-select-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition: background 0.1s;
+}
+
+.searchable-select-option.highlighted,
+.searchable-select-option:hover {
+  background: var(--bg-hover);
+}
+
+.searchable-select-option-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.searchable-select-option-label {
+  color: var(--text);
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.searchable-select-option-desc {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  margin-top: 1px;
+}
+
+.searchable-select-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  padding: 8px 10px;
+  cursor: default;
+}
+
+.searchable-select-error {
+  color: var(--warning);
 }
 
 /* ── Result panel ─────────────────────────────────────────────── */

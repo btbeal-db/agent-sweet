@@ -20,6 +20,19 @@ export interface NodeConfigField {
   options: string[] | null;
   placeholder: string;
   help_text: string;
+  fetch_endpoint: string;
+}
+
+export interface DiscoveryOption {
+  value: string;
+  label: string;
+  description: string;
+  provider?: string | null;
+}
+
+export interface DiscoveryResponse {
+  options: DiscoveryOption[];
+  error?: string | null;
 }
 
 export interface NodeTypeMetadata {

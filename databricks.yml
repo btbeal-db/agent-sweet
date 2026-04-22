@@ -34,6 +34,7 @@ resources:
         - mcp.vectorsearch
         - mcp.genie
         - mcp.external
+        - workspace.workspace
 
 targets:
   dev:

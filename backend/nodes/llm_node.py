@@ -139,6 +139,8 @@ class LLMNode(BaseNode):
             NodeConfigField(
                 name="endpoint",
                 label="Serving Endpoint",
+                field_type="searchable_select",
+                fetch_endpoint="/api/discover/serving-endpoints",
                 placeholder="databricks-meta-llama-3-3-70b-instruct",
             ),
             NodeConfigField(

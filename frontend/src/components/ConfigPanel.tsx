@@ -5,6 +5,7 @@ import { useStateFields, useAddField } from "../StateContext";
 import RouteEditor, { type Route } from "./RouteEditor";
 import SchemaEditor, { type SchemaField } from "./SchemaEditor";
 import InlineFieldCreator from "./InlineFieldCreator";
+import SearchableSelect from "./SearchableSelect";
 
 interface Props {
   selectedNodeId: string;
@@ -194,6 +195,29 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
                 fields={fields}
                 onChange={(updated) => updateConfig(field.name, updated)}
               />
+            </div>
+          );
+        }
+
+        // Searchable select — async-fetched dropdown with fallback to text
+        if (field.field_type === "searchable_select" && field.fetch_endpoint) {
+          const val = (config[field.name] ?? field.default ?? "") as string;
+          return (
+            <div key={field.name} className="config-field">
+              <label>
+                {field.label}
+                {field.required && " *"}
+              </label>
+              <SearchableSelect
+                value={val}
+                onChange={(v) => updateConfig(field.name, v)}
+                fetchEndpoint={field.fetch_endpoint}
+                placeholder={field.placeholder}
+                showProviderIcons={field.fetch_endpoint.includes("serving-endpoints")}
+              />
+              {field.help_text && (
+                <span className="config-hint">{field.help_text}</span>
+              )}
             </div>
           );
         }

@@ -58,9 +58,11 @@ class GenieNode(BaseNode):
             ),
             NodeConfigField(
                 name="room_id",
-                label="Genie Room ID",
+                label="Genie Space",
+                field_type="searchable_select",
+                fetch_endpoint="/api/discover/genie-spaces",
                 placeholder="01efg...",
-                help_text="Genie space ID.",
+                help_text="Select a Genie space or enter an ID manually.",
             ),
         ]
 

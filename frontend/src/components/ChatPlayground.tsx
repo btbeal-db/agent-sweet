@@ -7,7 +7,6 @@ interface Props {
   graphGetter: (() => GraphDef) | null;
   stateFieldsRef: React.RefObject<StateFieldDef[]>;
   onClose: () => void;
-  pat?: string;
 }
 
 let msgId = 0;
@@ -59,7 +58,7 @@ function preflight(graphGetter: (() => GraphDef) | null, stateFields: StateField
   return null;
 }
 
-export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose, pat }: Props) {
+export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -148,10 +147,9 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose, p
       }
 
       // Branch: resume from interrupt vs. normal invocation
-      const activePat = pat?.trim() || null;
       const result = pendingInterrupt
-        ? await previewGraph(graph, "", threadId, userInput, activePat)
-        : await previewGraph(graph, userInput, threadId, null, activePat);
+        ? await previewGraph(graph, "", threadId, userInput)
+        : await previewGraph(graph, userInput, threadId);
 
       if (!result.success) {
         updatePlaceholder({ content: "", error: result.error ?? "The agent returned an error." });
@@ -184,7 +182,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose, p
     } finally {
       setIsLoading(false);
     }
-  }, [input, graphGetter, stateFieldsRef, isLoading, addErrorMessage, threadId, pendingInterrupt, pat]);
+  }, [input, graphGetter, stateFieldsRef, isLoading, addErrorMessage, threadId, pendingInterrupt]);
 
   return (
     <div className="chat-overlay" onClick={onClose}>

@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { useReactFlow, useNodes } from "@xyflow/react";
 import type { NodeTypeMetadata, AttachedTool } from "../types";
 import { useStateVars } from "../StateContext";
+import SearchableSelect from "./SearchableSelect";
 
 interface Props {
   /** The React Flow node ID that owns this tool. */
@@ -75,7 +76,15 @@ export default function ToolConfigPanel({ parentNodeId, toolId, nodeTypes }: Pro
               {field.required && " *"}
             </label>
 
-            {field.field_type === "textarea" ? (
+            {field.field_type === "searchable_select" && field.fetch_endpoint ? (
+              <SearchableSelect
+                value={val}
+                onChange={(v) => updateToolConfig(field.name, v)}
+                fetchEndpoint={field.fetch_endpoint}
+                placeholder={field.placeholder}
+                showProviderIcons={field.fetch_endpoint.includes("serving-endpoints")}
+              />
+            ) : field.field_type === "textarea" ? (
               <textarea
                 value={val}
                 placeholder={field.placeholder}

@@ -43,12 +43,13 @@ class NodeConfigField(BaseModel):
 
     name: str
     label: str
-    field_type: str = "text"  # text | select | number | textarea | state_variable | schema_editor | route_editor
+    field_type: str = "text"  # text | select | number | textarea | state_variable | schema_editor | route_editor | searchable_select
     required: bool = True
     default: Any = None
     options: list[str] | None = None
     placeholder: str = ""
     help_text: str = ""
+    fetch_endpoint: str = ""
 
 
 class BaseNode(ABC):
