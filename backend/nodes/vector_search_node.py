@@ -4,7 +4,8 @@ import json
 import logging
 from typing import Any
 
-from ..auth import get_data_client, is_serving
+from ..auth import get_data_client
+from ..tools import _use_sdk_path
 from ..tools import (
     _build_vs_meta,
     _get_mcp_client,
@@ -132,7 +133,7 @@ class VectorSearchNode(BaseNode):
         if not query:
             return {writes_to: "Error: no query provided."}
 
-        if is_serving():
+        if _use_sdk_path():
             return self._execute_sdk(state, config, writes_to, query, index_name)
         return self._execute_mcp(state, config, writes_to, query, index_name)
 

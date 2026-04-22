@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..auth import get_data_client, is_serving
-from ..tools import _get_mcp_client, _genie_mcp_url, _mcp_discover_and_call, _run_mcp_in_thread
+from ..auth import get_data_client
+from ..tools import _get_mcp_client, _genie_mcp_url, _mcp_discover_and_call, _run_mcp_in_thread, _use_sdk_path
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
 
@@ -74,7 +74,7 @@ class GenieNode(BaseNode):
         if not query:
             return {writes_to: "Error: no question provided."}
 
-        if is_serving():
+        if _use_sdk_path():
             return self._execute_sdk(config, writes_to, query, room_id)
         return self._execute_mcp(config, writes_to, query, room_id)
 

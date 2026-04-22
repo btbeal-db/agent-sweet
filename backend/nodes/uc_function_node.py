@@ -4,7 +4,8 @@ import json
 import logging
 from typing import Any
 
-from ..auth import get_data_client, is_serving
+from ..auth import get_data_client
+from ..tools import _use_sdk_path
 from ..tools import _get_mcp_client, _mcp_discover_and_call, _run_mcp_in_thread, _uc_function_mcp_url
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
@@ -85,7 +86,7 @@ class UCFunctionNode(BaseNode):
                     except json.JSONDecodeError:
                         logger.warning("Invalid parameters JSON from '%s': %s", params_from, raw_params)
 
-        if is_serving():
+        if _use_sdk_path():
             return self._execute_sdk(writes_to, function_name, params)
         return self._execute_mcp(config, writes_to, function_name, params)
 

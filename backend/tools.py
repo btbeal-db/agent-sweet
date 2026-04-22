@@ -594,20 +594,25 @@ def _make_uc_function_tools_mcp(config: dict[str, Any]) -> list[BaseTool]:
 # ── Public routing ────────────────────────────────────────────────────────
 
 
+def _use_sdk_path() -> bool:
+    """Use SDK (not MCP) when serving or when no OBO token is available (local dev)."""
+    return is_serving() or not get_user_token()
+
+
 def _make_vector_search_tool(config: dict[str, Any]) -> list[BaseTool]:
-    if is_serving():
+    if _use_sdk_path():
         return _make_vector_search_tool_sdk(config)
     return _make_vector_search_tool_mcp(config)
 
 
 def _make_genie_tool(config: dict[str, Any]) -> list[BaseTool]:
-    if is_serving():
+    if _use_sdk_path():
         return _make_genie_tool_sdk(config)
     return _make_genie_tool_mcp(config)
 
 
 def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
-    if is_serving():
+    if _use_sdk_path():
         return _make_uc_function_tools_sdk(config)
     return _make_uc_function_tools_mcp(config)
 
