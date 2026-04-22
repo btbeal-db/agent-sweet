@@ -67,7 +67,7 @@ class UCFunctionNode(BaseNode):
         writes_to = config.get("_writes_to", "")
         function_name = config.get("function_name", "")
 
-        if not function_name:
+        if not function_name and not config.get("mcp_server_url"):
             return {writes_to: "Error: no UC function configured."}
 
         # Resolve parameters from state
@@ -85,7 +85,7 @@ class UCFunctionNode(BaseNode):
                         logger.warning("Invalid parameters JSON from '%s': %s", params_from, raw_params)
 
         try:
-            url = _uc_function_mcp_url(function_name)
+            url = config.get("mcp_server_url") or _uc_function_mcp_url(function_name)
             client = _get_mcp_client(url)
             result_text = _run_mcp_in_thread(
                 _mcp_discover_and_call, url, client, params,

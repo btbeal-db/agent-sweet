@@ -66,13 +66,13 @@ class GenieNode(BaseNode):
         query = resolve_state(state, config.get("question_from", "input"))
         room_id = config.get("room_id", "")
 
-        if not room_id:
+        if not room_id and not config.get("mcp_server_url"):
             return {writes_to: "Error: no Genie Room ID configured."}
         if not query:
             return {writes_to: "Error: no question provided."}
 
         try:
-            url = _genie_mcp_url(room_id)
+            url = config.get("mcp_server_url") or _genie_mcp_url(room_id)
             client = _get_mcp_client(url)
             result_text = _run_mcp_in_thread(
                 _mcp_discover_and_call, url, client, {"question": str(query)},

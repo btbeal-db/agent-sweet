@@ -126,7 +126,7 @@ class VectorSearchNode(BaseNode):
         query = resolve_state(state, config.get("query_from", "input"))
         index_name = config.get("index_name", "")
 
-        if not index_name:
+        if not index_name and not config.get("mcp_server_url"):
             return {writes_to: "Error: no Vector Search index configured."}
         if not query:
             return {writes_to: "Error: no query provided."}
@@ -151,7 +151,7 @@ class VectorSearchNode(BaseNode):
                         logger.warning("Invalid filters JSON from '%s': %s", filters_from, raw_filters)
 
         try:
-            url = _vs_mcp_url(index_name)
+            url = config.get("mcp_server_url") or _vs_mcp_url(index_name)
             client = _get_mcp_client(url)
             result_text = _run_mcp_in_thread(
                 _mcp_discover_and_call, url, client, {"query": str(query)},

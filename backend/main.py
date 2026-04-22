@@ -322,6 +322,10 @@ def _persist_mcp_tool_metadata(graph: GraphDef, pat: str = "") -> None:
         try:
             metadata = _discover(url)
             tc_config["discovered_tools"] = metadata
+            # Persist the fully-qualified MCP URL so the served model
+            # doesn't need to rebuild it from DATABRICKS_HOST (which
+            # may not include the https:// protocol in serving envs).
+            tc_config["mcp_server_url"] = url
             logger.info("Persisted %d MCP tools for %s (%s)", len(metadata), label, url)
             return True
         except Exception as exc:

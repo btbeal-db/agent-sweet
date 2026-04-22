@@ -367,15 +367,19 @@ def _build_vs_meta(config: dict[str, Any]) -> dict[str, Any] | None:
 
 def _make_vector_search_tool(config: dict[str, Any]) -> list[BaseTool]:
     """Create tool(s) for a Vector Search index via managed MCP."""
-    index_name = config.get("index_name", "")
-    if not index_name:
-        logger.warning("VS tool config missing index_name")
-        return []
-    try:
-        url = _vs_mcp_url(index_name)
-    except ValueError as exc:
-        logger.warning("Invalid VS index name: %s", exc)
-        return []
+    # Prefer the persisted URL (set at deploy time) over rebuilding from
+    # DATABRICKS_HOST, which may lack https:// in serving containers.
+    url = config.get("mcp_server_url")
+    if not url:
+        index_name = config.get("index_name", "")
+        if not index_name:
+            logger.warning("VS tool config missing index_name")
+            return []
+        try:
+            url = _vs_mcp_url(index_name)
+        except ValueError as exc:
+            logger.warning("Invalid VS index name: %s", exc)
+            return []
     mcp_config: dict[str, Any] = {
         "server_url": url,
         "tool_description": config.get("tool_description", ""),
@@ -387,11 +391,13 @@ def _make_vector_search_tool(config: dict[str, Any]) -> list[BaseTool]:
 
 def _make_genie_tool(config: dict[str, Any]) -> list[BaseTool]:
     """Create tool(s) for a Genie Room via managed MCP."""
-    room_id = config.get("room_id", "")
-    if not room_id:
-        logger.warning("Genie tool config missing room_id")
-        return []
-    url = _genie_mcp_url(room_id)
+    url = config.get("mcp_server_url")
+    if not url:
+        room_id = config.get("room_id", "")
+        if not room_id:
+            logger.warning("Genie tool config missing room_id")
+            return []
+        url = _genie_mcp_url(room_id)
     mcp_config = {
         "server_url": url,
         "tool_description": config.get("tool_description", ""),
@@ -402,15 +408,17 @@ def _make_genie_tool(config: dict[str, Any]) -> list[BaseTool]:
 
 def _make_uc_function_tools(config: dict[str, Any]) -> list[BaseTool]:
     """Create tool(s) for a UC Function via managed MCP."""
-    function_name = config.get("function_name", "")
-    if not function_name:
-        logger.warning("UC function tool config missing function_name")
-        return []
-    try:
-        url = _uc_function_mcp_url(function_name)
-    except ValueError as exc:
-        logger.warning("Invalid UC function name: %s", exc)
-        return []
+    url = config.get("mcp_server_url")
+    if not url:
+        function_name = config.get("function_name", "")
+        if not function_name:
+            logger.warning("UC function tool config missing function_name")
+            return []
+        try:
+            url = _uc_function_mcp_url(function_name)
+        except ValueError as exc:
+            logger.warning("Invalid UC function name: %s", exc)
+            return []
     mcp_config = {
         "server_url": url,
         "tool_description": config.get("tool_description", ""),
