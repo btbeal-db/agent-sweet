@@ -945,7 +945,25 @@ def deploy_graph(req: DeployRequest):
 
             mlflow.set_tracking_uri("databricks")
             mlflow.set_registry_uri("databricks-uc")
-            experiment = mlflow.set_experiment(req.experiment_path)
+            try:
+                experiment = mlflow.set_experiment(req.experiment_path)
+            except Exception as mlflow_exc:
+                # Most common cause: experiment_path points at a workspace
+                # folder (e.g. the setup folder itself) rather than a new path
+                # inside it. Databricks can't create an experiment at a node
+                # that already exists as a folder.
+                raise ValueError(
+                    f"Could not create experiment at '{req.experiment_path}'. "
+                    f"If this path is a workspace folder, pass a sub-path "
+                    f"instead (e.g. '{req.experiment_path.rstrip('/')}/my-agent'). "
+                    f"Underlying error: {mlflow_exc}"
+                ) from mlflow_exc
+            if experiment is None:
+                raise ValueError(
+                    f"'{req.experiment_path}' appears to be a workspace folder, "
+                    f"not an experiment. Pass a sub-path inside it "
+                    f"(e.g. '{req.experiment_path.rstrip('/')}/my-agent')."
+                )
             result_data["experiment_id"] = experiment.experiment_id
 
             # Persist auth_mode into the graph_def artifact so the served
