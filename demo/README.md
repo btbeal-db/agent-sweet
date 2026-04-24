@@ -1,6 +1,6 @@
-# Agent Builder Demo Environment
+# AgentSweet Demo Environment
 
-Sets up demo resources (tables, Vector Search, Genie) in a Databricks workspace so the Agent Builder app has data to work with.
+Sets up demo resources (tables, Vector Search, Genie) in a Databricks workspace so AgentSweet has data to work with.
 
 ## Setup
 
@@ -11,7 +11,7 @@ python demo/setup_demo.py --profile BUILDER
 Options:
 - `--profile` (required) — Databricks CLI profile for the target workspace
 - `--catalog` — UC catalog to use (auto-detected from first managed catalog if omitted)
-- `--schema` — UC schema (default: `agent_builder`)
+- `--schema` — UC schema (default: `agent_sweet`)
 - `--teardown` — Remove all demo resources
 
 ## What gets created
@@ -20,11 +20,11 @@ Options:
 |----------|------|---------|
 | Table | `{catalog}.{schema}.patient_notes` | 12 clinical notes for Vector Search |
 | Table | `{catalog}.{schema}.patient_metrics` | 15 patient records for Genie analytics |
-| VS Endpoint | `agent-builder-vs` | Hosts the vector search index |
+| VS Endpoint | `agent-sweet-vs` | Hosts the vector search index |
 | VS Index | `{catalog}.{schema}.patient_notes_index` | Embeddings on `text` column via GTE-large |
 | Genie Space | Hospital Patient Analytics | Natural language queries on patient_metrics |
 
-## Using in Agent Builder
+## Using in AgentSweet
 
 After setup, configure nodes with these values:
 
@@ -33,7 +33,7 @@ After setup, configure nodes with these values:
 
 **Vector Search Node:**
 - Index: `{catalog}.{schema}.patient_notes_index`
-- Endpoint: `agent-builder-vs`
+- Endpoint: `agent-sweet-vs`
 - Columns: `note_id, patient_id, department, note_type, physician, text`
 
 **Genie Node:**

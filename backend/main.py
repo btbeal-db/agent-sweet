@@ -1,4 +1,4 @@
-"""FastAPI backend for the Agent Builder app."""
+"""FastAPI backend for AgentSweet."""
 
 from __future__ import annotations
 
@@ -517,7 +517,7 @@ def _collect_code_paths() -> list[str]:
     return [str(tmp)]
 
 
-app = FastAPI(title="Agent Builder", version="0.1.0")
+app = FastAPI(title="AgentSweet", version="0.1.0")
 
 
 app.add_middleware(
@@ -1008,7 +1008,7 @@ def deploy_graph(req: DeployRequest):
                     pass
                 mlflow.set_tag("lakebase_project", lb_project_id)
                 mlflow.set_tag("lakebase_project_uuid", lb_uuid)
-            mlflow.set_tag("agent_builder", "AgentSweet")
+            mlflow.set_tag("agent_sweet", "true")
             try:
                 model_info = mlflow.pyfunc.log_model(
                     artifact_path="agent",

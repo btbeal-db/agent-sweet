@@ -30,7 +30,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Config filename stored inside the user's experiment directory (written by SP).
-_SETUP_FILENAME = ".agent-builder-setup.json"
+_SETUP_FILENAME = ".agent-sweet-setup.json"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 

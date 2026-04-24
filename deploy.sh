@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Agent Builder Deploy Script ──────────────────────────────────────────────
+# ── AgentSweet Deploy Script ────────────────────────────────────────────────
 # Usage:
 #   ./deploy.sh --profile MY_PROFILE --init   # first-time deploy
 #   ./deploy.sh --profile MY_PROFILE           # redeploy (after init)
@@ -56,7 +56,7 @@ elif [[ -z "${DATABRICKS_CONFIG_PROFILE:-}" ]]; then
   exit 1
 fi
 
-APP_NAME="agent-builder-${TARGET}"
+APP_NAME="agent-sweet-${TARGET}"
 echo "── Target: $TARGET  App: $APP_NAME"
 
 # 1. Build frontend
@@ -87,7 +87,7 @@ SOURCE_PATH="${BUNDLE_PATH}/files"
 if [[ "$INIT" == true ]]; then
   # First time only: creates the app resource and provisions compute
   echo "── Initializing app (first-time setup)..."
-  databricks bundle run agent_builder -t "$TARGET"
+  databricks bundle run agent_sweet -t "$TARGET"
 else
   # Redeploy: tells the running app to pick up new code — no compute restart
   echo "── Redeploying app..."

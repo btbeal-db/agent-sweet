@@ -1,4 +1,4 @@
-"""MLflow ResponsesAgent wrapper for deploying Agent Builder graphs via Model Serving.
+"""MLflow ResponsesAgent wrapper for deploying AgentSweet graphs via Model Serving.
 
 This file is used as a "models from code" entry point by MLflow.
 It must be importable standalone (no relative imports) because MLflow

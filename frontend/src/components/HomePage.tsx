@@ -4,92 +4,101 @@ import {
   Search,
   BarChart3,
   Rocket,
-  MessageSquare,
-  Save,
-  Upload,
-  FileCode,
-  Shield,
-  Workflow,
   ArrowRight,
   FunctionSquare,
   User,
   Wrench,
+  Workflow,
   History,
-  Key,
+  Server,
+  Compass,
+  Lightbulb,
+  ChevronRight,
 } from "lucide-react";
 
 interface Props {
   onGetStarted: () => void;
+  onTakeTour: () => void;
+  userEmail: string;
 }
 
-export default function HomePage({ onGetStarted }: Props) {
+function firstName(email: string): string {
+  if (!email) return "";
+  const local = email.split("@")[0] ?? "";
+  const part = local.split(".")[0] ?? local;
+  return part.charAt(0).toUpperCase() + part.slice(1);
+}
+
+export default function HomePage({ onGetStarted, onTakeTour, userEmail }: Props) {
+  const name = firstName(userEmail);
+
   return (
     <div className="home">
-      {/* Hero */}
+      {/* ── Hero ──────────────────────────────────────────────────── */}
       <section className="home-hero">
-        <div className="home-hero-badge">Visual Agent Builder</div>
-        <h1>Build AI agents without writing code</h1>
-        <p>
-          Design, test, and deploy LangGraph agents on Databricks using a
-          drag-and-drop interface. Build prescriptive workflows, tool-calling
-          agents, or conversational chatbots — then deploy to a production
-          serving endpoint in one click.
+        <h1>{name ? `Welcome back, ${name}` : "AgentSweet"}</h1>
+        <p className="home-hero-sub">
+          Design, test, and deploy AI agents on Databricks — no code required.
         </p>
-        <button className="btn btn-primary btn-lg" onClick={onGetStarted}>
-          Start building
-          <ArrowRight size={16} />
-        </button>
+        <div className="home-hero-actions">
+          <button className="btn btn-primary btn-lg" onClick={onGetStarted}>
+            Start Building
+            <ArrowRight size={16} />
+          </button>
+          <button className="btn btn-ghost btn-lg" onClick={onTakeTour}>
+            <Compass size={16} />
+            Take the Tour
+          </button>
+        </div>
       </section>
 
-      {/* How it works */}
+      {/* ── Quick Start ───────────────────────────────────────────── */}
       <section className="home-section">
-        <h2>How it works</h2>
-        <div className="home-steps">
-          <div className="home-step">
-            <div className="home-step-num">1</div>
-            <h3>Define your state model</h3>
-            <p>
-              Start by defining the data your agent works with — user input,
-              retrieved context, analysis results. Each field flows through
-              every step of your agent.
-            </p>
+        <h2>Quick start</h2>
+        <div className="home-steps-inline">
+          <div className="home-step-inline">
+            <span className="home-step-num">1</span>
+            <div>
+              <strong>Drop nodes</strong>
+              <span>Drag components from the palette onto the canvas</span>
+            </div>
           </div>
-          <div className="home-step">
-            <div className="home-step-num">2</div>
-            <h3>Build your graph</h3>
-            <p>
-              Drag components onto the canvas and connect them. Drop tools
-              onto LLM nodes for autonomous tool calling, or wire nodes
-              explicitly for prescriptive flows.
-            </p>
+          <ChevronRight size={16} className="home-step-arrow" />
+          <div className="home-step-inline">
+            <span className="home-step-num">2</span>
+            <div>
+              <strong>Connect & configure</strong>
+              <span>Wire nodes together and set up each one</span>
+            </div>
           </div>
-          <div className="home-step">
-            <div className="home-step-num">3</div>
-            <h3>Test in the playground</h3>
-            <p>
-              Open the Chat Playground to send messages to your agent and see
-              how it responds. Inspect the execution trace, tool calls, and
-              state at every step to debug and refine.
-            </p>
-          </div>
-          <div className="home-step">
-            <div className="home-step-num">4</div>
-            <h3>Deploy to Databricks</h3>
-            <p>
-              One click logs your agent to MLflow, registers it in Unity
-              Catalog, and creates a Model Serving endpoint — ready for
-              production traffic.
-            </p>
+          <ChevronRight size={16} className="home-step-arrow" />
+          <div className="home-step-inline">
+            <span className="home-step-num">3</span>
+            <div>
+              <strong>Test & deploy</strong>
+              <span>Chat in the Playground, then deploy to a serving endpoint</span>
+            </div>
           </div>
         </div>
       </section>
 
-      {/* Agent Patterns */}
+      {/* ── Node Types ────────────────────────────────────────────── */}
+      <section className="home-section">
+        <h2>Components</h2>
+        <div className="home-node-grid">
+          <NodeCard icon={<Brain size={16} />} color="#7C52D9" name="LLM" desc="Call any Foundation Model endpoint. Supports tools, structured output, and conversation." />
+          <NodeCard icon={<Search size={16} />} color="#06b6d4" name="Vector Search" desc="Query a VS index for relevant documents. Standalone or as an LLM tool." />
+          <NodeCard icon={<BarChart3 size={16} />} color="#f59e0b" name="Genie" desc="Natural-language queries against a Genie space for structured data." />
+          <NodeCard icon={<FunctionSquare size={16} />} color="#7C52D9" name="UC Function" desc="Execute Unity Catalog functions as explicit steps or LLM tools." />
+          <NodeCard icon={<Server size={16} />} color="#06b6d4" name="MCP Server" desc="Connect to Databricks MCP servers to expose external tools." />
+          <NodeCard icon={<GitBranch size={16} />} color="#D65454" name="Router" desc="Branch the flow based on state values. Bool, keyword, or multi-way." />
+          <NodeCard icon={<User size={16} />} color="#f59e0b" name="Human Input" desc="Pause the agent and prompt the user for input before continuing." />
+        </div>
+      </section>
+
+      {/* ── Agent Patterns ────────────────────────────────────────── */}
       <section className="home-section">
         <h2>Agent patterns</h2>
-        <p className="home-section-desc">
-          Combine components in different ways to build the agent you need.
-        </p>
         <div className="home-patterns">
           <div className="home-pattern">
             <div className="home-pattern-header">
@@ -97,39 +106,33 @@ export default function HomePage({ onGetStarted }: Props) {
               <h3>Prescriptive Graph</h3>
             </div>
             <p>
-              Wire nodes in a fixed sequence. You control exactly what happens
-              at each step — retrieve documents, call an LLM, route based on
-              results. Best for deterministic pipelines like RAG.
+              Fixed sequence — retrieve, process, respond. You control every step.
             </p>
             <div className="home-pattern-diagram">
               <code>START &rarr; Vector Search &rarr; LLM &rarr; END</code>
             </div>
           </div>
-
           <div className="home-pattern">
             <div className="home-pattern-header">
               <Wrench size={18} />
               <h3>Tool Calling</h3>
             </div>
             <p>
-              Drag tools directly onto an LLM node. The model autonomously
-              decides which tools to call and loops until it has enough
-              information to respond. Best for open-ended questions.
+              Drop tools onto an LLM node. The model decides what to call and loops
+              until it has the answer.
             </p>
             <div className="home-pattern-diagram">
               <code>START &rarr; LLM [+ tools] &rarr; END</code>
             </div>
           </div>
-
           <div className="home-pattern">
             <div className="home-pattern-header">
               <History size={18} />
               <h3>Conversational</h3>
             </div>
             <p>
-              Enable the "Conversational" toggle on any LLM node to include
-              message history. Pair with a Lakebase connection for multi-turn
-              memory that persists across requests.
+              Enable message history on any LLM node for multi-turn memory.
+              Pair with Lakebase for persistence.
             </p>
             <div className="home-pattern-diagram">
               <code>START &rarr; LLM (conversational) &rarr; END</code>
@@ -138,211 +141,75 @@ export default function HomePage({ onGetStarted }: Props) {
         </div>
       </section>
 
-      {/* Available components */}
+      {/* ── Key Concepts ──────────────────────────────────────────── */}
       <section className="home-section">
-        <h2>Available components</h2>
-        <div className="home-cards">
-          <div className="home-card">
-            <div className="home-card-icon" style={{ background: "#8b5cf6" }}>
-              <Brain size={18} />
-            </div>
-            <div>
-              <h3>LLM</h3>
-              <p>
-                Call any Foundation Model endpoint on Databricks. Supports
-                system prompts, structured output, conversation history, and
-                tool calling — drop tools onto the node to enable autonomous
-                tool use.
-              </p>
-            </div>
-          </div>
-          <div className="home-card">
-            <div className="home-card-icon" style={{ background: "#06b6d4" }}>
-              <Search size={18} />
-            </div>
-            <div>
-              <h3>Vector Search</h3>
-              <p>
-                Query a Databricks Vector Search index to retrieve relevant
-                documents. Use as a graph node for prescriptive RAG, or drop
-                onto an LLM for autonomous retrieval with optional filters.
-              </p>
-            </div>
-          </div>
-          <div className="home-card">
-            <div className="home-card-icon" style={{ background: "#f59e0b" }}>
-              <BarChart3 size={18} />
-            </div>
-            <div>
-              <h3>Genie Room</h3>
-              <p>
-                Ask natural-language questions against a Databricks Genie Room
-                to get structured data answers. Use standalone or as an LLM
-                tool for data-driven conversations.
-              </p>
-            </div>
-          </div>
-          <div className="home-card">
-            <div className="home-card-icon" style={{ background: "#8b5cf6" }}>
-              <FunctionSquare size={18} />
-            </div>
-            <div>
-              <h3>UC Function</h3>
-              <p>
-                Execute Unity Catalog functions as actions. Use in a graph with
-                explicit parameters, or attach to an LLM as a tool — the model
-                decides when and how to call it.
-              </p>
-            </div>
-          </div>
-          <div className="home-card">
-            <div className="home-card-icon" style={{ background: "#f59e0b" }}>
-              <User size={18} />
-            </div>
-            <div>
-              <h3>Human Input</h3>
-              <p>
-                Pause the agent and ask the user a question. Supports
-                template variables from state in the prompt. The user's
-                response flows into the target state field.
-              </p>
-            </div>
-          </div>
-          <div className="home-card">
-            <div className="home-card-icon" style={{ background: "#ef4444" }}>
-              <GitBranch size={18} />
-            </div>
-            <div>
-              <h3>Router</h3>
-              <p>
-                Branch your agent's flow based on state values. Supports
-                boolean, string matching, and multi-way routing with
-                fallback paths.
-              </p>
-            </div>
-          </div>
+        <h2>Key concepts</h2>
+        <div className="home-concepts">
+          <details className="home-concept">
+            <summary>
+              <Lightbulb size={14} />
+              State Model
+            </summary>
+            <p>
+              Every agent has a shared state — typed fields (str, int, float, bool,
+              list[str], structured) that nodes read and write. Each node's "writes to"
+              setting controls which field it updates. The <code>messages</code> field
+              is special — it uses LangGraph's add_messages reducer for conversation
+              history. Reference state fields in LLM system prompts
+              with <code>{"{field_name}"}</code> notation — structured fields support
+              dot notation like <code>{"{field.subfield}"}</code>.
+            </p>
+          </details>
+          <details className="home-concept">
+            <summary>
+              <Wrench size={14} />
+              Tools & Tool Calling
+            </summary>
+            <p>
+              Drop a Vector Search, Genie, UC Function, or MCP node directly onto an
+              LLM node to attach it as a tool. The LLM autonomously decides when to call
+              each tool and loops until it has enough information. You can also wire these
+              nodes as standalone graph steps for deterministic flows.
+            </p>
+          </details>
+          <details className="home-concept">
+            <summary>
+              <Rocket size={14} />
+              Deployment
+            </summary>
+            <p>
+              Deploy logs your agent to MLflow, optionally registers it in Unity Catalog,
+              and creates a serving endpoint. Three modes: Log Only, Log &amp; Register, or
+              Full Deploy. <strong>Preview uses your workspace credentials automatically</strong> — a
+              PAT is only needed for deploy (UC registration + serving endpoint creation).
+            </p>
+          </details>
         </div>
       </section>
 
-      {/* Toolbar reference */}
-      <section className="home-section">
-        <h2>Toolbar actions</h2>
-        <div className="home-ref-grid">
-          <div className="home-ref-item">
-            <Save size={16} />
-            <div>
-              <strong>Save JSON</strong>
-              <span>Export your graph config to a file for version control or sharing</span>
-            </div>
-          </div>
-          <div className="home-ref-item">
-            <Upload size={16} />
-            <div>
-              <strong>Load JSON</strong>
-              <span>Import a previously saved graph to continue editing</span>
-            </div>
-          </div>
-          <div className="home-ref-item">
-            <FileCode size={16} />
-            <div>
-              <strong>Export Python</strong>
-              <span>Generate a standalone Python file to run your agent outside this tool</span>
-            </div>
-          </div>
-          <div className="home-ref-item">
-            <MessageSquare size={16} />
-            <div>
-              <strong>Chat Playground</strong>
-              <span>Test your agent with real conversations and inspect each step</span>
-            </div>
-          </div>
-          <div className="home-ref-item">
-            <Rocket size={16} />
-            <div>
-              <strong>Deploy</strong>
-              <span>Log to MLflow, register in Unity Catalog, and create a serving endpoint</span>
-            </div>
-          </div>
-        </div>
+      {/* ── Tips ──────────────────────────────────────────────────── */}
+      <section className="home-section home-tips-section">
+        <h2>Tips</h2>
+        <ul className="home-tips">
+          <li>Every path in your graph must start from START and end at END.</li>
+          <li>Only Router nodes can have multiple outgoing edges — all other nodes get exactly one.</li>
+          <li>Use the AI Chat bubble (bottom-right) to generate graphs from natural language.</li>
+          <li>Save your graph often — it's just JSON you can version control.</li>
+          <li>Open the Playground to see execution traces, tool calls, and MLflow spans at each step.</li>
+        </ul>
       </section>
+    </div>
+  );
+}
 
-      {/* PAT */}
-      <section className="home-section">
-        <h2>Connect your PAT</h2>
-        <p className="home-section-desc">
-          Click <strong>Connect PAT</strong> in the builder banner to paste a
-          Personal Access Token. This lets the app access your workspace
-          resources — Vector Search indexes, Genie rooms, UC functions — under
-          your identity. Your token is held in browser memory only and is never
-          stored or logged.
-        </p>
-        <p className="home-section-desc">
-          Generate a PAT at{" "}
-          <strong>Settings &gt; Developer &gt; Access tokens</strong> in your
-          Databricks workspace.
-        </p>
-      </section>
-
-      {/* Permissions */}
-      <section className="home-section">
-        <h2>Required permissions</h2>
-        <p className="home-section-desc">
-          To build and deploy agents, you'll need the following access in your
-          Databricks workspace. Contact your workspace admin if any of these
-          are missing.
-        </p>
-        <div className="home-perms">
-          <div className="home-perm">
-            <Key size={16} />
-            <div>
-              <strong>Personal Access Token</strong>
-              <span>Required for playground previews and deployment</span>
-            </div>
-          </div>
-          <div className="home-perm">
-            <Shield size={16} />
-            <div>
-              <strong>Foundation Model endpoints</strong>
-              <span>CAN QUERY access to the serving endpoints your LLM nodes reference</span>
-            </div>
-          </div>
-          <div className="home-perm">
-            <Search size={16} />
-            <div>
-              <strong>Vector Search indexes</strong>
-              <span>CAN USE access to any Vector Search indexes your agent queries</span>
-            </div>
-          </div>
-          <div className="home-perm">
-            <BarChart3 size={16} />
-            <div>
-              <strong>Genie Rooms</strong>
-              <span>CAN RUN access to Genie Rooms used in your agent flow</span>
-            </div>
-          </div>
-          <div className="home-perm">
-            <FunctionSquare size={16} />
-            <div>
-              <strong>UC Functions</strong>
-              <span>EXECUTE access to any Unity Catalog functions your agent calls</span>
-            </div>
-          </div>
-          <div className="home-perm">
-            <Workflow size={16} />
-            <div>
-              <strong>Unity Catalog</strong>
-              <span>CREATE MODEL permission on the catalog and schema where you deploy</span>
-            </div>
-          </div>
-          <div className="home-perm">
-            <Rocket size={16} />
-            <div>
-              <strong>Model Serving</strong>
-              <span>CAN MANAGE permission to create or update serving endpoints</span>
-            </div>
-          </div>
-        </div>
-      </section>
+function NodeCard({ icon, color, name, desc }: { icon: JSX.Element; color: string; name: string; desc: string }) {
+  return (
+    <div className="home-node-card">
+      <div className="home-node-card-icon" style={{ background: color }}>
+        {icon}
+      </div>
+      <strong>{name}</strong>
+      <span>{desc}</span>
     </div>
   );
 }

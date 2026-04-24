@@ -53,7 +53,7 @@ class NodeConfigField(BaseModel):
 
 
 class BaseNode(ABC):
-    """Extend this class to create a new agent-builder node.
+    """Extend this class to create a new AgentSweet node.
 
     1. Subclass BaseNode
     2. Implement the abstract properties and ``execute``

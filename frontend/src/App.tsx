@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { Home, Hammer, HelpCircle, Trash2, CloudDownload, Save, Upload, MessageSquare, Rocket, Sparkles, Settings, Package } from "lucide-react";
+import { Home, Hammer, Trash2, CloudDownload, Save, Upload, MessageSquare, Rocket, Sparkles, Settings, Package, X, HelpCircle, CakeSlice } from "lucide-react";
 import Canvas from "./components/Canvas";
 import NodePalette from "./components/NodePalette";
 import StateModelModal from "./components/StateModelModal";
@@ -8,7 +8,6 @@ import StatePanel from "./components/StatePanel";
 import ChatPlayground from "./components/ChatPlayground";
 import DeployModal from "./components/DeployModal";
 import HomePage from "./components/HomePage";
-import HelpPage from "./components/HelpPage";
 import BuilderWalkthrough from "./components/BuilderWalkthrough";
 import AIChatDropdown from "./components/AIChatDropdown";
 import SetupPage from "./components/SetupPage";
@@ -17,7 +16,7 @@ import { StateProvider } from "./StateContext";
 import { fetchNodeTypes, fetchModels, getSetupStatus } from "./api";
 import type { NodeTypeMetadata, GraphDef, StateFieldDef, SetupStatusResponse, ModelInfo } from "./types";
 
-type AppView = "home" | "builder" | "models" | "help" | "setup";
+type AppView = "home" | "builder" | "models" | "setup";
 
 export default function App() {
   const [nodeTypes, setNodeTypes] = useState<NodeTypeMetadata[]>([]);
@@ -38,7 +37,6 @@ export default function App() {
   const [graphImporter, setGraphImporter] = useState<((g: GraphDef) => void) | null>(null);
   const [view, setView] = useState<AppView>("home");
   const [showWalkthrough, setShowWalkthrough] = useState(false);
-  const hasOpenedBuilder = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
   const [experimentPath, setExperimentPath] = useState<string | null>(null);
@@ -155,7 +153,6 @@ export default function App() {
             setStateFields(graph.state_fields);
           }
           graphImporter(graph);
-          hasOpenedBuilder.current = true;
           setShowStateModal(false);
           setView("builder");
         } catch (err) {
@@ -170,10 +167,6 @@ export default function App() {
 
   const openBuilder = useCallback(() => {
     setView("builder");
-    if (!hasOpenedBuilder.current) {
-      hasOpenedBuilder.current = true;
-      setShowWalkthrough(true);
-    }
   }, []);
 
   const handleClearAll = useCallback(() => {
@@ -206,7 +199,6 @@ export default function App() {
       setStateFields(importJsonPreview.state_fields);
     }
     graphImporter(importJsonPreview);
-    hasOpenedBuilder.current = true;
     setShowImportJson(false);
     setImportJsonInput("");
     setImportJsonPreview(null);
@@ -219,7 +211,10 @@ export default function App() {
       <div className={`app${showStateModal && view === "builder" ? " app-blurred" : ""}`}>
         <header className="header">
           <div className="header-left">
-            <span className="header-logo">Agent Builder</span>
+            <div className="header-logo">
+              <CakeSlice size={20} className="header-logo-icon" />
+              <span>AgentSweet</span>
+            </div>
           </div>
           {view === "builder" && (
             <div className="header-actions">
@@ -247,33 +242,14 @@ export default function App() {
                   <Trash2 size={14} />
                   Clear All
                 </button>
+                <button className="btn btn-ghost btn-with-icon" onClick={() => setShowWalkthrough(true)} title="Take a guided tour">
+                  <HelpCircle size={14} />
+                  Tour
+                </button>
               </div>
               <div className="header-divider" />
               <div className="header-group">
-                <div className="ai-chat-wrapper" ref={aiChatWrapperRef}>
-                  <button
-                    className={`btn btn-ai-chat btn-with-icon${showAIChat ? " btn-active" : ""}`}
-                    onClick={() => setShowAIChat((v) => !v)}
-                  >
-                    <Sparkles size={14} />
-                    AI Chat
-                  </button>
-                  {showAIChat && (
-                    <AIChatDropdown
-                      graphGetter={graphGetter}
-                      graphImporter={graphImporter}
-                      stateFields={stateFields}
-                      setStateFields={setStateFields}
-                      onSwitchToBuilder={() => {
-                        setView("builder");
-                        hasOpenedBuilder.current = true;
-                      }}
-                      onClose={() => setShowAIChat(false)}
-                      wrapperRef={aiChatWrapperRef}
-                    />
-                  )}
-                </div>
-                <button className="btn btn-primary btn-with-icon" onClick={() => setShowChat(true)}>
+                <button className="btn btn-playground btn-with-icon" onClick={() => setShowChat(true)}>
                   <MessageSquare size={14} />
                   Playground
                 </button>
@@ -313,14 +289,6 @@ export default function App() {
               <span>Models</span>
             </button>
             <button
-              className={`nav-rail-btn${view === "help" ? " active" : ""}`}
-              onClick={() => setView("help")}
-              title="Help"
-            >
-              <HelpCircle size={18} />
-              <span>Help</span>
-            </button>
-            <button
               className={`nav-rail-btn${view === "setup" ? " active" : ""}`}
               onClick={() => setView("setup")}
               title="Setup"
@@ -331,21 +299,18 @@ export default function App() {
           </nav>
 
           {view === "home" && (
-            <HomePage onGetStarted={openBuilder} />
-          )}
-
-          {view === "help" && (
-            <HelpPage onGoToBuilder={openBuilder} />
+            <HomePage
+              onGetStarted={openBuilder}
+              onTakeTour={() => { setView("builder"); setShowWalkthrough(true); }}
+              userEmail={setupStatus?.user_email ?? ""}
+            />
           )}
 
           {view === "models" && (
             <ModelsPage
               graphImporter={graphImporter}
               setStateFields={setStateFields}
-              onSwitchToBuilder={() => {
-                setView("builder");
-                hasOpenedBuilder.current = true;
-              }}
+              onSwitchToBuilder={() => setView("builder")}
               cachedModels={cachedModels}
               modelsLoading={modelsLoading}
               onRefresh={refreshModels}
@@ -391,6 +356,30 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {/* Floating AI Chat bubble */}
+      {view === "builder" && (
+        <div className="ai-chat-fab-container" ref={aiChatWrapperRef}>
+          {showAIChat && (
+            <AIChatDropdown
+              graphGetter={graphGetter}
+              graphImporter={graphImporter}
+              stateFields={stateFields}
+              setStateFields={setStateFields}
+              onSwitchToBuilder={() => setView("builder")}
+              onClose={() => setShowAIChat(false)}
+              wrapperRef={aiChatWrapperRef}
+            />
+          )}
+          <button
+            className={`ai-chat-fab${showAIChat ? " ai-chat-fab-active" : ""}`}
+            onClick={() => setShowAIChat((v) => !v)}
+            title="AI Chat"
+          >
+            {showAIChat ? <X size={20} /> : <Sparkles size={20} />}
+          </button>
+        </div>
+      )}
 
       {showStateModal && (
         <StateModelModal

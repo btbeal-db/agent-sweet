@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X, Layers, GripVertical, Link, Wrench, Play, Save, ArrowLeft, ArrowRight } from "lucide-react";
+import { X, Layers, GripVertical, Link, Wrench, Play, Save, Sparkles, ArrowLeft, ArrowRight } from "lucide-react";
 
 interface Props {
   onDismiss: () => void;
@@ -20,7 +20,7 @@ interface Step {
   icon: JSX.Element;
   title: string;
   text: string;
-  position: "left-top" | "left-mid" | "center" | "top-right";
+  position: "left-top" | "left-mid" | "center" | "top-right" | "bottom-right";
   highlight: string;
 }
 
@@ -59,6 +59,13 @@ const STEPS: Step[] = [
     text: "Your entire graph — nodes, edges, configs, and state model — is just JSON. Use Save to export it, Load to restore from a file, or Import to paste JSON directly (e.g. from an MLflow run artifact).",
     position: "top-right",
     highlight: ".header-group",
+  },
+  {
+    icon: <Sparkles size={16} />,
+    title: "AI Chat",
+    text: "Click the bubble in the bottom-right to open AI Chat. Describe the agent you want and it will generate a full graph for you — nodes, edges, state model, and configs.",
+    position: "bottom-right",
+    highlight: ".ai-chat-fab",
   },
   {
     icon: <Play size={16} />,

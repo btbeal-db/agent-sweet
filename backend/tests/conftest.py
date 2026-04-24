@@ -1,4 +1,4 @@
-"""Shared fixtures for the Agent Builder test suite."""
+"""Shared fixtures for the AgentSweet test suite."""
 
 from __future__ import annotations
 

@@ -23,7 +23,7 @@ const BRAND_COLORS: Record<string, string> = {
   anthropic: "#D4A27F",
   openai: "#e8eaed",
   mistral: "#F7D046",
-  databricks: "#FF3621",
+  databricks: "#EC4A2F",
   google: "#4285F4",
   qwen: "#7C3AED",
 };

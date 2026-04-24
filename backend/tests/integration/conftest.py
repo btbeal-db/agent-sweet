@@ -4,10 +4,10 @@ Configure via environment variables or use defaults matching demo/setup_demo.py 
 
     TEST_PROFILE=BUILDER              # Databricks CLI profile
     TEST_CATALOG=agentbuilder_...     # UC catalog
-    TEST_SCHEMA=agent_builder         # UC schema
+    TEST_SCHEMA=agent_sweet           # UC schema
     TEST_LLM_ENDPOINT=databricks-claude-sonnet-4-6
     TEST_VS_INDEX=catalog.schema.patient_notes_index
-    TEST_VS_ENDPOINT=agent-builder-vs
+    TEST_VS_ENDPOINT=agent-sweet-vs
     TEST_GENIE_ROOM_ID=01f127...
 """
 
@@ -65,7 +65,7 @@ def catalog() -> str:
 
 @pytest.fixture(scope="session")
 def schema() -> str:
-    return _env("TEST_SCHEMA", "agent_builder")
+    return _env("TEST_SCHEMA", "agent_sweet")
 
 
 @pytest.fixture(scope="session")
@@ -80,7 +80,7 @@ def vs_index_name(catalog, schema) -> str:
 
 @pytest.fixture(scope="session")
 def vs_endpoint_name() -> str:
-    return _env("TEST_VS_ENDPOINT", "agent-builder-vs")
+    return _env("TEST_VS_ENDPOINT", "agent-sweet-vs")
 
 
 @pytest.fixture(scope="session")

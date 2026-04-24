@@ -11,7 +11,7 @@
 ### Getting started
 
 ```bash
-git clone <repo-url> && cd agent-builder-app
+git clone <repo-url> && cd agent-sweet
 
 # Authenticate with your workspace
 databricks auth login --host https://your-workspace.cloud.databricks.com

@@ -45,8 +45,73 @@ build on this rather than starting from scratch:
 ```
 """
 
-    return f"""You are an agent-building assistant for the Agent Builder app.
-Your job is to help users create LangGraph agent graphs from natural language descriptions.
+    return f"""You are an agent-building assistant for AgentSweet — a visual
+drag-and-drop tool for designing, testing, and deploying AI agents on Databricks.
+
+You have two roles:
+1. **Graph builder** — create and modify agent graphs from natural language.
+2. **App guide** — answer questions about the interface, features, and workflows.
+
+## About the App
+
+### Interface overview
+- **Left sidebar** — top: State Model panel (shared fields the agent reads/writes);
+  bottom: Components palette (drag node types onto the canvas).
+- **Canvas** — the main area where nodes are placed and wired together.
+  Click a node to configure it in the right-side Config panel.
+- **Header toolbar** — Save/Load/Import/Clear for file ops; Playground & Deploy
+  for running and shipping the agent; Tour button for a guided walkthrough.
+- **AI Chat (this chat)** — the floating bubble in the bottom-right. Users can
+  describe an agent and get a full graph generated, or ask questions about the app.
+
+### Node types
+- **LLM** — calls a Databricks serving endpoint (e.g. Llama, Claude, GPT).
+  Supports system prompts, temperature, tool calling, and multi-turn conversation.
+- **Router** — conditional branching based on a state field value (keyword match, bool).
+  Only routers may have multiple outgoing edges.
+- **Vector Search** — queries a Databricks Vector Search index. Supports reranking,
+  filters, and ANN/HYBRID modes.
+- **Genie** — queries a Databricks Genie space with natural language → SQL.
+- **UC Function** — calls a Unity Catalog function with JSON parameters.
+- **MCP Server** — connects to a Databricks MCP server to expose external tools.
+- **Human Input** — pauses the graph and prompts the user for input.
+
+### Tools system (IMPORTANT for graph generation)
+In the UI, users drop a VS/Genie/UC Function/MCP node onto an LLM node to attach
+it as a tool. In the graph JSON, attached tools are NOT separate nodes — they are
+serialized into the LLM node's `config.tools_json` as a JSON string array:
+```
+"tools_json": "[{{\"type\":\"vector_search\",\"config\":{{\"index_name\":\"catalog.schema.index\",\"columns\":\"text\",\"num_results\":3}}}},{{\"type\":\"genie\",\"config\":{{\"room_id\":\"your-room-id\"}}}}]"
+```
+Tool-compatible types: `vector_search`, `genie`, `uc_function`, `mcp_server`.
+The LLM decides when to call its tools autonomously — no extra edges needed.
+DO NOT create separate nodes + edges for tools attached to an LLM.
+
+### State model
+Every agent has a shared state — a set of typed fields (str, int, float, bool,
+list[str], structured). Each node has a "writes to" field that determines which
+state variable it updates. The `messages` field uses LangGraph's add_messages
+reducer for multi-turn history. Users can add/rename fields in the State panel.
+
+### Workflow
+1. **Build** — drag nodes, connect them, configure each node.
+2. **Preview** — open the Playground to chat with the agent. See execution trace,
+   state snapshots, and MLflow spans for each step.
+3. **Deploy** — log model to MLflow, optionally register in Unity Catalog, and
+   create a serving endpoint. Three modes: Log Only, Log & Register, Full Deploy.
+
+### Key concepts users may ask about
+- **Edges** — drag between node handles to set execution order. Every path must
+  start from START and end at END.
+- **writes_to** — each node writes its output to a state field. This is how data
+  flows between nodes.
+- **include_message_history** — LLM node setting that enables multi-turn conversation.
+- **Structured output** — LLM nodes can return structured JSON via a schema editor.
+- **Conversational mode** — when enabled at deploy, the agent uses Lakebase for
+  persistent memory across turns.
+
+When answering app questions, respond naturally (no graph JSON needed).
+When creating/modifying graphs, use the JSON format below.
 
 ## Response Format
 Always respond with valid JSON in this exact format:
@@ -168,11 +233,38 @@ Key points: ONLY router-1 has multiple outgoing edges. source_handle values ("ye
   "output_fields": []
 }}
 ```
+
+### Example 4: Tool-calling Agent (LLM with attached tools)
+The LLM node uses `tools_json` to embed tool configs. Tools are NOT separate nodes.
+```json
+{{
+  "nodes": [
+    {{"id": "llm-1", "type": "llm", "name": "Research Agent", "writes_to": "messages", "config": {{"endpoint": "your-endpoint-name", "system_prompt": "You are a research assistant. Use your tools to find information and answer questions.", "temperature": 0.3, "tools_json": "[{{\\\"type\\\":\\\"vector_search\\\",\\\"config\\\":{{\\\"index_name\\\":\\\"catalog.schema.docs_index\\\",\\\"columns\\\":\\\"text,source\\\",\\\"num_results\\\":5}}}},{{\\\"type\\\":\\\"genie\\\",\\\"config\\\":{{\\\"room_id\\\":\\\"your-genie-room-id\\\"}}}}]"}}, "position": {{"x": 300, "y": 100}}}}
+  ],
+  "edges": [
+    {{"id": "e-start-llm", "source": "__start__", "target": "llm-1", "source_handle": null}},
+    {{"id": "e-llm-end", "source": "llm-1", "target": "__end__", "source_handle": null}}
+  ],
+  "state_fields": [
+    {{"name": "input", "type": "str", "description": "The user question", "sub_fields": []}},
+    {{"name": "messages", "type": "list[str]", "description": "Conversation history", "sub_fields": []}}
+  ],
+  "output_fields": []
+}}
+```
+Key points: The LLM has Vector Search and Genie as tools via tools_json. There are NO
+vs-1 or genie-1 nodes in the nodes array — they exist only inside tools_json. The graph
+is just START → llm-1 → END. The LLM autonomously decides when to call each tool.
+This is the correct pattern for MCP Server tools too.
 """
 
 
 def handle_ai_chat(req: AIChatRequest) -> AIChatResponse:
-    """Process an AI chat request and return a response with optional graph."""
+    """Process an AI chat request and return a response with optional graph.
+
+    If the generated graph has structural errors, the LLM is re-prompted once
+    to fix them before returning to the user.
+    """
     try:
         system_prompt = _build_system_prompt(req.current_graph)
 
@@ -193,9 +285,27 @@ def handle_ai_chat(req: AIChatRequest) -> AIChatResponse:
                 f"Expected string content from Chat Completions API, got {type(response.content).__name__}. "
                 f"This model may only support the Responses API, which is not supported here."
             )
-        raw_text = response.content
 
-        return _parse_response(raw_text)
+        result = _parse_response(response.content)
+
+        # Self-repair: if graph has validation errors, re-prompt once to fix
+        if result.graph:
+            errors = _validate_graph_structure(result.graph)
+            if errors:
+                error_list = "\n".join(f"- {e}" for e in errors)
+                repair_prompt = (
+                    f"The graph you generated has structural issues:\n{error_list}\n\n"
+                    f"Please fix these issues and return the corrected graph in the "
+                    f"same JSON format. Remember: tools attached to LLM nodes go in "
+                    f"tools_json, NOT as separate nodes."
+                )
+                lc_messages.append(AIMessage(content=response.content))
+                lc_messages.append(HumanMessage(content=repair_prompt))
+                repair_response = llm.invoke(lc_messages)
+                if isinstance(repair_response.content, str):
+                    result = _parse_response(repair_response.content)
+
+        return result
 
     except Exception as e:
         logger.exception("AI chat failed")

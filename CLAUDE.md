@@ -1,4 +1,4 @@
-# Agent Builder App
+# AgentSweet
 
 Visual drag-and-drop LangGraph agent builder for Databricks. Users design, test, and deploy AI agents without writing code. Built on LangGraph, MLflow, and Databricks infrastructure (Vector Search, Genie, UC Functions, Lakebase).
 
@@ -16,7 +16,7 @@ Data scientists, analysts, and ML practitioners who are comfortable with Databri
 
 ### 1. Setup (one-time, per user)
 
-User creates a workspace folder (e.g. `/Users/{email}/agent-sweet`), then grants the app's service principal "Can Manage" on that folder. The app validates by creating a test MLflow experiment and persists a `.agent-builder-setup.json` config file in the folder.
+User creates a workspace folder (e.g. `/Users/{email}/agent-sweet`), then grants the app's service principal "Can Manage" on that folder. The app validates by creating a test MLflow experiment and persists a `.agent-sweet-setup.json` config file in the folder.
 
 - `GET /api/setup/status` -- checks if setup is complete (reads config from workspace file)
 - `GET /api/setup/info` -- returns SP display name + user email (for the setup wizard UI)

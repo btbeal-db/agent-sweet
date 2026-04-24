@@ -1,7 +1,7 @@
 [project]
-name = "agent-builder-app"
+name = "agent-sweet"
 version = "0.1.0"
-description = "Visual drag-and-drop LangGraph agent builder for Databricks"
+description = "AgentSweet — visual drag-and-drop LangGraph agent builder for Databricks"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "fastapi>=0.104.0",

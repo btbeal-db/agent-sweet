@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provision demo resources for the Agent Builder app.
+"""Provision demo resources for AgentSweet.
 
 Creates tables, a Vector Search index, and a Genie space in the target
 workspace so the app has something to demo against.  Safe to re-run —
@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
-VS_ENDPOINT_NAME = "agent-builder-vs"
+VS_ENDPOINT_NAME = "agent-sweet-vs"
 EMBEDDING_ENDPOINT = "databricks-gte-large-en"
 
 
@@ -334,10 +334,10 @@ def teardown(w: WorkspaceClient, wh_id: str, catalog: str, schema: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Set up Agent Builder demo resources")
+    parser = argparse.ArgumentParser(description="Set up AgentSweet demo resources")
     parser.add_argument("--profile", required=True, help="Databricks CLI profile")
     parser.add_argument("--catalog", default=None, help="UC catalog (auto-detected if not set)")
-    parser.add_argument("--schema", default="agent_builder", help="UC schema (default: agent_builder)")
+    parser.add_argument("--schema", default="agent_sweet", help="UC schema (default: agent_sweet)")
     parser.add_argument("--teardown", action="store_true", help="Remove all demo resources")
     args = parser.parse_args()
 
@@ -404,7 +404,7 @@ def main():
     if genie_id:
         log.info("  Genie space ID:       %s", genie_id)
     log.info("")
-    log.info("Agent Builder config values:")
+    log.info("AgentSweet config values:")
     log.info("  LLM endpoint:         databricks-claude-sonnet-4-6  (or any FMAPI endpoint)")
     log.info("  VS index name:        %s", index_name)
     log.info("  VS endpoint name:     %s", VS_ENDPOINT_NAME)

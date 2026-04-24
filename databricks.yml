@@ -1,4 +1,4 @@
-# Databricks Asset Bundles configuration for Agent Builder
+# Databricks Asset Bundles configuration for AgentSweet
 #
 # Deploy workflow:
 #   1. Build the frontend:  cd frontend && npm run build
@@ -11,13 +11,13 @@
 # workspace file (written by the SP which has Can Manage on the folder).
 
 bundle:
-  name: agent-builder-app
+  name: agent-sweet
 
 resources:
   apps:
-    agent_builder:
-      name: agent-builder-${bundle.target}
-      description: "Visual drag-and-drop LangGraph agent builder for Databricks"
+    agent_sweet:
+      name: agent-sweet-${bundle.target}
+      description: "AgentSweet — visual drag-and-drop LangGraph agent builder for Databricks"
       source_code_path: .
       config:
         command:

@@ -115,7 +115,6 @@ export default function AIChatDropdown({
 
   return (
     <div className="ai-chat-dropdown">
-      <div className="ai-chat-caret" />
       <div className="ai-chat-header">AI Chat</div>
 
       <div className="ai-chat-messages">

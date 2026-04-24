@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { ArrowUp, X, Trash2 } from "lucide-react";
 import { previewGraph, validateGraph } from "../api";
 import type { ChatMessage, GraphDef, StateFieldDef } from "../types";
 import SimpleMarkdown from "./SimpleMarkdown";
@@ -188,13 +189,13 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
     <div className="chat-overlay" onClick={onClose}>
       <div className="chat-drawer" onClick={(e) => e.stopPropagation()}>
         <div className="chat-header">
-          <h2>Chat Playground</h2>
+          <h2>Playground</h2>
           <div className="chat-header-actions">
-            <button className="btn btn-sm" onClick={clearConversation}>
-              Clear
+            <button className="chat-icon-btn" onClick={clearConversation} title="Clear conversation">
+              <Trash2 size={14} />
             </button>
-            <button className="btn btn-sm" onClick={onClose}>
-              &times;
+            <button className="chat-icon-btn" onClick={onClose} title="Close">
+              <X size={16} />
             </button>
           </div>
         </div>
@@ -294,21 +295,25 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
         </div>
 
         <div className="chat-input-bar">
-          <input
-            type="text"
-            value={input}
-            placeholder={pendingInterrupt ? "Type your response..." : "Type a message..."}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSend()}
-            disabled={isLoading}
-          />
-          <button
-            className="btn btn-primary"
-            onClick={handleSend}
-            disabled={isLoading || !input.trim()}
-          >
-            {isLoading ? "..." : pendingInterrupt ? "Reply" : "Send"}
-          </button>
+          <div className="chat-input-pill">
+            <input
+              type="text"
+              value={input}
+              placeholder={pendingInterrupt ? "Type your response..." : "Message your agent..."}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSend()}
+              disabled={isLoading}
+              autoFocus
+            />
+            <button
+              className="chat-send-btn"
+              onClick={handleSend}
+              disabled={isLoading || !input.trim()}
+              title={pendingInterrupt ? "Reply" : "Send"}
+            >
+              <ArrowUp size={16} />
+            </button>
+          </div>
         </div>
       </div>
     </div>

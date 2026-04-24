@@ -1,11 +1,11 @@
 ---
 name: integration-testing
-description: Test agent graph changes against a deployed Agent Builder app. Use when verifying preview, deploy, or MCP tool behavior via the app's REST API. Triggers on "test the app", "integration test", "try this graph", "preview this", "deploy this model".
+description: Test agent graph changes against a deployed AgentSweet app. Use when verifying preview, deploy, or MCP tool behavior via the app's REST API. Triggers on "test the app", "integration test", "try this graph", "preview this", "deploy this model".
 ---
 
 # Integration Testing via App API
 
-Test agent graph changes by calling the deployed Agent Builder app's REST API directly. The app is deployed from a git branch — push your changes, wait for the app to pick them up, then hit the API.
+Test agent graph changes by calling the deployed AgentSweet app's REST API directly. The app is deployed from a git branch — push your changes, wait for the app to pick them up, then hit the API.
 
 ## Prerequisites
 
