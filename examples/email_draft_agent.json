@@ -6,12 +6,11 @@
       "name": "Email Drafter",
       "writes_to": "draft_email",
       "config": {
-        "system_prompt": "You are an expert email writer. Draft a professional email based on the user's request.\n\nThe user's request: {input}\n\nIf revision notes are provided below, carefully incorporate that feedback to improve the previous draft. If no revision notes are provided, write a fresh draft.\n\nPrevious draft:\n{draft_email}\n\nRevision notes:\n{revision_notes}\n\nRespond with ONLY the email content — a Subject line followed by the body. No preamble, no commentary.",
+        "system_prompt": "You are an expert email writer. Draft a professional email based on the user's request.\n\nThe user's request: {input}\n\nIf revision notes are provided below, carefully incorporate that feedback to improve the previous draft. If no revision notes are provided, write a fresh draft.\n\nPrevious draft:\n{draft_email}\n\nRevision notes:\n{revision_notes}\n\nRespond with ONLY the email content \u2014 a Subject line followed by the body. No preamble, no commentary.",
         "temperature": 0.7,
-        "include_state_variables": "false",
-        "include_message_history": "false",
         "last_n_messages": 0,
-        "endpoint": "databricks-claude-sonnet-4-6"
+        "endpoint": "databricks-claude-sonnet-4-6",
+        "conversational": "false"
       },
       "position": {
         "x": -310.615631339706,

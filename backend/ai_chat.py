@@ -105,7 +105,8 @@ reducer for multi-turn history. Users can add/rename fields in the State panel.
   start from START and end at END.
 - **writes_to** — each node writes its output to a state field. This is how data
   flows between nodes.
-- **include_message_history** — LLM node setting that enables multi-turn conversation.
+- **conversational** — LLM node setting that enables multi-turn conversation
+  (passes prior user/assistant messages to the LLM each turn).
 - **Structured output** — LLM nodes can return structured JSON via a schema editor.
 - **Conversational mode** — when enabled at deploy, the agent uses Lakebase for
   persistent memory across turns.

@@ -6,6 +6,7 @@ import RouteEditor, { type Route } from "./RouteEditor";
 import SchemaEditor, { type SchemaField } from "./SchemaEditor";
 import InlineFieldCreator from "./InlineFieldCreator";
 import SearchableSelect from "./SearchableSelect";
+import TemplatedTextarea from "./TemplatedTextarea";
 
 interface Props {
   selectedNodeId: string;
@@ -232,18 +233,12 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
             </label>
 
             {field.field_type === "textarea" ? (
-              <>
-                <textarea
-                  value={val}
-                  placeholder={field.placeholder}
-                  onChange={(e) => updateConfig(field.name, e.target.value)}
-                />
-                {field.name === "system_prompt" && stateVariables.length > 0 && (
-                  <span className="config-hint">
-                    Use {"{field_name}"} to reference state: {stateVariables.map(v => `{${v}}`).join(", ")}
-                  </span>
-                )}
-              </>
+              <TemplatedTextarea
+                value={val}
+                placeholder={field.placeholder}
+                variables={field.name === "system_prompt" ? stateVariables : []}
+                onChange={(v) => updateConfig(field.name, v)}
+              />
             ) : field.field_type === "select" && field.options ? (
               <select
                 value={val}
