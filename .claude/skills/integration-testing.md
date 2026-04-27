@@ -37,10 +37,10 @@ Returns metadata for every registered node type (LLM, Router, Vector Search, Gen
 
 ### Preview a graph
 
-`POST /api/graph/preview` — compiles and runs the graph in-memory. This is the fastest way to test changes.
+`POST /api/graph/preview` — compiles and runs the graph in-memory, mirroring the deployed agent's `predict_stream`. The response is an **SSE stream** of token-level deltas plus a single terminal event. Use `-N` with `curl` so it doesn't buffer.
 
 ```bash
-curl -s -X POST "$APP_URL/api/graph/preview" \
+curl -sN -X POST "$APP_URL/api/graph/preview" \
   -H "Content-Type: application/json" \
   -d '{
     "graph": { ...GraphDef JSON... },
@@ -59,18 +59,27 @@ curl -s -X POST "$APP_URL/api/graph/preview" \
 | `resume_value` | No | Resume from a human-in-the-loop interrupt |
 | `pat` | No | PAT for data-access nodes (VS, Genie, MCP, UC Functions) |
 
-**Response** (`PreviewResponse`):
+**Response** — `Content-Type: text/event-stream`. Each line of interest looks like `data: {...}\n\n`. Event shapes:
 
-| Field | Description |
-|-------|-------------|
-| `success` | Whether the graph executed without error |
-| `output` | The agent's text output |
-| `error` | Error message if `success` is false |
-| `execution_trace` | Message history from this turn |
-| `state` | Full state snapshot after execution |
-| `thread_id` | Thread ID for follow-up turns |
-| `interrupt` | Human-in-the-loop prompt if the graph paused |
-| `mlflow_trace` | MLflow span data for debugging |
+| `type` | Payload | When |
+|--------|---------|------|
+| `delta` | `{text}` | Per LLM token. Concatenate to build the streamed reply. |
+| `done` | `{thread_id, output, execution_trace, state, mlflow_trace}` | Graph completed. Terminal. |
+| `interrupt` | `{thread_id, prompt, execution_trace, state, mlflow_trace}` | Graph paused at a HumanInput node. Terminal — resume by re-posting with the same `thread_id` and `resume_value`. |
+| `error` | `{message}` | Execution failed. Terminal. |
+
+To test from a script, drain the stream and look at the terminal event:
+
+```bash
+# Capture the full SSE stream and pull out the last data: line
+TERMINAL=$(curl -sN -X POST "$APP_URL/api/graph/preview" \
+  -H "Content-Type: application/json" \
+  -d '{...}' \
+  | grep '^data: ' | tail -1 | cut -c7-)
+echo "$TERMINAL" | jq '.type, .output'
+```
+
+For multi-turn or resume flows, parse `thread_id` out of the terminal event and pass it back on the next request. When the terminal event is `done`, prefer the concatenated `delta.text` content as the assistant reply (that's what users saw streaming) and fall back to `done.output` only when nothing streamed (structured output, non-LLM graphs).
 
 ### Deploy a model
 
@@ -188,7 +197,7 @@ Attach tools via `tools_json` in the LLM node's config:
     "endpoint": "databricks-meta-llama-3-3-70b-instruct",
     "system_prompt": "You are a helpful assistant with access to tools.",
     "temperature": 0.7,
-    "include_message_history": "true",
+    "conversational": "true",
     "tools_json": "[{\"type\": \"mcp_server\", \"config\": {\"server_url\": \"https://<host>/api/2.0/mcp/functions/catalog/schema\"}}]"
   }
 }
@@ -198,7 +207,7 @@ Attach tools via `tools_json` in the LLM node's config:
 
 | Type | Key config fields |
 |------|------------------|
-| `llm` | `endpoint`, `system_prompt`, `temperature`, `tools_json`, `include_message_history` |
+| `llm` | `endpoint`, `system_prompt`, `temperature`, `tools_json`, `conversational` |
 | `router` | `evaluates` (state field), `routes_json` (array of `{label, match_value}`) |
 | `vector_search` | `index_name`, `endpoint_name`, `columns`, `num_results`, `query_from` |
 | `genie` | `room_id`, `query_from` |

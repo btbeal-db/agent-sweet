@@ -356,6 +356,11 @@ class AgentGraphModel(ResponsesAgent):
         streamed_parts: list[str] = []
         final_state: dict = {}
 
+        # Track iteration boundaries: a non-chunk message between streaming
+        # runs (e.g. iter-1's tool-call AIMessage, then a ToolMessage)
+        # signals that the next chunk starts a new LLM iteration. Without
+        # a separator iter-2's tokens get glued onto iter-1's text.
+        boundary_pending = False
         for chunk in self.compiled_graph.stream(
             invoke_input, config=config,
             stream_mode=["messages", "updates"],
@@ -370,12 +375,17 @@ class AgentGraphModel(ResponsesAgent):
                 # skip plain AIMessage instances because LangGraph
                 # yields the full completed message at the end of each
                 # node, which would duplicate the already-streamed text.
-                if type(msg) is AIMessageChunk:
-                    if msg.content and not getattr(msg, "tool_calls", None):
-                        streamed_parts.append(str(msg.content))
-                        yield ResponsesAgentStreamEvent(
-                            **create_text_delta(str(msg.content), msg_id)
-                        )
+                if type(msg) is AIMessageChunk and msg.content and not getattr(msg, "tool_calls", None):
+                    text = str(msg.content)
+                    if boundary_pending:
+                        text = "\n\n" + text
+                        boundary_pending = False
+                    streamed_parts.append(text)
+                    yield ResponsesAgentStreamEvent(
+                        **create_text_delta(text, msg_id)
+                    )
+                elif streamed_parts:
+                    boundary_pending = True
 
             elif mode == "updates":
                 # Accumulate state from node updates

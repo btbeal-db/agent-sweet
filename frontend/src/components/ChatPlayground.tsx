@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { ArrowUp, X, Trash2 } from "lucide-react";
-import { previewGraph, validateGraph } from "../api";
+import { streamPreview, validateGraph } from "../api";
 import type { ChatMessage, GraphDef, StateFieldDef } from "../types";
 import SimpleMarkdown from "./SimpleMarkdown";
 
@@ -11,6 +11,42 @@ interface Props {
 }
 
 let msgId = 0;
+
+/** Rotating verbs shown when the agent is mid-pause (waiting on a tool, an
+ *  initial response, etc.). Pure flavor — there's no real distinction between
+ *  them, but variety makes a long pause feel less like a hang. */
+const THINKING_VERBS = [
+  // cognitive
+  "thinking", "pondering", "musing", "mulling", "ruminating", "reflecting",
+  "contemplating", "cogitating", "considering", "deliberating", "weighing",
+  "evaluating", "analyzing", "examining", "investigating", "discerning",
+  "reasoning", "theorizing", "hypothesizing", "speculating", "conjecturing",
+  "philosophizing", "meditating", "ideating", "brainstorming", "processing",
+  "computing", "ratiocinating",
+  // crafting
+  "brewing", "cooking", "simmering", "marinating", "fermenting", "distilling",
+  "refining", "polishing", "honing", "crafting", "forging", "weaving",
+  "sculpting", "conjuring", "concocting", "whisking", "kneading", "composing",
+  "orchestrating", "harmonizing",
+  // searching
+  "searching", "hunting", "foraging", "scouring", "sleuthing", "digging",
+  "prospecting", "divining", "exploring", "probing", "sifting", "untangling",
+  "unraveling", "decoding", "parsing", "spelunking",
+  // playful
+  "noodling", "doodling", "tinkering", "puttering", "fiddling", "finagling",
+  "futzing", "dabbling", "woolgathering", "daydreaming", "caboodling",
+  "gallivanting", "hemming", "hawing", "palavering", "scheming", "plotting",
+  "moseying", "meandering",
+  // growth
+  "percolating", "germinating", "sprouting",
+  // other
+  "synthesizing", "assembling", "churning", "riffing", "jamming",
+];
+const pickVerb = () => THINKING_VERBS[Math.floor(Math.random() * THINKING_VERBS.length)];
+
+const THINKING_INITIAL_MS = 0;   // show immediately on send
+const THINKING_PAUSE_MS = 400;   // wait this long after a delta before re-showing
+const VERB_ROTATE_MS = 1500;
 
 /**
  * Run local checks on the graph before hitting the backend.
@@ -120,7 +156,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
       id: placeholderId,
       role: "assistant",
       content: "",
-      loading: true,
+      thinking: pickVerb(),
     };
 
     setMessages((prev) => [...prev, userMsg, placeholder]);
@@ -130,8 +166,26 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
 
     const updatePlaceholder = (updates: Partial<ChatMessage>) => {
       setMessages((prev) =>
-        prev.map((m) => (m.id === placeholderId ? { ...m, loading: false, ...updates } : m))
+        prev.map((m) => (m.id === placeholderId ? { ...m, ...updates } : m))
       );
+    };
+
+    // Thinking-indicator timers, scoped to this send. Re-armed after every
+    // delta; cleared on terminal events or errors.
+    let thinkingTimeout: number | null = null;
+    let thinkingInterval: number | null = null;
+    const stopThinking = () => {
+      if (thinkingTimeout !== null) { clearTimeout(thinkingTimeout); thinkingTimeout = null; }
+      if (thinkingInterval !== null) { clearInterval(thinkingInterval); thinkingInterval = null; }
+    };
+    const startThinking = (delay: number) => {
+      stopThinking();
+      thinkingTimeout = window.setTimeout(() => {
+        updatePlaceholder({ thinking: pickVerb() });
+        thinkingInterval = window.setInterval(() => {
+          updatePlaceholder({ thinking: pickVerb() });
+        }, VERB_ROTATE_MS);
+      }, delay);
     };
 
     try {
@@ -147,40 +201,65 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
         return;
       }
 
-      // Branch: resume from interrupt vs. normal invocation
-      const result = pendingInterrupt
-        ? await previewGraph(graph, "", threadId, userInput)
-        : await previewGraph(graph, userInput, threadId);
+      // Stream: append deltas to the placeholder live; the terminal event
+      // (done | interrupt | error) finalizes the message and sets the
+      // execution / mlflow trace at once.
+      let streamedText = "";
+      const messageInput = pendingInterrupt ? "" : userInput;
+      const resumeValue = pendingInterrupt ? userInput : null;
 
-      if (!result.success) {
-        updatePlaceholder({ content: "", error: result.error ?? "The agent returned an error." });
-        setPendingInterrupt(false);
-      } else if (result.interrupt) {
-        // Graph paused at a HumanInput node — show the prompt
-        setThreadId(result.thread_id);
-        setPendingInterrupt(true);
-        updatePlaceholder({
-          content: result.interrupt,
-        });
-      } else {
-        // Normal completion
-        setThreadId(result.thread_id);
-        setPendingInterrupt(false);
-        updatePlaceholder({
-          content: result.output || "(empty)",
-          execution_trace: result.execution_trace,
-          mlflow_trace: result.mlflow_trace,
-        });
-      }
+      // Start the thinking indicator immediately — we expect the first delta
+      // to take a moment, and any pause >400ms after a delta will re-arm it.
+      startThinking(THINKING_INITIAL_MS);
+
+      await streamPreview(graph, messageInput, threadId, resumeValue, null, (event) => {
+        if (event.type === "delta") {
+          stopThinking();
+          streamedText += event.text;
+          updatePlaceholder({ content: streamedText, thinking: null });
+          startThinking(THINKING_PAUSE_MS);
+        } else if (event.type === "done") {
+          stopThinking();
+          setThreadId(event.thread_id);
+          setPendingInterrupt(false);
+          // Prefer the streamed text — it's what the user actually saw and
+          // matches the deployed agent's predict_stream UX. Fall back to the
+          // computed output for non-streaming graphs (structured output,
+          // pure non-LLM pipelines).
+          updatePlaceholder({
+            content: streamedText || event.output || "(empty)",
+            thinking: null,
+            execution_trace: event.execution_trace,
+            mlflow_trace: event.mlflow_trace,
+          });
+        } else if (event.type === "interrupt") {
+          stopThinking();
+          setThreadId(event.thread_id);
+          setPendingInterrupt(true);
+          updatePlaceholder({
+            content: event.prompt,
+            thinking: null,
+            execution_trace: event.execution_trace,
+            mlflow_trace: event.mlflow_trace,
+          });
+        } else if (event.type === "error") {
+          stopThinking();
+          setPendingInterrupt(false);
+          updatePlaceholder({ content: "", thinking: null, error: event.message });
+        }
+      });
     } catch (err) {
+      stopThinking();
       const message =
         err instanceof Error ? err.message : String(err);
       updatePlaceholder({
         content: "",
+        thinking: null,
         error: `Something went wrong: ${message}`,
       });
       setPendingInterrupt(false);
     } finally {
+      stopThinking();
       setIsLoading(false);
     }
   }, [input, graphGetter, stateFieldsRef, isLoading, addErrorMessage, threadId, pendingInterrupt]);
@@ -209,85 +288,86 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
 
           {messages.map((msg) => (
             <div key={msg.id} className={`chat-msg chat-msg-${msg.role}`}>
-              {msg.loading ? (
-                <div className="chat-msg-loading">Thinking...</div>
-              ) : (
-                <>
-                  {msg.content && (
-                    <div className="chat-msg-content">
-                      {(() => {
-                        try {
-                          const parsed = JSON.parse(msg.content);
-                          if (typeof parsed === "object" && parsed !== null) {
-                            return <pre className="chat-json-output">{JSON.stringify(parsed, null, 2)}</pre>;
-                          }
-                        } catch { /* not JSON, render as markdown */ }
-                        return <SimpleMarkdown content={msg.content} />;
-                      })()}
-                    </div>
-                  )}
+              {msg.content && (
+                <div className="chat-msg-content">
+                  {(() => {
+                    try {
+                      const parsed = JSON.parse(msg.content);
+                      if (typeof parsed === "object" && parsed !== null) {
+                        return <pre className="chat-json-output">{JSON.stringify(parsed, null, 2)}</pre>;
+                      }
+                    } catch { /* not JSON, render as markdown */ }
+                    return <SimpleMarkdown content={msg.content} />;
+                  })()}
+                </div>
+              )}
 
-                  {msg.error && (
-                    <pre className="result-error">{msg.error}</pre>
-                  )}
+              {msg.thinking && (
+                <div className="chat-msg-thinking">
+                  <span className="chat-msg-thinking-dot" />
+                  {msg.thinking}…
+                </div>
+              )}
 
-                  {msg.execution_trace && msg.execution_trace.length > 0 && (
-                    <details className="result-details" onToggle={scrollOnToggle}>
-                      <summary>Trace ({msg.execution_trace.length} steps)</summary>
-                      <div className="trace">
-                        {msg.execution_trace.map((step, i) => (
-                          <div key={i} className="trace-step">
-                            <span className="trace-badge">{step.node ?? step.role}</span>
-                            <span className="trace-content">{step.content}</span>
-                          </div>
-                        ))}
+              {msg.error && (
+                <pre className="result-error">{msg.error}</pre>
+              )}
+
+              {msg.execution_trace && msg.execution_trace.length > 0 && (
+                <details className="result-details" onToggle={scrollOnToggle}>
+                  <summary>Trace ({msg.execution_trace.length} steps)</summary>
+                  <div className="trace">
+                    {msg.execution_trace.map((step, i) => (
+                      <div key={i} className="trace-step">
+                        <span className="trace-badge">{step.node ?? step.role}</span>
+                        <span className="trace-content">{step.content}</span>
                       </div>
-                    </details>
-                  )}
+                    ))}
+                  </div>
+                </details>
+              )}
 
-                  {msg.mlflow_trace && msg.mlflow_trace.length > 0 && (
-                    <details className="result-details" onToggle={scrollOnToggle}>
-                      <summary>MLflow Trace ({msg.mlflow_trace.length} spans)</summary>
-                      <div className="mlflow-trace">
-                        {msg.mlflow_trace.map((span, i) => (
-                          <details key={i} className="mlflow-span" onToggle={scrollOnToggle}>
-                            <summary className="mlflow-span-header">
-                              <span className={`mlflow-span-status mlflow-span-status-${span.status?.toLowerCase().replace(/[^a-z]/g, "")}`} />
-                              <span className="mlflow-span-name">{span.name}</span>
-                              {span.end_time_ms > 0 && span.start_time_ms > 0 && (
-                                <span className="mlflow-span-duration">
-                                  {span.end_time_ms - span.start_time_ms}ms
-                                </span>
-                              )}
-                            </summary>
-                            <div className="mlflow-span-body">
-                              {span.inputs != null && (
-                                <div className="mlflow-span-section">
-                                  <span className="mlflow-span-label">Inputs</span>
-                                  <pre className="mlflow-span-data">
-                                    {String(typeof span.inputs === "string"
-                                      ? span.inputs
-                                      : JSON.stringify(span.inputs, null, 2))}
-                                  </pre>
-                                </div>
-                              )}
-                              {span.outputs != null && (
-                                <div className="mlflow-span-section">
-                                  <span className="mlflow-span-label">Outputs</span>
-                                  <pre className="mlflow-span-data">
-                                    {String(typeof span.outputs === "string"
-                                      ? span.outputs
-                                      : JSON.stringify(span.outputs, null, 2))}
-                                  </pre>
-                                </div>
-                              )}
+              {msg.mlflow_trace && msg.mlflow_trace.length > 0 && (
+                <details className="result-details" onToggle={scrollOnToggle}>
+                  <summary>MLflow Trace ({msg.mlflow_trace.length} spans)</summary>
+                  <div className="mlflow-trace">
+                    {msg.mlflow_trace.map((span, i) => (
+                      <details key={i} className="mlflow-span" onToggle={scrollOnToggle}>
+                        <summary className="mlflow-span-header">
+                          <span className={`mlflow-span-status mlflow-span-status-${span.status?.toLowerCase().replace(/[^a-z]/g, "")}`} />
+                          <span className="mlflow-span-name">{span.name}</span>
+                          {span.end_time_ms > 0 && span.start_time_ms > 0 && (
+                            <span className="mlflow-span-duration">
+                              {span.end_time_ms - span.start_time_ms}ms
+                            </span>
+                          )}
+                        </summary>
+                        <div className="mlflow-span-body">
+                          {span.inputs != null && (
+                            <div className="mlflow-span-section">
+                              <span className="mlflow-span-label">Inputs</span>
+                              <pre className="mlflow-span-data">
+                                {String(typeof span.inputs === "string"
+                                  ? span.inputs
+                                  : JSON.stringify(span.inputs, null, 2))}
+                              </pre>
                             </div>
-                          </details>
-                        ))}
-                      </div>
-                    </details>
-                  )}
-                </>
+                          )}
+                          {span.outputs != null && (
+                            <div className="mlflow-span-section">
+                              <span className="mlflow-span-label">Outputs</span>
+                              <pre className="mlflow-span-data">
+                                {String(typeof span.outputs === "string"
+                                  ? span.outputs
+                                  : JSON.stringify(span.outputs, null, 2))}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      </details>
+                    ))}
+                  </div>
+                </details>
               )}
             </div>
           ))}

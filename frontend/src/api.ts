@@ -1,7 +1,7 @@
 import type {
   NodeTypeMetadata,
   GraphDef,
-  PreviewResponse,
+  PreviewEvent,
   DeployRequest,
   DeployEvent,
   SetupStatusResponse,
@@ -27,13 +27,17 @@ export async function validateGraph(graph: GraphDef) {
   return res.json() as Promise<{ valid: boolean; errors: string[] }>;
 }
 
-export async function previewGraph(
+/** Stream a graph preview as an SSE feed. The callback fires for every event
+ *  (token deltas + the terminal ``done`` / ``interrupt`` / ``error``). The
+ *  promise resolves when the stream closes. */
+export async function streamPreview(
   graph: GraphDef,
   inputMessage: string,
-  threadId?: string | null,
-  resumeValue?: string | null,
-  pat?: string | null,
-): Promise<PreviewResponse> {
+  threadId: string | null | undefined,
+  resumeValue: string | null | undefined,
+  pat: string | null | undefined,
+  onEvent: (event: PreviewEvent) => void,
+): Promise<void> {
   const body: Record<string, unknown> = {
     graph,
     input_message: inputMessage,
@@ -41,12 +45,38 @@ export async function previewGraph(
     resume_value: resumeValue ?? null,
   };
   if (pat) body.pat = pat;
+
   const res = await fetch(`${BASE}/graph/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return res.json();
+  if (!res.ok) throw new Error(`Preview failed: ${res.status} ${res.statusText}`);
+
+  await consumeSSE(res, (data) => onEvent(JSON.parse(data) as PreviewEvent));
+}
+
+/** Read an SSE response body, invoking ``onData`` once per ``data:`` line. */
+async function consumeSSE(res: Response, onData: (data: string) => void): Promise<void> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n\n");
+    buffer = lines.pop()!;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) continue;
+      try {
+        onData(trimmed.slice(6));
+      } catch {
+        // skip malformed events
+      }
+    }
+  }
 }
 
 
@@ -81,33 +111,8 @@ export async function deployGraphStream(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
-
-  if (!res.ok) {
-    throw new Error(`Deploy request failed: ${res.status} ${res.statusText}`);
-  }
-
-  const reader = res.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const lines = buffer.split("\n\n");
-    buffer = lines.pop()!;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-      try {
-        onEvent(JSON.parse(trimmed.slice(6)) as DeployEvent);
-      } catch {
-        // skip malformed events
-      }
-    }
-  }
+  if (!res.ok) throw new Error(`Deploy request failed: ${res.status} ${res.statusText}`);
+  await consumeSSE(res, (data) => onEvent(JSON.parse(data) as DeployEvent));
 }
 
 // ── Models listing ─────────────────────────────────────────────────────────

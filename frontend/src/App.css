@@ -2926,6 +2926,25 @@ h4.md-header { font-size: 0.82em; }
   50% { opacity: 1; }
 }
 
+.chat-msg-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.chat-msg-thinking-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 999px;
+  background: currentColor;
+  display: inline-block;
+}
+
 .chat-msg-assistant .result-details {
   margin-top: 0.5rem;
 }

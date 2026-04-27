@@ -140,6 +140,47 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
     return builder.compile(checkpointer=checkpointer)
 
 
+def prepare_invocation(
+    compiled,
+    graph_def: GraphDef,
+    input_message: str,
+    thread_id: str | None,
+    resume_value: str | None,
+) -> tuple[Any, dict[str, Any]]:
+    """Build the (input, config) pair for ``compiled.invoke`` / ``compiled.stream``.
+
+    Continuations on an existing thread send only the new user message so the
+    checkpointer's prior state survives; fresh threads send the full initial
+    state. Resumes wrap the value in ``Command(resume=...)``.
+    """
+    config: dict[str, Any] = {}
+    if thread_id is not None:
+        config["configurable"] = {"thread_id": thread_id}
+
+    if resume_value is not None:
+        return Command(resume=resume_value), config
+
+    has_history = False
+    if thread_id:
+        existing = compiled.get_state(config)
+        if existing and existing.values:
+            has_history = True
+
+    if has_history:
+        return (
+            {
+                "input": input_message,
+                "messages": [{"role": "user", "content": input_message}],
+            },
+            config,
+        )
+
+    initial_state: dict[str, Any] = {f.name: "" for f in graph_def.state_fields}
+    initial_state["input"] = input_message
+    initial_state["messages"] = [{"role": "user", "content": input_message}]
+    return initial_state, config
+
+
 def run_graph(
     graph_def: GraphDef,
     input_message: str,
@@ -157,43 +198,10 @@ def run_graph(
     conversation history is preserved by the checkpointer.
     """
     compiled = build_graph(graph_def, checkpointer=checkpointer)
-
-    config: dict[str, Any] = {}
-    if thread_id is not None:
-        config["configurable"] = {"thread_id": thread_id}
-
-    if resume_value is not None:
-        result = compiled.invoke(Command(resume=resume_value), config=config)
-    else:
-        # Check if this thread already has conversation history
-        has_history = False
-        if checkpointer and thread_id:
-            existing = compiled.get_state(config)
-            if existing and existing.values:
-                has_history = True
-
-        if has_history:
-            # Continuation: send only the new user message; the checkpointer
-            # restores prior state and add_messages appends this message.
-            result = compiled.invoke(
-                {
-                    "input": input_message,
-                    "messages": [{"role": "user", "content": input_message}],
-                },
-                config=config,
-            )
-        else:
-            # First message: full initial state
-            initial_state: dict[str, Any] = {
-                f.name: "" for f in graph_def.state_fields
-            }
-            initial_state["input"] = input_message
-            initial_state["messages"] = [
-                {"role": "user", "content": input_message},
-            ]
-            result = compiled.invoke(initial_state, config=config if config else None)
-
-    return result
+    invoke_input, config = prepare_invocation(
+        compiled, graph_def, input_message, thread_id, resume_value
+    )
+    return compiled.invoke(invoke_input, config=config or None)
 
 
 def _resolve_field(result: dict[str, Any], field_path: str) -> tuple[str, Any]:
