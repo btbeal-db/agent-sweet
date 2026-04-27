@@ -47,7 +47,7 @@ from .auth import (
     create_pat_client,
 )
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
-from .graph_builder import build_graph, filter_output, prepare_invocation, run_graph
+from .graph_builder import build_graph, filter_output, prepare_invocation
 from .tools import discover_mcp_tool_metadata, managed_mcp_url_for_tool
 from .nodes import get_all_metadata
 from .lakebase import LakebaseConfig, provision_lakebase, resolve_lakebase
