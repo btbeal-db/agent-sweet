@@ -1,8 +1,9 @@
 """Unit tests for LLM node helper functions — pure logic, no LLM calls."""
 
+import json
+
 from backend.nodes.llm_node import (
     _resolve_templates,
-    _build_state_context,
     _build_schema_instruction,
     build_pydantic_model,
 )
@@ -29,23 +30,15 @@ class TestResolveTemplates:
         result = _resolve_templates("Hello {missing}!", {"other": "val"})
         assert result == "Hello {missing}!"
 
+    def test_dotted_path_into_structured_field(self):
+        verdict = json.dumps({"is_funny": False, "reasoning": "groan"})
+        result = _resolve_templates("Critique: {verdict.reasoning}", {"verdict": verdict})
+        assert result == "Critique: groan"
 
-class TestBuildStateContext:
-    def test_formats_fields(self):
-        state = {"input": "hello", "context": "some docs", "output": ""}
-        result = _build_state_context(state)
-        assert "input: hello" in result
-        assert "context: some docs" in result
-        assert "output" not in result  # empty fields excluded
-
-    def test_skips_messages(self):
-        state = {"input": "hello", "messages": [{"role": "user"}]}
-        result = _build_state_context(state)
-        assert "messages" not in result
-
-    def test_empty_state(self):
-        result = _build_state_context({})
-        assert result == ""
+    def test_dotted_path_unknown_subfield(self):
+        verdict = json.dumps({"is_funny": True})
+        result = _resolve_templates("{verdict.missing}", {"verdict": verdict})
+        assert result == "{verdict.missing}"
 
 
 class TestBuildSchemaInstruction:

@@ -76,12 +76,29 @@ curl -s -X POST "$APP_URL/api/graph/preview" \
 
 `POST /api/graph/deploy` — logs the graph as an MLflow model. Streams SSE events for progress.
 
+**IMPORTANT — experiment_path composition.** The setup wizard stores a
+workspace *folder* (e.g. `/Users/you@company.com/agent-sweet`). You cannot
+deploy to that folder directly: a Databricks workspace path is either a folder
+or an experiment, never both. You must pass a *sub-path* inside that folder as
+`experiment_path`. The UI enforces this by prepending the setup folder and
+only letting the user type the suffix. When calling the API directly, do the
+same:
+
+```
+experiment_path = "{setup_folder}/{unique_experiment_name}"
+# e.g. "/Users/you@company.com/agent-sweet/ci_weather_agent"
+```
+
+Use a name unique per test (model name slug, git SHA, timestamp, etc.) so
+runs don't collide. If you pass just the setup folder, the deploy returns a
+clear error pointing at the fix.
+
 ```bash
 curl -s -X POST "$APP_URL/api/graph/deploy" \
   -H "Content-Type: application/json" \
   -d '{
     "graph": { ...GraphDef JSON... },
-    "experiment_path": "/Users/you@company.com/agent-sweet",
+    "experiment_path": "/Users/you@company.com/agent-sweet/ci_weather_agent",
     "deploy_mode": "log_only",
     "auth_mode": "obo",
     "pat": "dapi..."
@@ -108,7 +125,7 @@ curl -s -X POST "$APP_URL/api/graph/deploy" \
 | Field | Description |
 |-------|-------------|
 | `model_name` | UC path: `catalog.schema.model_name` (required for register/full) |
-| `experiment_path` | MLflow experiment path (required) |
+| `experiment_path` | MLflow experiment path — must be a *sub-path inside* the setup folder, not the folder itself (required) |
 | `lakebase_project_id` | Auto-provision Lakebase for multi-turn (e.g. `"my-team"`) |
 | `lakebase_existing_project_id` | Use an existing Lakebase project |
 
@@ -218,7 +235,7 @@ curl -s -X POST "$APP_URL/api/graph/deploy" \
   -d '{
     "graph": { ...GraphDef JSON... },
     "model_name": "catalog.schema.my_test_agent",
-    "experiment_path": "/Users/you@company.com/agent-sweet",
+    "experiment_path": "/Users/you@company.com/agent-sweet/my_test_agent",
     "deploy_mode": "full",
     "auth_mode": "obo",
     "pat": "'"$TOKEN"'"

@@ -1895,6 +1895,30 @@ code, pre, .mono {
   font-family: "JetBrains Mono", monospace;
 }
 
+.state-var-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
+
+.state-var-chip {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.68rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.state-var-chip:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
 /* ── Searchable Select ────────────────────────────────────────── */
 
 .searchable-select {

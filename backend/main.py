@@ -553,6 +553,14 @@ app.include_router(discovery_router, prefix="/api/discover", tags=["discovery"])
 
 _preview_sessions: dict[str, InMemorySaver] = {}
 
+
+def _is_conversational_graph(graph: GraphDef) -> bool:
+    """A graph is conversational if any LLM node has ``conversational=true``."""
+    return any(
+        n.type == "llm" and str(n.config.get("conversational", "false")).lower() == "true"
+        for n in graph.nodes
+    )
+
 # ── MLflow preview tracing setup ──────────────────────────────────────────────
 # When deployed: use Lakebase Postgres for durable trace storage.
 # When local:    use in-memory SQLite — traces live only for the process lifetime.
@@ -744,7 +752,14 @@ def preview_graph(req: PreviewRequest):
     Supports multi-turn conversations (via *thread_id*) and human-in-the-loop
     interrupts (via *resume_value*).
     """
-    thread_id = req.thread_id or str(uuid.uuid4())
+    # Non-conversational graphs should not carry state across user turns.
+    # Force a fresh thread unless the graph opted in or we're resuming an
+    # interrupt (resume needs the existing checkpoint).
+    is_resume = req.resume_value is not None
+    if is_resume or _is_conversational_graph(req.graph):
+        thread_id = req.thread_id or str(uuid.uuid4())
+    else:
+        thread_id = str(uuid.uuid4())
     if thread_id not in _preview_sessions:
         _preview_sessions[thread_id] = InMemorySaver()
 
@@ -945,7 +960,25 @@ def deploy_graph(req: DeployRequest):
 
             mlflow.set_tracking_uri("databricks")
             mlflow.set_registry_uri("databricks-uc")
-            experiment = mlflow.set_experiment(req.experiment_path)
+            try:
+                experiment = mlflow.set_experiment(req.experiment_path)
+            except Exception as mlflow_exc:
+                # Most common cause: experiment_path points at a workspace
+                # folder (e.g. the setup folder itself) rather than a new path
+                # inside it. Databricks can't create an experiment at a node
+                # that already exists as a folder.
+                raise ValueError(
+                    f"Could not create experiment at '{req.experiment_path}'. "
+                    f"If this path is a workspace folder, pass a sub-path "
+                    f"instead (e.g. '{req.experiment_path.rstrip('/')}/my-agent'). "
+                    f"Underlying error: {mlflow_exc}"
+                ) from mlflow_exc
+            if experiment is None:
+                raise ValueError(
+                    f"'{req.experiment_path}' appears to be a workspace folder, "
+                    f"not an experiment. Pass a sub-path inside it "
+                    f"(e.g. '{req.experiment_path.rstrip('/')}/my-agent')."
+                )
             result_data["experiment_id"] = experiment.experiment_id
 
             # Persist auth_mode into the graph_def artifact so the served
