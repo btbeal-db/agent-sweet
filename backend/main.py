@@ -814,6 +814,12 @@ def preview_graph(req: PreviewRequest):
             # both token chunks (for live UX) and per-node state updates (so we
             # can build the final result without a second pass).
             try:
+                # Track when a non-chunk message (e.g. iter-1's full
+                # AIMessage with tool_calls, then a ToolMessage) appears
+                # between streaming runs — without a separator, iter-2's
+                # tokens get glued onto iter-1's text.
+                streamed_any = False
+                boundary_pending = False
                 for chunk in compiled.stream(
                     invoke_input, config=config or None,
                     stream_mode=["messages", "updates"],
@@ -826,7 +832,16 @@ def preview_graph(req: PreviewRequest):
                         # LangGraph yields at the end of each LLM node — emitting
                         # it would duplicate text already streamed.
                         if type(msg) is AIMessageChunk and msg.content and not getattr(msg, "tool_calls", None):
-                            yield _sse({"type": "delta", "text": str(msg.content)})
+                            text = str(msg.content)
+                            if boundary_pending:
+                                text = "\n\n" + text
+                                boundary_pending = False
+                            yield _sse({"type": "delta", "text": text})
+                            streamed_any = True
+                        elif streamed_any:
+                            # Non-streamable message between runs of chunks
+                            # marks an iteration boundary.
+                            boundary_pending = True
             except GraphInterrupt as gi:
                 prompt = gi.interrupts[0].value if gi.interrupts else "Input needed"
                 final = compiled.get_state(config).values if config else {}
