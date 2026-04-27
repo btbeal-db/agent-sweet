@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { Home, Hammer, Trash2, CloudDownload, Save, Upload, MessageSquare, Rocket, Sparkles, Settings, Package, X, HelpCircle, CakeSlice } from "lucide-react";
 import Canvas from "./components/Canvas";
@@ -51,7 +51,7 @@ export default function App() {
       .finally(() => setModelsLoading(false));
   }, []);
 
-  const stateVariableNames = stateFields.flatMap((f) => {
+  const stateVariableNames = useMemo(() => stateFields.flatMap((f) => {
     const paths = [f.name];
     if ((f.type === "structured" || f.type === "vector_search_filter") && f.sub_fields?.length) {
       for (const sf of f.sub_fields) {
@@ -59,7 +59,7 @@ export default function App() {
       }
     }
     return paths;
-  });
+  }), [stateFields]);
   const stateFieldsRef = useRef(stateFields);
   stateFieldsRef.current = stateFields;
   const nodesUpdaterRef = useRef<((fn: (nodes: any[]) => any[]) => void) | null>(null);

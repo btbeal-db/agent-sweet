@@ -72,10 +72,14 @@ function usePopoverPosition(selectedNodeId: string | null, wrapperRef: React.Ref
         x: node.position.x + (node.measured?.width ?? 160),
         y: node.position.y,
       });
-      setPos({
-        x: screenPos.x - wrapperRect.left + 12,
-        y: screenPos.y - wrapperRect.top,
-      });
+      const x = screenPos.x - wrapperRect.left + 12;
+      const y = screenPos.y - wrapperRect.top;
+      // Only update state if the position actually changed. Without this
+      // guard the 60ms interval would re-render the popover (and the
+      // ConfigPanel + every textarea inside it) every tick — that race
+      // resets controlled-textarea cursors to the end of the value when
+      // a re-render lands between a keystroke and React's commit.
+      setPos((prev) => (prev && prev.x === x && prev.y === y ? prev : { x, y }));
     };
     update();
     // Update on short interval to track panning/zooming
