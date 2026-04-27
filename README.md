@@ -175,6 +175,7 @@ CI runs `Frontend Build` and `Backend Tests` on every PR to `dev` and `main`. Se
 | Issue | Fix |
 |---|---|
 | Setup validation fails | Make sure you created a **folder** (not an MLflow experiment) and granted the SP "Can Manage" |
+| Preview fails with an OBO/auth error after you added scopes | Your browser is still using the OAuth session from before the scopes existed — newly-added scopes are **not** re-requested for an existing session. Clear cookies for the app's hostname (or open it in a private window) and log in again to get a fresh token with the updated scopes. |
 | Registration fails with auth error | Check that your PAT is valid and you have `CREATE MODEL` on the target catalog/schema |
 | Endpoint creation fails | Verify your PAT has `CREATE SERVING ENDPOINT` permissions |
 | `requirements-serving.txt` not found | Run `uv pip compile pyproject.toml -o requirements-serving.txt --python-version 3.11` |
