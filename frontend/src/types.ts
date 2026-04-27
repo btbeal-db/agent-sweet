@@ -151,7 +151,8 @@ export interface ChatMessage {
   error?: string | null;
   execution_trace?: ExecutionTrace;
   mlflow_trace?: TraceSpan[];
-  loading?: boolean;
+  /** Rotating verb shown while the agent is mid-pause (e.g. tool call). */
+  thinking?: string | null;
 }
 
 // ── Models listing ─────────────────────────────────────────────────────────
