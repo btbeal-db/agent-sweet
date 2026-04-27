@@ -16,16 +16,31 @@ let msgId = 0;
  *  initial response, etc.). Pure flavor — there's no real distinction between
  *  them, but variety makes a long pause feel less like a hang. */
 const THINKING_VERBS = [
-  "thinking",
-  "noodling",
-  "pondering",
-  "musing",
-  "scheming",
-  "cogitating",
-  "brewing",
-  "mulling",
-  "plotting",
-  "ruminating",
+  // cognitive
+  "thinking", "pondering", "musing", "mulling", "ruminating", "reflecting",
+  "contemplating", "cogitating", "considering", "deliberating", "weighing",
+  "evaluating", "analyzing", "examining", "investigating", "discerning",
+  "reasoning", "theorizing", "hypothesizing", "speculating", "conjecturing",
+  "philosophizing", "meditating", "ideating", "brainstorming", "processing",
+  "computing", "ratiocinating",
+  // crafting
+  "brewing", "cooking", "simmering", "marinating", "fermenting", "distilling",
+  "refining", "polishing", "honing", "crafting", "forging", "weaving",
+  "sculpting", "conjuring", "concocting", "whisking", "kneading", "composing",
+  "orchestrating", "harmonizing",
+  // searching
+  "searching", "hunting", "foraging", "scouring", "sleuthing", "digging",
+  "prospecting", "divining", "exploring", "probing", "sifting", "untangling",
+  "unraveling", "decoding", "parsing", "spelunking",
+  // playful
+  "noodling", "doodling", "tinkering", "puttering", "fiddling", "finagling",
+  "futzing", "dabbling", "woolgathering", "daydreaming", "caboodling",
+  "gallivanting", "hemming", "hawing", "palavering", "scheming", "plotting",
+  "moseying", "meandering",
+  // growth
+  "percolating", "germinating", "sprouting",
+  // other
+  "synthesizing", "assembling", "churning", "riffing", "jamming",
 ];
 const pickVerb = () => THINKING_VERBS[Math.floor(Math.random() * THINKING_VERBS.length)];
 
