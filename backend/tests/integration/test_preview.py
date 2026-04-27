@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -14,6 +16,25 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+def _consume_sse(resp) -> tuple[str, list[dict]]:
+    """Drain an SSE response into the deltas plus the terminal event.
+
+    Returns ``(joined_delta_text, [non_delta_events])``. The terminal event
+    is the last item in the list (``done`` / ``interrupt`` / ``error``).
+    """
+    deltas: list[str] = []
+    other: list[dict] = []
+    for line in resp.iter_lines():
+        if not line or not line.startswith("data: "):
+            continue
+        event = json.loads(line[6:])
+        if event.get("type") == "delta":
+            deltas.append(event.get("text", ""))
+        else:
+            other.append(event)
+    return "".join(deltas), other
 
 
 class TestPreviewIntegration:
@@ -35,14 +56,17 @@ class TestPreviewIntegration:
                 StateFieldDef(name="output"),
             ],
         )
-        resp = client.post("/api/graph/preview", json={
+        with client.stream("POST", "/api/graph/preview", json={
             "graph": graph.model_dump(),
             "input_message": "Hello",
-        })
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["success"] is True
-        assert len(data["output"]) > 0
+        }) as resp:
+            assert resp.status_code == 200
+            streamed_text, events = _consume_sse(resp)
+
+        assert events[-1]["type"] == "done"
+        assert len(events[-1]["output"]) > 0
+        # Streaming actually streamed something (LLM endpoints support deltas).
+        assert streamed_text
 
     def test_rag_graph(self, client, llm_endpoint, vs_index_name, vs_endpoint_name):
         graph = GraphDef(
@@ -72,14 +96,15 @@ class TestPreviewIntegration:
                 StateFieldDef(name="output"),
             ],
         )
-        resp = client.post("/api/graph/preview", json={
+        with client.stream("POST", "/api/graph/preview", json={
             "graph": graph.model_dump(),
             "input_message": "Tell me about cardiology patients",
-        })
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["success"] is True
-        assert len(data["output"]) > 0
+        }) as resp:
+            assert resp.status_code == 200
+            _, events = _consume_sse(resp)
+
+        assert events[-1]["type"] == "done"
+        assert len(events[-1]["output"]) > 0
 
     def test_multi_turn_preserves_thread(self, client, llm_endpoint):
         graph = GraphDef(
@@ -101,22 +126,24 @@ class TestPreviewIntegration:
             ],
         )
         # First message
-        resp1 = client.post("/api/graph/preview", json={
+        with client.stream("POST", "/api/graph/preview", json={
             "graph": graph.model_dump(),
             "input_message": "My name is Alice.",
-        })
-        data1 = resp1.json()
-        assert data1["success"] is True
-        thread_id = data1["thread_id"]
+        }) as resp:
+            _, events1 = _consume_sse(resp)
+        terminal1 = events1[-1]
+        assert terminal1["type"] == "done"
+        thread_id = terminal1["thread_id"]
         assert thread_id is not None
 
         # Second message with same thread
-        resp2 = client.post("/api/graph/preview", json={
+        with client.stream("POST", "/api/graph/preview", json={
             "graph": graph.model_dump(),
             "input_message": "What is my name?",
             "thread_id": thread_id,
-        })
-        data2 = resp2.json()
-        assert data2["success"] is True
+        }) as resp:
+            _, events2 = _consume_sse(resp)
+        terminal2 = events2[-1]
+        assert terminal2["type"] == "done"
         # The LLM should remember Alice from the first turn
-        assert "alice" in data2["output"].lower()
+        assert "alice" in terminal2["output"].lower()

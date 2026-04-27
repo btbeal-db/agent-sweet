@@ -37,7 +37,7 @@ from mlflow.models.resources import (
     DatabricksVectorSearchIndex,
 )
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessageChunk, BaseMessage
 
 from .auth import (
     set_user_token,
@@ -47,7 +47,7 @@ from .auth import (
     create_pat_client,
 )
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
-from .graph_builder import build_graph, filter_output, run_graph
+from .graph_builder import build_graph, filter_output, prepare_invocation, run_graph
 from .tools import discover_mcp_tool_metadata, managed_mcp_url_for_tool
 from .nodes import get_all_metadata
 from .lakebase import LakebaseConfig, provision_lakebase, resolve_lakebase
@@ -62,7 +62,6 @@ from .schema import (
     ModelInfo,
     ModelsResponse,
     PreviewRequest,
-    PreviewResponse,
 )
 
 logging.basicConfig(
@@ -745,12 +744,42 @@ def _truncate(obj, max_str_len: int = 500):
     return obj
 
 
-@app.post("/api/graph/preview", response_model=PreviewResponse)
-def preview_graph(req: PreviewRequest):
-    """Build the graph and run it with a test message.
+def _sse(event: dict) -> str:
+    """Format an SSE ``data:`` line, JSON-encoding the payload."""
+    return f"data: {json.dumps(event, default=str)}\n\n"
 
-    Supports multi-turn conversations (via *thread_id*) and human-in-the-loop
-    interrupts (via *resume_value*).
+
+def _turn_messages(all_messages: list) -> list[dict]:
+    """Extract serialized messages from the most recent user turn.
+
+    Walks backwards to find the last user message — anything after that
+    boundary is "this turn".
+    """
+    turn_start = 0
+    for i in range(len(all_messages) - 1, -1, -1):
+        msg = all_messages[i]
+        is_user = (isinstance(msg, dict) and msg.get("role") == "user") or (
+            hasattr(msg, "type") and msg.type == "human"
+        )
+        if is_user:
+            turn_start = i
+            break
+    return _serialize_messages(all_messages[turn_start:])
+
+
+@app.post("/api/graph/preview")
+def preview_graph(req: PreviewRequest):
+    """Stream the graph as an SSE feed of token deltas + a final result event.
+
+    Mirrors the deployed model's ``predict_stream`` so the playground UX
+    matches what the user will see from the served endpoint. Multi-turn via
+    ``thread_id``; human-in-the-loop via ``resume_value``.
+
+    Event types:
+      - ``delta`` ``{text}`` — incremental LLM token
+      - ``done`` — terminal: full output, state, execution_trace, mlflow_trace
+      - ``interrupt`` — terminal: graph paused at a HumanInput
+      - ``error`` — terminal: execution failed
     """
     # Non-conversational graphs should not carry state across user turns.
     # Force a fresh thread unless the graph opted in or we're resuming an
@@ -774,72 +803,76 @@ def preview_graph(req: PreviewRequest):
     mlflow.set_experiment("playground")
     mlflow.langchain.autolog(log_traces=True)
 
-    try:
-        result = run_graph(
-            req.graph,
-            req.input_message,
-            checkpointer=_preview_sessions[thread_id],
-            thread_id=thread_id,
-            resume_value=req.resume_value,
-        )
-
-        # Only return messages from the current turn.
-        # Walk backwards from the end to find the last user message — that's
-        # the boundary of this turn.
-        all_messages = result.get("messages", [])
-        turn_start = 0
-        for i in range(len(all_messages) - 1, -1, -1):
-            msg = all_messages[i]
-            is_user = (isinstance(msg, dict) and msg.get("role") == "user") or (
-                hasattr(msg, "type") and msg.type == "human"
-            )
-            if is_user:
-                turn_start = i
-                break
-        messages = _serialize_messages(all_messages[turn_start:])
-        mlflow_trace = _extract_trace()
-
-        interrupts = result.get("__interrupt__")
-        if interrupts:
-            prompt = interrupts[0].get("value", "Input needed") if isinstance(interrupts[0], dict) else str(interrupts[0].value)
-            state_snapshot = {
-                k: v for k, v in result.items()
-                if k not in ("messages", "__interrupt__")
-            }
-            return PreviewResponse(
-                success=True,
-                interrupt=str(prompt),
-                thread_id=thread_id,
-                execution_trace=messages,
-                state=state_snapshot,
-                mlflow_trace=mlflow_trace,
+    def _generate():
+        try:
+            compiled = build_graph(req.graph, checkpointer=_preview_sessions[thread_id])
+            invoke_input, config = prepare_invocation(
+                compiled, req.graph, req.input_message, thread_id, req.resume_value,
             )
 
-        output_text, state_snapshot = filter_output(result, req.graph)
-        return PreviewResponse(
-            success=True,
-            output=output_text,
-            execution_trace=messages,
-            state=state_snapshot,
-            thread_id=thread_id,
-            mlflow_trace=mlflow_trace,
-        )
-    except GraphInterrupt as gi:
-        prompt = gi.interrupts[0].value if gi.interrupts else "Input needed"
-        mlflow_trace = _extract_trace()
-        return PreviewResponse(
-            success=True,
-            interrupt=str(prompt),
-            thread_id=thread_id,
-            mlflow_trace=mlflow_trace,
-        )
-    except Exception as e:
-        logger.exception("Preview failed")
-        return PreviewResponse(success=False, error=str(e))
-    finally:
-        # Clear PAT from memory and restore previous tracking URI
-        set_user_pat(None)
-        mlflow.set_tracking_uri(prev_tracking_uri)
+            # Drive the graph with stream_mode=["messages", "updates"] so we get
+            # both token chunks (for live UX) and per-node state updates (so we
+            # can build the final result without a second pass).
+            try:
+                for chunk in compiled.stream(
+                    invoke_input, config=config or None,
+                    stream_mode=["messages", "updates"],
+                ):
+                    mode, data = chunk
+                    if mode == "messages":
+                        msg, _metadata = data
+                        # Only AIMessageChunk represents an incremental token.
+                        # Plain AIMessage is the final completed message that
+                        # LangGraph yields at the end of each LLM node — emitting
+                        # it would duplicate text already streamed.
+                        if type(msg) is AIMessageChunk and msg.content and not getattr(msg, "tool_calls", None):
+                            yield _sse({"type": "delta", "text": str(msg.content)})
+            except GraphInterrupt as gi:
+                prompt = gi.interrupts[0].value if gi.interrupts else "Input needed"
+                final = compiled.get_state(config).values if config else {}
+                yield _sse({
+                    "type": "interrupt",
+                    "thread_id": thread_id,
+                    "prompt": str(prompt),
+                    "execution_trace": _turn_messages(final.get("messages", [])),
+                    "state": {k: v for k, v in final.items() if k not in ("messages", "__interrupt__")},
+                    "mlflow_trace": _extract_trace(),
+                })
+                return
+
+            # Stream finished cleanly — pull the final state from the checkpoint.
+            final = compiled.get_state(config).values if config else {}
+
+            interrupts = final.get("__interrupt__")
+            if interrupts:
+                prompt = interrupts[0].get("value", "Input needed") if isinstance(interrupts[0], dict) else str(interrupts[0].value)
+                yield _sse({
+                    "type": "interrupt",
+                    "thread_id": thread_id,
+                    "prompt": str(prompt),
+                    "execution_trace": _turn_messages(final.get("messages", [])),
+                    "state": {k: v for k, v in final.items() if k not in ("messages", "__interrupt__")},
+                    "mlflow_trace": _extract_trace(),
+                })
+                return
+
+            output_text, state_snapshot = filter_output(final, req.graph)
+            yield _sse({
+                "type": "done",
+                "thread_id": thread_id,
+                "output": output_text,
+                "execution_trace": _turn_messages(final.get("messages", [])),
+                "state": state_snapshot,
+                "mlflow_trace": _extract_trace(),
+            })
+        except Exception as e:
+            logger.exception("Preview failed")
+            yield _sse({"type": "error", "message": str(e)})
+        finally:
+            set_user_pat(None)
+            mlflow.set_tracking_uri(prev_tracking_uri)
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
 

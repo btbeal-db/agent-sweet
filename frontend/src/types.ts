@@ -88,16 +88,27 @@ export interface TraceSpan {
   outputs?: unknown;
 }
 
-export interface PreviewResponse {
-  success: boolean;
-  output: string;
-  error: string | null;
-  execution_trace: Array<{ role: string; content: string; node?: string }>;
-  state: Record<string, string>;
-  thread_id: string | null;
-  interrupt: string | null;
-  mlflow_trace: TraceSpan[];
-}
+export type ExecutionTrace = Array<{ role: string; content: string; node?: string }>;
+
+export type PreviewEvent =
+  | { type: "delta"; text: string }
+  | {
+      type: "done";
+      thread_id: string;
+      output: string;
+      execution_trace: ExecutionTrace;
+      state: Record<string, string>;
+      mlflow_trace: TraceSpan[];
+    }
+  | {
+      type: "interrupt";
+      thread_id: string;
+      prompt: string;
+      execution_trace: ExecutionTrace;
+      state: Record<string, string>;
+      mlflow_trace: TraceSpan[];
+    }
+  | { type: "error"; message: string };
 
 export interface ExportResponse {
   success: boolean;
@@ -138,7 +149,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   error?: string | null;
-  execution_trace?: PreviewResponse["execution_trace"];
+  execution_trace?: ExecutionTrace;
   mlflow_trace?: TraceSpan[];
   loading?: boolean;
 }

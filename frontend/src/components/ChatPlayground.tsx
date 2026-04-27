@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { ArrowUp, X, Trash2 } from "lucide-react";
-import { previewGraph, validateGraph } from "../api";
+import { streamPreview, validateGraph } from "../api";
 import type { ChatMessage, GraphDef, StateFieldDef } from "../types";
 import SimpleMarkdown from "./SimpleMarkdown";
 
@@ -147,31 +147,42 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
         return;
       }
 
-      // Branch: resume from interrupt vs. normal invocation
-      const result = pendingInterrupt
-        ? await previewGraph(graph, "", threadId, userInput)
-        : await previewGraph(graph, userInput, threadId);
+      // Stream: append deltas to the placeholder live; the terminal event
+      // (done | interrupt | error) finalizes the message and sets the
+      // execution / mlflow trace at once.
+      let streamedText = "";
+      const messageInput = pendingInterrupt ? "" : userInput;
+      const resumeValue = pendingInterrupt ? userInput : null;
 
-      if (!result.success) {
-        updatePlaceholder({ content: "", error: result.error ?? "The agent returned an error." });
-        setPendingInterrupt(false);
-      } else if (result.interrupt) {
-        // Graph paused at a HumanInput node — show the prompt
-        setThreadId(result.thread_id);
-        setPendingInterrupt(true);
-        updatePlaceholder({
-          content: result.interrupt,
-        });
-      } else {
-        // Normal completion
-        setThreadId(result.thread_id);
-        setPendingInterrupt(false);
-        updatePlaceholder({
-          content: result.output || "(empty)",
-          execution_trace: result.execution_trace,
-          mlflow_trace: result.mlflow_trace,
-        });
-      }
+      await streamPreview(graph, messageInput, threadId, resumeValue, null, (event) => {
+        if (event.type === "delta") {
+          streamedText += event.text;
+          updatePlaceholder({ content: streamedText });
+        } else if (event.type === "done") {
+          setThreadId(event.thread_id);
+          setPendingInterrupt(false);
+          // Prefer the streamed text — it's what the user actually saw and
+          // matches the deployed agent's predict_stream UX. Fall back to the
+          // computed output for non-streaming graphs (structured output,
+          // pure non-LLM pipelines).
+          updatePlaceholder({
+            content: streamedText || event.output || "(empty)",
+            execution_trace: event.execution_trace,
+            mlflow_trace: event.mlflow_trace,
+          });
+        } else if (event.type === "interrupt") {
+          setThreadId(event.thread_id);
+          setPendingInterrupt(true);
+          updatePlaceholder({
+            content: event.prompt,
+            execution_trace: event.execution_trace,
+            mlflow_trace: event.mlflow_trace,
+          });
+        } else if (event.type === "error") {
+          setPendingInterrupt(false);
+          updatePlaceholder({ content: "", error: event.message });
+        }
+      });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : String(err);
