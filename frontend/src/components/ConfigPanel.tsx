@@ -7,6 +7,7 @@ import SchemaEditor, { type SchemaField } from "./SchemaEditor";
 import InlineFieldCreator from "./InlineFieldCreator";
 import SearchableSelect from "./SearchableSelect";
 import TemplatedTextarea from "./TemplatedTextarea";
+import LocalInput from "./LocalInput";
 
 interface Props {
   selectedNodeId: string;
@@ -251,16 +252,14 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
                 ))}
               </select>
             ) : (
-              <input
+              <LocalInput
                 type={field.field_type === "number" ? "number" : "text"}
-                value={val}
+                value={String(val)}
                 placeholder={field.placeholder}
-                onChange={(e) =>
+                onChange={(next) =>
                   updateConfig(
                     field.name,
-                    field.field_type === "number"
-                      ? parseFloat(e.target.value) || 0
-                      : e.target.value
+                    field.field_type === "number" ? parseFloat(next) || 0 : next
                   )
                 }
               />
