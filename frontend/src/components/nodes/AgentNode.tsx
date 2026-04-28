@@ -1,10 +1,10 @@
 import { Handle, Position, useReactFlow, useUpdateNodeInternals } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { useStateVars, useAddField, useStateFields } from "../../StateContext";
 import { NodeIcon } from "../NodeIcon";
 import ToolChip from "./ToolChip";
-import InlineFieldCreator from "../InlineFieldCreator";
+import NodeSummary from "./NodeSummary";
+import { useRenameNode } from "../../StateContext";
 import type { AttachedTool } from "../../types";
 
 interface RouteEntry {
@@ -30,10 +30,7 @@ function routeHandleId(route: RouteEntry, index: number): string {
 
 export default function AgentNode({ id, data, selected }: NodeProps) {
   const { setNodes } = useReactFlow();
-  const stateVarNames = useStateVars();
-  const addField = useAddField();
-  const currentFields = useStateFields();
-  const [showNewField, setShowNewField] = useState(false);
+  const renameNode = useRenameNode();
   const updateNodeInternals = useUpdateNodeInternals();
   const nodeRef = useRef<HTMLDivElement>(null);
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -44,7 +41,7 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
   const customName = (data.name as string) ?? "";
   const isRouter = (data.is_router as boolean) ?? false;
   const isLlm = (data.nodeType as string) === "llm";
-  const writesTo = (data.writes_to as string) ?? "";
+  const nodeType = (data.nodeType as string) ?? "";
 
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(customName || displayName);
@@ -91,23 +88,9 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
     }
   }, [id, isRouter, handleTops, updateNodeInternals]);
 
-  const handleWritesToChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    e.stopPropagation();
-    setNodes((nds) =>
-      nds.map((n) =>
-        n.id === id ? { ...n, data: { ...n.data, writes_to: e.target.value } } : n
-      )
-    );
-  };
-
   const commitName = () => {
-    const trimmed = editValue.trim();
     setEditing(false);
-    setNodes((nds) =>
-      nds.map((n) =>
-        n.id === id ? { ...n, data: { ...n.data, name: trimmed || "" } } : n
-      )
-    );
+    renameNode(id, editValue);
   };
 
   const removeTool = useCallback(
@@ -186,8 +169,10 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
     >
       <Handle type="target" position={Position.Top} />
 
-      <div className="agent-node-header" style={{ background: color }}>
-        <NodeIcon name={iconKey} size={15} />
+      <div className="agent-node-header">
+        <span className="agent-node-icon-chip" style={{ background: color }}>
+          <NodeIcon name={iconKey} size={12} />
+        </span>
         {editing ? (
           <input
             className="agent-node-name-input"
@@ -202,52 +187,17 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
-          <span onDoubleClick={() => { setEditValue(customName || displayName); setEditing(true); }}>
+          <span
+            className="agent-node-title"
+            onDoubleClick={() => { setEditValue(customName || displayName); setEditing(true); }}
+          >
             {customName || displayName}
           </span>
         )}
       </div>
 
       <div className="agent-node-body">
-        {!isRouter && (
-          <div className="agent-node-writes-to">
-            <span className="writes-to-label">updates</span>
-            <select
-              className="writes-to-select"
-              value={writesTo}
-              onChange={(e) => {
-                if (e.target.value === "__new__") {
-                  setShowNewField(true);
-                  return;
-                }
-                handleWritesToChange(e);
-              }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <option value="">select field...</option>
-              {stateVarNames.map((v) => (
-                <option key={v} value={v}>{v}</option>
-              ))}
-              <option value="__new__">+ New field...</option>
-            </select>
-            {showNewField && (
-              <InlineFieldCreator
-                existingNames={currentFields.map((f) => f.name)}
-                onAdd={(field) => {
-                  addField(field);
-                  setShowNewField(false);
-                  // Set writes_to to the new field
-                  setNodes((nds) =>
-                    nds.map((n) =>
-                      n.id === id ? { ...n, data: { ...n.data, writes_to: field.name } } : n
-                    )
-                  );
-                }}
-                onCancel={() => setShowNewField(false)}
-              />
-            )}
-          </div>
-        )}
+        {!isRouter && <NodeSummary nodeType={nodeType} config={config} tools={tools} />}
 
         {isRouter && routes.length > 0 && (
           <div className="router-outputs">

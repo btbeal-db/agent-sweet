@@ -135,10 +135,6 @@ class LLMNode(BaseNode):
         return "#8b5cf6"
 
     @property
-    def default_field_template(self) -> dict[str, str] | None:
-        return {"name": "llm_output", "type": "str", "description": "LLM response"}
-
-    @property
     def config_fields(self) -> list[NodeConfigField]:
         return [
             NodeConfigField(
@@ -178,12 +174,21 @@ class LLMNode(BaseNode):
                 required=False,
                 default=0,
                 help_text="Cap on prior messages to include (0 = all). Only used when Conversational is enabled.",
+                advanced=True,
+            ),
+            NodeConfigField(
+                name="output_schema",
+                label="Structured Output",
+                field_type="schema_editor",
+                required=False,
+                default=[],
+                help_text="Define structured output fields. Leave empty for plain text output.",
+                advanced=True,
             ),
         ]
 
     def execute(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         writes_to = config.get("_writes_to", "")
-        target_field = config.get("_target_field")
         endpoint = config.get("endpoint", "databricks-meta-llama-3-3-70b-instruct")
         temperature = float(config.get("temperature", 0.7))
         raw_prompt = config.get("system_prompt", "You are a helpful assistant.")
@@ -216,15 +221,14 @@ class LLMNode(BaseNode):
             except Exception as exc:
                 return {writes_to: f"Error binding tools: {exc}"}
 
-        # Auto-detect structured output from the state field definition.
-        target_type = getattr(target_field, "type", "str") if target_field else "str"
-
-        if target_type == "structured":
-            sub_fields = getattr(target_field, "sub_fields", [])
-        elif target_type in _TYPE_MAP and target_type != "str":
-            sub_fields = [{"name": writes_to, "type": target_type, "description": getattr(target_field, "description", "") or writes_to}]
-        else:
-            sub_fields = []
+        # Structured output is configured directly on the node. Empty schema = plain text.
+        raw_schema = config.get("output_schema", [])
+        if isinstance(raw_schema, str):
+            try:
+                raw_schema = json.loads(raw_schema)
+            except (json.JSONDecodeError, ValueError):
+                raw_schema = []
+        sub_fields = [f for f in raw_schema if isinstance(f, dict) and f.get("name")] if isinstance(raw_schema, list) else []
 
         # In conversational mode, pass prior user/assistant turns as real
         # message objects. Otherwise treat each invocation as a single turn.
@@ -251,10 +255,7 @@ class LLMNode(BaseNode):
             result = structured_llm.invoke(messages_for_llm)
 
             result_dict = result.model_dump()
-            if target_type != "structured":
-                response_text = str(result_dict[writes_to])
-            else:
-                response_text = json.dumps(result_dict, indent=2)
+            response_text = json.dumps(result_dict, indent=2)
 
             return {
                 writes_to: response_text,
