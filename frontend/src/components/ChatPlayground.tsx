@@ -1,12 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { ArrowUp, X, Trash2 } from "lucide-react";
 import { streamPreview, validateGraph } from "../api";
-import type { ChatMessage, GraphDef, StateFieldDef } from "../types";
+import type { ChatMessage, GraphDef } from "../types";
 import SimpleMarkdown from "./SimpleMarkdown";
 
 interface Props {
   graphGetter: (() => GraphDef) | null;
-  stateFieldsRef: React.RefObject<StateFieldDef[]>;
   onClose: () => void;
 }
 
@@ -52,7 +51,7 @@ const VERB_ROTATE_MS = 1500;
  * Run local checks on the graph before hitting the backend.
  * Returns an error string or null if everything looks good.
  */
-function preflight(graphGetter: (() => GraphDef) | null, stateFields: StateFieldDef[]): string | null {
+function preflight(graphGetter: (() => GraphDef) | null): string | null {
   if (!graphGetter) {
     return "The graph hasn't loaded yet. Try closing and reopening the playground.";
   }
@@ -81,21 +80,10 @@ function preflight(graphGetter: (() => GraphDef) | null, stateFields: StateField
     return "Connect your last node to the END node.";
   }
 
-  // Check that non-router nodes have a writes_to field set
-  for (const node of graph.nodes) {
-    if (node.type === "router") continue;
-    if (!node.writes_to) {
-      return `Node "${node.id}" doesn't have a target state field selected. Click on it and choose which field it updates.`;
-    }
-    if (!stateFields.some((f) => f.name === node.writes_to)) {
-      return `Node "${node.id}" writes to "${node.writes_to}" which doesn't exist in your state model.`;
-    }
-  }
-
   return null;
 }
 
-export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }: Props) {
+export default function ChatPlayground({ graphGetter, onClose }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -136,7 +124,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
     if (!input.trim() || isLoading) return;
 
     // ── Local preflight checks ──
-    const preflightError = preflight(graphGetter, stateFieldsRef.current!);
+    const preflightError = preflight(graphGetter);
     if (preflightError) {
       const userMsg: ChatMessage = { id: `msg_${++msgId}`, role: "user", content: input.trim() };
       setMessages((prev) => [...prev, userMsg]);
@@ -190,7 +178,6 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
 
     try {
       const graph = graphGetter!();
-      graph.state_fields = stateFieldsRef.current!;
 
       const validation = await validateGraph(graph);
       if (!validation.valid) {
@@ -262,7 +249,7 @@ export default function ChatPlayground({ graphGetter, stateFieldsRef, onClose }:
       stopThinking();
       setIsLoading(false);
     }
-  }, [input, graphGetter, stateFieldsRef, isLoading, addErrorMessage, threadId, pendingInterrupt]);
+  }, [input, graphGetter, isLoading, addErrorMessage, threadId, pendingInterrupt]);
 
   return (
     <div className="chat-overlay" onClick={onClose}>

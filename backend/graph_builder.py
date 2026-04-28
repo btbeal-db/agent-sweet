@@ -26,7 +26,13 @@ def _build_state_type(state_fields: list[StateFieldDef]) -> type:
     return TypedDict("AgentState", fields)  # type: ignore[misc]
 
 
-def _make_node_fn(node_impl, config: dict[str, Any], writes_to: str, target_field: StateFieldDef | None):
+def _make_node_fn(
+    node_impl,
+    config: dict[str, Any],
+    writes_to: str,
+    target_field: StateFieldDef | None,
+    graph_name: str,
+):
     """Create a closure so each graph node captures its own config.
 
     Returns only the state *updates* — LangGraph merges them into state.
@@ -41,18 +47,18 @@ def _make_node_fn(node_impl, config: dict[str, Any], writes_to: str, target_fiel
         updates = node_impl.execute(state, enriched_config)
         return updates
 
-    fn.__name__ = f"node_{writes_to or node_impl.node_type}"
+    fn.__name__ = graph_name
     return fn
 
 
-def _make_router_fn(node_impl, config: dict[str, Any]):
+def _make_router_fn(node_impl, config: dict[str, Any], graph_name: str):
     """Create a routing function that returns the chosen route key."""
 
     def fn(state: dict[str, Any]) -> str:
         result = node_impl.execute(state, config)
         return result.get("_route", "default")
 
-    fn.__name__ = f"router_{node_impl.node_type}"
+    fn.__name__ = graph_name
     return fn
 
 
@@ -62,8 +68,19 @@ def _resolve(node_id: str) -> str:
 
 
 def _graph_name(node_def) -> str:
-    """Return the LangGraph node name: user-set name if present, otherwise the canvas ID."""
-    return node_def.name.strip() if node_def.name and node_def.name.strip() else node_def.id
+    """Pick a human-readable name for tracing.
+
+    Priority: explicit user name → ``writes_to`` slug → typed canvas id.
+    The slug fallback covers nodes the user dropped without renaming
+    (e.g. ``llm``, ``llm_2``); the typed-id fallback only fires for
+    routers, which have no ``writes_to``.
+    """
+    if node_def.name and node_def.name.strip():
+        return node_def.name.strip()
+    if node_def.writes_to:
+        return node_def.writes_to
+    suffix = node_def.id.replace("node_", "") if node_def.id.startswith("node_") else node_def.id
+    return f"{node_def.type}_{suffix}" if suffix else node_def.type
 
 
 def build_graph(graph_def: GraphDef, checkpointer=None):
@@ -97,7 +114,7 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
         target_field = graph_def.get_state_field(node_def.writes_to)
         builder.add_node(
             gname,
-            _make_node_fn(node_impl, node_def.config, node_def.writes_to, target_field),
+            _make_node_fn(node_impl, node_def.config, node_def.writes_to, target_field, gname),
         )
 
     def _resolve_named(node_id: str) -> str:
@@ -130,7 +147,7 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
             }
             builder.add_conditional_edges(
                 src_name,
-                _make_router_fn(node_impl, node_def.config),
+                _make_router_fn(node_impl, node_def.config, src_name),
                 route_map,
             )
         else:

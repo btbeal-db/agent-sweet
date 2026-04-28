@@ -3,16 +3,28 @@
     {
       "id": "node_1",
       "type": "llm",
-      "name": "JudgeNode",
+      "name": "Verdict",
       "writes_to": "verdict",
       "config": {
-        "system_prompt": "You're a helpful joke agent that assesses whether or not the user's joke is funny. \n\nThe user's joke is: {input}",
+        "system_prompt": "You're a helpful joke agent that assesses whether or not the user's joke is funny.\n\nThe user's joke is: {input}",
         "temperature": 0.7,
-        "endpoint": "databricks-claude-sonnet-4-6"
+        "endpoint": "databricks-claude-sonnet-4-6",
+        "output_schema": [
+          {
+            "name": "is_funny",
+            "type": "bool",
+            "description": "Whether the joke is genuinely funny"
+          },
+          {
+            "name": "reasoning",
+            "type": "str",
+            "description": "Brief explanation of the verdict"
+          }
+        ]
       },
       "position": {
-        "x": 131.4028504956841,
-        "y": 147.47000218680307
+        "x": 294.0356502186832,
+        "y": 121.06251019248225
       }
     },
     {
@@ -35,23 +47,35 @@
         "_route_sub_field": "is_funny"
       },
       "position": {
-        "x": -26.31573308696592,
-        "y": 259.90171766775046
+        "x": -25.999999999999986,
+        "y": 330.40175804897683
       }
     },
     {
       "id": "node_4",
       "type": "llm",
-      "name": "RewriterNode",
+      "name": "Rewrite",
       "writes_to": "rewrite",
       "config": {
-        "system_prompt": "You have been given a bad joke to rewrite -- do your best to take account of the critique and modify based on your idea of a good joke. \n\nThe joke: {input}\n\nThe critique: {verdict.reasoning}",
+        "system_prompt": "You have been given a bad joke to rewrite -- do your best to take account of the critique and modify based on your idea of a good joke.\n\nThe joke: {input}\n\nThe critique: {verdict.reasoning}",
         "temperature": 0.7,
-        "endpoint": "databricks-claude-sonnet-4-6"
+        "endpoint": "databricks-claude-sonnet-4-6",
+        "output_schema": [
+          {
+            "name": "critique",
+            "type": "str",
+            "description": "What makes the original joke fall flat"
+          },
+          {
+            "name": "rewritten_joke",
+            "type": "str",
+            "description": "An improved version of the joke"
+          }
+        ]
       },
       "position": {
-        "x": 36.953319877988406,
-        "y": 386.2009906584911
+        "x": 33.294644313211734,
+        "y": 462.5773508602905
       }
     }
   ],
@@ -91,13 +115,13 @@
     {
       "name": "input",
       "type": "str",
-      "description": "The user's initial message",
+      "description": "The initial user input",
       "sub_fields": []
     },
     {
       "name": "verdict",
       "type": "structured",
-      "description": "The judge's verdict on the joke",
+      "description": "Verdict output",
       "sub_fields": [
         {
           "name": "is_funny",
@@ -114,7 +138,7 @@
     {
       "name": "rewrite",
       "type": "structured",
-      "description": "Critique and rewrite of a bad joke",
+      "description": "Rewrite output",
       "sub_fields": [
         {
           "name": "critique",
@@ -128,5 +152,6 @@
         }
       ]
     }
-  ]
+  ],
+  "output_fields": []
 }

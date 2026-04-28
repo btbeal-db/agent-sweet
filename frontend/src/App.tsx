@@ -3,8 +3,6 @@ import { ReactFlowProvider } from "@xyflow/react";
 import { Home, Hammer, Trash2, CloudDownload, Save, Upload, MessageSquare, Rocket, Sparkles, Settings, Package, X, HelpCircle, CakeSlice } from "lucide-react";
 import Canvas from "./components/Canvas";
 import NodePalette from "./components/NodePalette";
-import StateModelModal from "./components/StateModelModal";
-import StatePanel from "./components/StatePanel";
 import ChatPlayground from "./components/ChatPlayground";
 import DeployModal from "./components/DeployModal";
 import HomePage from "./components/HomePage";
@@ -12,9 +10,8 @@ import BuilderWalkthrough from "./components/BuilderWalkthrough";
 import AIChatDropdown from "./components/AIChatDropdown";
 import SetupPage from "./components/SetupPage";
 import ModelsPage from "./components/ModelsPage";
-import { StateProvider } from "./StateContext";
 import { fetchNodeTypes, fetchModels, getSetupStatus } from "./api";
-import type { NodeTypeMetadata, GraphDef, StateFieldDef, SetupStatusResponse, ModelInfo } from "./types";
+import type { NodeTypeMetadata, GraphDef, SetupStatusResponse, ModelInfo } from "./types";
 
 type AppView = "home" | "builder" | "models" | "setup";
 
@@ -22,10 +19,6 @@ export default function App() {
   const [nodeTypes, setNodeTypes] = useState<NodeTypeMetadata[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [graphGetter, setGraphGetter] = useState<(() => GraphDef) | null>(null);
-  const [stateFields, setStateFields] = useState<StateFieldDef[]>([
-    { name: "input", type: "str", description: "The initial input", sub_fields: [] },
-  ]);
-  const [showStateModal, setShowStateModal] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showAIChat, setShowAIChat] = useState(false);
   const aiChatWrapperRef = useRef<HTMLDivElement>(null);
@@ -51,19 +44,6 @@ export default function App() {
       .finally(() => setModelsLoading(false));
   }, []);
 
-  const stateVariableNames = stateFields.flatMap((f) => {
-    const paths = [f.name];
-    if ((f.type === "structured" || f.type === "vector_search_filter") && f.sub_fields?.length) {
-      for (const sf of f.sub_fields) {
-        if (sf.name) paths.push(`${f.name}.${sf.name}`);
-      }
-    }
-    return paths;
-  });
-  const stateFieldsRef = useRef(stateFields);
-  stateFieldsRef.current = stateFields;
-  const nodesUpdaterRef = useRef<((fn: (nodes: any[]) => any[]) => void) | null>(null);
-
   useEffect(() => {
     fetchNodeTypes().then(setNodeTypes).catch(console.error);
     getSetupStatus()
@@ -76,61 +56,9 @@ export default function App() {
       .catch(console.error);
   }, []);
 
-  const addField = useCallback((field: StateFieldDef) => {
-    setStateFields((prev) => {
-      if (prev.some((f) => f.name === field.name)) return prev;
-      return [...prev, field];
-    });
-  }, []);
-
-  const removeField = useCallback((name: string) => {
-    setStateFields((prev) => prev.filter((f) => f.name !== name));
-  }, []);
-
-  const renameField = useCallback((oldName: string, newName: string) => {
-    if (!newName || oldName === newName) return;
-    setStateFields((prev) =>
-      prev.map((f) => (f.name === oldName ? { ...f, name: newName } : f))
-    );
-    // Cascade: update all node references
-    const updater = nodesUpdaterRef.current;
-    if (updater) {
-      updater((nodes) =>
-        nodes.map((n) => {
-          let changed = false;
-          const data = { ...n.data };
-
-          if (data.writes_to === oldName) {
-            data.writes_to = newName;
-            changed = true;
-          }
-
-          if (data.config) {
-            const config = { ...data.config } as Record<string, unknown>;
-            for (const key of Object.keys(config)) {
-              if (config[key] === oldName) {
-                config[key] = newName;
-                changed = true;
-              }
-              // Replace {oldName} references in string values (e.g. system_prompt)
-              if (typeof config[key] === "string" && (config[key] as string).includes(`{${oldName}}`)) {
-                config[key] = (config[key] as string).split(`{${oldName}}`).join(`{${newName}}`);
-                changed = true;
-              }
-            }
-            if (changed) data.config = config;
-          }
-
-          return changed ? { ...n, data } : n;
-        })
-      );
-    }
-  }, []);
-
   const handleSaveJson = useCallback(() => {
     if (!graphGetter) return;
     const graph = graphGetter();
-    graph.state_fields = stateFieldsRef.current;
     const json = JSON.stringify(graph, null, 2);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -149,11 +77,7 @@ export default function App() {
       reader.onload = () => {
         try {
           const graph = JSON.parse(reader.result as string) as GraphDef;
-          if (graph.state_fields?.length) {
-            setStateFields(graph.state_fields);
-          }
           graphImporter(graph);
-          setShowStateModal(false);
           setView("builder");
         } catch (err) {
           console.error("Failed to parse graph JSON:", err);
@@ -172,9 +96,6 @@ export default function App() {
   const handleClearAll = useCallback(() => {
     if (!graphImporter) return;
     graphImporter({ nodes: [], edges: [], state_fields: [], output_fields: [] });
-    setStateFields([
-      { name: "input", type: "str", description: "The initial input", sub_fields: [] },
-    ]);
     setSelectedNodeId(null);
   }, [graphImporter]);
 
@@ -195,9 +116,6 @@ export default function App() {
 
   const handleImportJsonAccept = useCallback(() => {
     if (!importJsonPreview || !graphImporter) return;
-    if (importJsonPreview.state_fields?.length) {
-      setStateFields(importJsonPreview.state_fields);
-    }
     graphImporter(importJsonPreview);
     setShowImportJson(false);
     setImportJsonInput("");
@@ -207,8 +125,7 @@ export default function App() {
 
   return (
     <ReactFlowProvider>
-      <StateProvider value={{ names: stateVariableNames, fields: stateFields, addField, removeField, renameField }}>
-      <div className={`app${showStateModal && view === "builder" ? " app-blurred" : ""}`}>
+      <div className="app">
         <header className="header">
           <div className="header-left">
             <div className="header-logo">
@@ -309,7 +226,6 @@ export default function App() {
           {view === "models" && (
             <ModelsPage
               graphImporter={graphImporter}
-              setStateFields={setStateFields}
               onSwitchToBuilder={() => setView("builder")}
               cachedModels={cachedModels}
               modelsLoading={modelsLoading}
@@ -331,22 +247,15 @@ export default function App() {
 
           <div className="builder-container" style={{ display: view === "builder" ? "contents" : "none" }}>
             <div className="left-panel" onKeyDown={(e) => e.stopPropagation()}>
-              <StatePanel
-                fields={stateFields}
-                onChange={setStateFields}
-                onOpenModal={() => setShowStateModal(true)}
-              />
               <NodePalette nodeTypes={nodeTypes} />
             </div>
 
             <Canvas
               nodeTypes={nodeTypes}
-              stateVariableNames={stateVariableNames}
               selectedNodeId={selectedNodeId}
               onNodeSelect={setSelectedNodeId}
               onGraphReady={(getter) => setGraphGetter(() => getter)}
               onImportReady={(importer) => setGraphImporter(() => importer)}
-              onNodesUpdaterReady={(updater) => { nodesUpdaterRef.current = updater; }}
               visible={view === "builder"}
             />
           </div>
@@ -364,8 +273,6 @@ export default function App() {
             <AIChatDropdown
               graphGetter={graphGetter}
               graphImporter={graphImporter}
-              stateFields={stateFields}
-              setStateFields={setStateFields}
               onSwitchToBuilder={() => setView("builder")}
               onClose={() => setShowAIChat(false)}
               wrapperRef={aiChatWrapperRef}
@@ -381,18 +288,9 @@ export default function App() {
         </div>
       )}
 
-      {showStateModal && (
-        <StateModelModal
-          fields={stateFields}
-          onChange={setStateFields}
-          onClose={() => setShowStateModal(false)}
-        />
-      )}
-
       {showChat && (
         <ChatPlayground
           graphGetter={graphGetter}
-          stateFieldsRef={stateFieldsRef}
           onClose={() => setShowChat(false)}
         />
       )}
@@ -400,7 +298,6 @@ export default function App() {
       {showDeploy && (
         <DeployModal
           graphGetter={graphGetter}
-          stateFieldsRef={stateFieldsRef}
           onClose={() => { setShowDeploy(false); refreshModels(); }}
           defaultExperimentPath={experimentPath ?? ""}
           onGoToSetup={() => { setShowDeploy(false); setView("setup"); }}
@@ -446,8 +343,8 @@ export default function App() {
                       <span>{importJsonPreview.nodes?.length ?? 0}</span>
                     </div>
                     <div className="mlflow-load-row">
-                      <span className="mlflow-load-label">State fields</span>
-                      <span>{importJsonPreview.state_fields?.map((f: { name: string }) => f.name).join(", ") || "none"}</span>
+                      <span className="mlflow-load-label">Edges</span>
+                      <span>{importJsonPreview.edges?.length ?? 0}</span>
                     </div>
                   </div>
                   <details className="mlflow-load-json-details">
@@ -493,8 +390,6 @@ export default function App() {
           </div>
         </div>
       )}
-
-      </StateProvider>
     </ReactFlowProvider>
   );
 }

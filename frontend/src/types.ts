@@ -21,6 +21,7 @@ export interface NodeConfigField {
   placeholder: string;
   help_text: string;
   fetch_endpoint: string;
+  advanced?: boolean;
 }
 
 export interface DiscoveryOption {
@@ -44,7 +45,6 @@ export interface NodeTypeMetadata {
   color: string;
   config_fields: NodeConfigField[];
   tool_compatible: boolean;
-  default_field_template: { name: string; type: string; description: string } | null;
 }
 
 export interface AttachedTool {
