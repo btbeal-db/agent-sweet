@@ -1,0 +1,26 @@
+#!/bin/sh
+# Auto-rebuild the frontend bundle when staged changes touch frontend
+# source. The deploy serves the pre-built bundle from backend/static/,
+# so a source-only commit can ship a stale UI.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+
+set -e
+
+if ! git diff --cached --name-only \
+  | grep -qE '^frontend/(src/|package(-lock)?\.json|tsconfig|vite\.config)'; then
+  exit 0
+fi
+
+if ! command -v npm >/dev/null 2>&1; then
+  echo "pre-commit: frontend source changed but npm is not on PATH."
+  echo "pre-commit:   install Node 18+ and run 'cd frontend && npm install'."
+  echo "pre-commit:   to skip (not recommended): git commit --no-verify"
+  exit 1
+fi
+
+echo "pre-commit: frontend source staged — running 'npm run build'..."
+(cd frontend && npm run build >/dev/null)
+git add backend/static/
+echo "pre-commit: rebuilt bundle staged."

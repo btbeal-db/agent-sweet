@@ -21,6 +21,11 @@ uv sync
 
 # Install frontend dependencies
 cd frontend && npm install && cd ..
+
+# Enable the repo's git hooks (one-time, per clone). The pre-commit
+# hook auto-rebuilds the frontend bundle when frontend source is
+# staged — without this, source-only commits can ship a stale UI.
+git config core.hooksPath .githooks
 ```
 
 ### Running locally
