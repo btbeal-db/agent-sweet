@@ -432,16 +432,30 @@ class AgentGraphModel(ResponsesAgent):
                 **create_text_delta(full_text, msg_id)
             )
         else:
-            # Streaming happened but the graph then hit an interrupt downstream.
-            # Append the interrupt prompt as continuation so the user sees the
-            # human-input question after the streamed content.
+            # Streaming happened, then the graph hit an interrupt downstream.
+            # Emit the *new* portion of the interrupt prompt — the trailing
+            # question the user needs to answer. The prompt template often
+            # embeds resolved state (e.g. ``{draft_email}``) which equals the
+            # text already streamed, so naively appending the whole prompt
+            # would duplicate the streamed content.
             if pending_interrupts:
                 first = pending_interrupts[0]
                 prompt = first.get("value", "") if isinstance(first, dict) else str(first.value)
+                streamed_text = "".join(streamed_parts)
                 if prompt:
-                    yield ResponsesAgentStreamEvent(
-                        **create_text_delta("\n\n" + str(prompt), msg_id)
-                    )
+                    if streamed_text and streamed_text in prompt:
+                        # Emit just the suffix that comes after the streamed text
+                        suffix = prompt.split(streamed_text, 1)[1]
+                        if suffix.strip():
+                            yield ResponsesAgentStreamEvent(
+                                **create_text_delta(suffix, msg_id)
+                            )
+                    else:
+                        # Prompt doesn't contain the streamed text — safe to
+                        # append the whole thing with a separator.
+                        yield ResponsesAgentStreamEvent(
+                            **create_text_delta("\n\n" + str(prompt), msg_id)
+                        )
             full_text = "".join(streamed_parts)
 
         # Do NOT emit response.completed or response.output_item.done —
