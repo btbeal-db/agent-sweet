@@ -388,18 +388,37 @@ class AgentGraphModel(ResponsesAgent):
                     boundary_pending = True
 
             elif mode == "updates":
-                # Accumulate state from node updates
+                # Accumulate state from node updates. Interrupts arrive here as
+                # ``{"__interrupt__": (Interrupt(...),)}`` — the value is a tuple,
+                # not a dict, so the per-node-output loop misses it.
                 if isinstance(data, dict):
+                    if "__interrupt__" in data:
+                        final_state["__interrupt__"] = data["__interrupt__"]
                     for node_output in data.values():
                         if isinstance(node_output, dict):
                             final_state.update(node_output)
 
-        # If nothing was streamed (non-LLM graphs, structured output,
-        # interrupts), emit the final output from accumulated state.
+        # Resolve any pending interrupt. Stream events don't always propagate it;
+        # the authoritative source is ``snap.tasks[i].interrupts``.
+        pending_interrupts = []
+        try:
+            snap = self.compiled_graph.get_state(config) if config else None
+            if snap:
+                for task in snap.tasks:
+                    if getattr(task, "interrupts", None):
+                        pending_interrupts.extend(task.interrupts)
+        except Exception:
+            pass
+        if not pending_interrupts:
+            raw = final_state.get("__interrupt__") or []
+            pending_interrupts = list(raw) if raw else []
+
         if not streamed_parts:
-            interrupts = final_state.get("__interrupt__")
-            if interrupts:
-                full_text = str(interrupts[0].value) if interrupts else ""
+            # Non-LLM-streaming path (structured output, pure non-LLM pipelines,
+            # or graphs that interrupted before any LLM ran).
+            if pending_interrupts:
+                first = pending_interrupts[0]
+                full_text = first.get("value", "") if isinstance(first, dict) else str(first.value)
             else:
                 full_text, _ = filter_output(final_state, self.graph_def)
                 if not full_text:
@@ -413,6 +432,16 @@ class AgentGraphModel(ResponsesAgent):
                 **create_text_delta(full_text, msg_id)
             )
         else:
+            # Streaming happened but the graph then hit an interrupt downstream.
+            # Append the interrupt prompt as continuation so the user sees the
+            # human-input question after the streamed content.
+            if pending_interrupts:
+                first = pending_interrupts[0]
+                prompt = first.get("value", "") if isinstance(first, dict) else str(first.value)
+                if prompt:
+                    yield ResponsesAgentStreamEvent(
+                        **create_text_delta("\n\n" + str(prompt), msg_id)
+                    )
             full_text = "".join(streamed_parts)
 
         # Do NOT emit response.completed or response.output_item.done —

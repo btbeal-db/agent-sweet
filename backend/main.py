@@ -856,11 +856,24 @@ def preview_graph(req: PreviewRequest):
                 return
 
             # Stream finished cleanly — pull the final state from the checkpoint.
-            final = compiled.get_state(config).values if config else {}
+            snap = compiled.get_state(config) if config else None
+            final = snap.values if snap else {}
 
-            interrupts = final.get("__interrupt__")
-            if interrupts:
-                prompt = interrupts[0].get("value", "Input needed") if isinstance(interrupts[0], dict) else str(interrupts[0].value)
+            # When ``stream_mode`` includes ``"messages"``, LangGraph yields the
+            # interrupt as a regular update event instead of raising — so the
+            # interrupt info isn't in ``snap.values["__interrupt__"]``. It lives
+            # on ``snap.tasks[i].interrupts``. Check there first.
+            pending_interrupts = []
+            if snap:
+                for task in snap.tasks:
+                    if getattr(task, "interrupts", None):
+                        pending_interrupts.extend(task.interrupts)
+            if not pending_interrupts:
+                pending_interrupts = final.get("__interrupt__") or []
+
+            if pending_interrupts:
+                first = pending_interrupts[0]
+                prompt = first.get("value", "Input needed") if isinstance(first, dict) else str(first.value)
                 yield _sse({
                     "type": "interrupt",
                     "thread_id": thread_id,
