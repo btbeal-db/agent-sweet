@@ -13,15 +13,32 @@ Before testing, you need:
 
 1. **App URL** — ask the user which app instance to target (e.g. `https://<host>/apps/agent-sweet-dev`)
 2. **Git branch** — confirm which branch the app is deployed from (e.g. `dev`, `main`, or a feature branch)
-3. **PAT** — obtain from the user's Databricks CLI. Ask which profile to use, then run:
+3. **Token** — either a PAT or an OAuth U2M token from the user's Databricks CLI:
    ```bash
    databricks auth token --profile <PROFILE> | jq -r '.access_token'
    ```
-   If the token is expired, ask the user to re-authenticate:
+   OAuth U2M tokens work in the `pat` field of `/api/graph/deploy` — the SDK accepts them as bearer tokens for UC writes and serving-endpoint creation. If auth fails, ask the user to re-authenticate:
    ```bash
    ! databricks auth login --profile <PROFILE>
    ```
    Never log or persist the token beyond the current request.
+
+## Sync the app to your branch first
+
+If you've just pushed commits, the deployed app may still be on an older commit. Compare and redeploy without waiting:
+
+```bash
+CURRENT=$(databricks --profile <PROFILE> apps get <APP_NAME> | jq -r '.active_deployment.git_source.resolved_commit')
+LATEST=$(git rev-parse HEAD)
+if [ "$CURRENT" != "$LATEST" ]; then
+  databricks --profile <PROFILE> apps deploy <APP_NAME> \
+    --json '{"git_source":{"branch":"<BRANCH>"},"mode":"SNAPSHOT"}' --no-wait
+  # Poll until the active deployment matches LATEST (~30-60s for code-only changes)
+  until s=$(databricks --profile <PROFILE> apps get <APP_NAME> | jq -r '.active_deployment.git_source.resolved_commit'); [[ "$s" == "$LATEST" ]]; do sleep 8; done
+fi
+```
+
+Only the **branch** is set in the deploy JSON — `git_repository.url` must already be configured at the app level.
 
 ## API Endpoints
 
@@ -80,6 +97,8 @@ echo "$TERMINAL" | jq '.type, .output'
 ```
 
 For multi-turn or resume flows, parse `thread_id` out of the terminal event and pass it back on the next request. When the terminal event is `done`, prefer the concatenated `delta.text` content as the assistant reply (that's what users saw streaming) and fall back to `done.output` only when nothing streamed (structured output, non-LLM graphs).
+
+> **Multi-turn preview is flaky from outside the browser.** The preview endpoint uses an in-memory `dict[thread_id, InMemorySaver]`. Direct API requests (curl, `requests`) can hit different app replicas across turns, finding no checkpoint and silently restarting the graph from `__start__`. The browser playground works because of session affinity. **For multi-turn smoke tests, deploy with Lakebase and invoke the served endpoint instead** (see "Full Serving Endpoint Test" below).
 
 ### Deploy a model
 
@@ -238,6 +257,8 @@ When you need to validate the complete path — model logging, UC registration, 
 
 ### 1. Deploy with `full` mode
 
+**Decide whether you need Lakebase first.** Pass `lakebase_project_id` if the graph contains *either* a conversational LLM (`config.conversational == "true"`) *or* any `human_input` node. Without a shared checkpointer, the served endpoint silently restarts the graph from `__start__` on every request — multi-turn looks broken. Lakebase auto-provisions on first use; subsequent agents in the same project share the cluster.
+
 ```bash
 curl -s -X POST "$APP_URL/api/graph/deploy" \
   -H "Content-Type: application/json" \
@@ -247,62 +268,129 @@ curl -s -X POST "$APP_URL/api/graph/deploy" \
     "experiment_path": "/Users/you@company.com/agent-sweet/my_test_agent",
     "deploy_mode": "full",
     "auth_mode": "obo",
-    "pat": "'"$TOKEN"'"
+    "pat": "'"$TOKEN"'",
+    "lakebase_project_id": "agent-sweet-test"  # only if needed
   }'
 ```
 
-Parse the SSE stream for the `endpoint_name` in the final event's `data` field.
+Parse the SSE stream for `endpoint_url`, `experiment_id`, and `run_id` in the final event's `data` field. Save these — you'll need `experiment_id` to fetch the trace.
 
 ### 2. Poll for endpoint readiness
 
-The serving endpoint takes a few minutes to provision. Poll until the state is `READY`:
+The serving endpoint takes ~10 minutes to provision (container build + cold start). Use `state.ready == "READY"` as the success signal:
 
 ```bash
-databricks serving-endpoints get <endpoint-name> --profile <PROFILE> -o json | jq '.state'
+HOST=https://<workspace-host>
+NAME=<endpoint-name>
+until s=$(curl -s "$HOST/api/2.0/serving-endpoints/$NAME" -H "Authorization: Bearer $TOKEN" | jq -r '.state.ready'); [[ "$s" == "READY" ]]; do echo "$s"; sleep 30; done; echo "READY"
 ```
 
-Or poll in a loop:
-
-```bash
-while true; do
-  STATE=$(databricks serving-endpoints get <endpoint-name> --profile <PROFILE> -o json | jq -r '.state.ready')
-  echo "State: $STATE"
-  [ "$STATE" = "READY" ] && break
-  sleep 15
-done
-```
+Run this with `run_in_background: true` and you'll get a single notification when the loop exits. **Do not poll faster than every 15s** — these are real workspace API calls.
 
 ### 3. Invoke the served endpoint
 
-Once ready, call the endpoint using the Responses API format:
+Use the Responses API format (`input` is a list of role/content messages, `context.conversation_id` is the thread id for multi-turn):
 
-```bash
-curl -s -X POST "https://<workspace-host>/serving-endpoints/<endpoint-name>/invocations" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello, what can you do?"}]}]
-  }'
+```python
+r = requests.post(f"{HOST}/serving-endpoints/{NAME}/invocations",
+    headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+    json={
+        "input": [{"role": "user", "content": "Draft a coffee invite to Alex tomorrow at 2pm."}],
+        "context": {"conversation_id": "smk_email_1"},
+    }, timeout=240)
+data = r.json()
+text = next(c["text"] for item in data["output"] for c in item["content"] if c["type"] == "output_text")
 ```
+
+For multi-turn, send subsequent calls with the **same** `conversation_id`. Each call is independent (synchronous `predict`), but Lakebase persists the checkpoint so the next call resumes from the previous interrupt.
 
 ### 4. Retrieve the trace
 
-After invocation, find the trace in the MLflow experiment. Use the experiment path from the deploy request:
+```python
+import mlflow, os
+os.environ["DATABRICKS_HOST"] = HOST
+mlflow.set_tracking_uri("databricks")
+client = mlflow.MlflowClient()
+trace = client.search_traces(experiment_ids=[EXPERIMENT_ID], max_results=1)[0]
 
-```bash
-# Get the experiment ID
-EXP_ID=$(databricks experiments get-by-name --experiment_name "/Users/you@company.com/agent-sweet" --profile <PROFILE> -o json | jq -r '.experiment.experiment_id')
-
-# List recent traces
-databricks api get /api/2.0/mlflow/traces?experiment_id=$EXP_ID --profile <PROFILE> | jq '.traces[0]'
+print(trace.info.status, trace.info.request_preview)
+for s in trace.data.spans:
+    print(f"[{s.name}] {s.status.status_code if s.status else ''}  {(s.end_time_ns - s.start_time_ns)//1_000_000}ms")
 ```
 
-Or use the trace ID directly if it was returned in the response headers. Read the trace to verify:
+Verify:
 
-- The LLM received the correct tools (check the tool definitions in the LLM span inputs)
-- Tool calls executed successfully (check tool span outputs)
-- No unexpected errors in any span
-- Streaming produced the right content (compare span output to endpoint response)
+- Span order matches the expected graph path (`predict → LangGraph → <Node1> → <Node2> → …`)
+- LLM nodes show non-zero duration; routers and human-input nodes are typically 0–1ms
+- No `ERROR` status on LLM/tool spans (see expected-error caveat below)
+- For multi-turn calls, the resumed node (e.g. `Revision Notes`) appears at the start of the trace and runs in 0ms — that's the resume picking up the checkpointed interrupt value
+
+**Expected `ERROR` spans:** `human_input` nodes always show `SpanStatusCode.ERROR` because LangGraph's `interrupt()` raises `GraphInterrupt` at the node level for control flow. The runtime catches it above and routes the interrupt event correctly. **This is not a real error** — every LangGraph app with human-in-the-loop has these in its traces.
+
+## Common Gotchas
+
+- **`export` env vars before `uv run python <<EOF`.** A bare assignment is shell-local; `uv` spawns a subprocess that doesn't see it. `os.environ["TOKEN"]` then `KeyError`s. Always `export TOKEN=...` first.
+- **Multi-turn preview is flaky** (see callout under `/api/graph/preview`). Use the deployed endpoint for multi-turn smoke.
+- **Human-input nodes need Lakebase**, not just conversational LLMs. The frontend's deploy gate enforces this; the API does not — pass `lakebase_project_id` explicitly when calling `/api/graph/deploy` directly.
+- **`experiment_path` must be a sub-path inside the setup folder**, not the folder itself. Use the deploy timestamp or model slug as the leaf segment.
+- **`Review Gate` / human-input ERROR spans are expected.** See "Retrieve the trace" above.
+- **OAuth U2M tokens work as `pat`.** No need to mint a real PAT — `databricks auth token --profile <P>` returns a bearer token the SDK accepts for UC writes and serving-endpoint creation.
+- **App must be on the right commit before testing.** After `git push`, run the sync block under "Sync the app to your branch first" to confirm the deployment commit matches `HEAD`. Skipping this is the #1 cause of "my fix isn't working."
+
+## Smoke harness skeleton (proven pattern)
+
+End-to-end smoke run combining preview + deploy + invoke + trace verification. Adjust to the specific change being tested:
+
+```bash
+export APP_URL="https://<host>/apps/agent-sweet-dev"
+export HOST="https://<workspace-host>"
+export TOKEN=$(databricks --profile <PROFILE> auth token | jq -r .access_token)
+export TS=$(date +%s)
+
+uv run python <<'EOF'
+import json, os, time, requests, mlflow
+
+APP_URL, HOST, TOKEN, TS = (os.environ[k] for k in ("APP_URL","HOST","TOKEN","TS"))
+HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+mlflow.set_tracking_uri("databricks")
+
+# 1. Deploy (full + Lakebase if the graph has human_input or conversational)
+deploy_body = {
+    "graph": json.load(open("examples/email_draft_agent.json")),
+    "model_name": f"catalog.schema.smoke_email_{TS}",
+    "experiment_path": f"/Users/you@company.com/agent-sweet/smoke_email_{TS}",
+    "deploy_mode": "full", "auth_mode": "obo", "pat": TOKEN,
+    "lakebase_project_id": "agent-sweet-test",
+}
+r = requests.post(f"{APP_URL}/api/graph/deploy", headers=HEADERS, json=deploy_body, stream=True, timeout=1800)
+last = None
+for line in r.iter_lines():
+    if line and line.decode().startswith("data: "):
+        last = json.loads(line.decode()[6:])
+        print(f"[{last['step']}/{last['status']}] {last['message'][:90]}")
+endpoint = last["data"]["endpoint_url"].split("/")[2]
+exp_id = last["data"]["experiment_id"]
+
+# 2. Wait for READY (poll loop is best run via Bash run_in_background — omitted here)
+
+# 3. Invoke (multi-turn flow)
+thread = f"smk_{TS}"
+def call(msg):
+    r = requests.post(f"{HOST}/serving-endpoints/{endpoint}/invocations", headers=HEADERS,
+        json={"input": [{"role":"user","content":msg}], "context":{"conversation_id":thread}}, timeout=240)
+    return next(c["text"] for item in r.json()["output"] for c in item["content"] if c["type"] == "output_text")
+
+print("Turn 1:", call("Draft a coffee invite to Alex tomorrow at 2pm.")[:120])
+print("Turn 2:", call("revise")[:120])
+print("Turn 3:", call("make it shorter and more casual")[:120])
+
+# 4. Verify the trace
+time.sleep(8)  # let the trace flush
+trace = mlflow.MlflowClient().search_traces(experiment_ids=[exp_id], max_results=1)[0]
+for s in trace.data.spans:
+    print(f"  [{s.name}] {s.status.status_code if s.status else ''}")
+EOF
+```
 
 ## What to Test
 
