@@ -47,7 +47,7 @@ from .auth import (
     create_pat_client,
 )
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
-from .graph_builder import build_graph, filter_output, prepare_invocation
+from .graph_builder import build_graph, filter_output, interrupt_value, pending_interrupts, prepare_invocation
 from .tools import discover_mcp_tool_metadata, managed_mcp_url_for_tool
 from .nodes import get_all_metadata
 from .lakebase import LakebaseConfig, provision_lakebase, resolve_lakebase
@@ -856,28 +856,17 @@ def preview_graph(req: PreviewRequest):
                 return
 
             # Stream finished cleanly — pull the final state from the checkpoint.
-            snap = compiled.get_state(config) if config else None
-            final = snap.values if snap else {}
+            final = compiled.get_state(config).values if config else {}
 
-            # When ``stream_mode`` includes ``"messages"``, LangGraph yields the
-            # interrupt as a regular update event instead of raising — so the
-            # interrupt info isn't in ``snap.values["__interrupt__"]``. It lives
-            # on ``snap.tasks[i].interrupts``. Check there first.
-            pending_interrupts = []
-            if snap:
-                for task in snap.tasks:
-                    if getattr(task, "interrupts", None):
-                        pending_interrupts.extend(task.interrupts)
-            if not pending_interrupts:
-                pending_interrupts = final.get("__interrupt__") or []
-
-            if pending_interrupts:
-                first = pending_interrupts[0]
-                prompt = first.get("value", "Input needed") if isinstance(first, dict) else str(first.value)
+            # ``stream_mode=["messages", "updates"]`` parks the interrupt on
+            # ``snap.tasks[i].interrupts`` instead of raising, so we check
+            # there via the shared helper.
+            interrupts = pending_interrupts(compiled, config)
+            if interrupts:
                 yield _sse({
                     "type": "interrupt",
                     "thread_id": thread_id,
-                    "prompt": str(prompt),
+                    "prompt": interrupt_value(interrupts[0]) or "Input needed",
                     "execution_trace": _turn_messages(final.get("messages", [])),
                     "state": {k: v for k, v in final.items() if k not in ("messages", "__interrupt__")},
                     "mlflow_trace": _extract_trace(),
