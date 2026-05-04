@@ -198,6 +198,36 @@ def prepare_invocation(
     return initial_state, config
 
 
+def pending_interrupts(compiled, config: dict[str, Any] | None) -> list:
+    """Return any pending interrupts from the graph's checkpoint state.
+
+    When ``stream()`` is invoked with ``stream_mode`` containing ``"messages"``,
+    LangGraph stops raising ``GraphInterrupt`` to the caller — it parks the
+    interrupt on ``snap.tasks[i].interrupts`` instead. This helper is the
+    authoritative way to detect a pending pause from either ``stream()`` or
+    ``invoke()`` (which still populates ``__interrupt__`` in the result).
+    """
+    if not config:
+        return []
+    try:
+        snap = compiled.get_state(config)
+    except Exception:
+        return []
+    out: list = []
+    for task in getattr(snap, "tasks", []) or []:
+        ints = getattr(task, "interrupts", None)
+        if ints:
+            out.extend(ints)
+    return out
+
+
+def interrupt_value(interrupt) -> str:
+    """Extract the human-facing prompt from an Interrupt (object or dict)."""
+    if isinstance(interrupt, dict):
+        return str(interrupt.get("value", ""))
+    return str(getattr(interrupt, "value", ""))
+
+
 def run_graph(
     graph_def: GraphDef,
     input_message: str,

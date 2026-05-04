@@ -39,7 +39,7 @@ if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
 from backend.auth import set_auth_mode, set_serving
-from backend.graph_builder import build_graph, filter_output
+from backend.graph_builder import build_graph, filter_output, interrupt_value, pending_interrupts
 from backend.schema import GraphDef
 
 logger = logging.getLogger(__name__)
@@ -201,6 +201,31 @@ def _make_resp_id() -> str:
     return f"resp_{uuid.uuid4().hex[:24]}"
 
 
+def _last_ai_content(messages: list) -> str:
+    """Walk the message list backwards and return the last assistant content."""
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            return m.get("content", "")
+        if isinstance(m, AIMessage) and m.content:
+            return m.content
+        if hasattr(m, "type") and m.type == "ai":
+            return getattr(m, "content", "")
+    return ""
+
+
+def _text_response(text: str) -> ResponsesAgentResponse:
+    """Wrap plain text as a single-message ResponsesAgentResponse."""
+    return ResponsesAgentResponse(
+        id=_make_resp_id(),
+        output=[{
+            "id": _make_msg_id(),
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": str(text)}],
+        }],
+    )
+
+
 class AgentGraphModel(ResponsesAgent):
     """Wraps a compiled LangGraph agent as an MLflow ResponsesAgent for serving."""
 
@@ -263,17 +288,7 @@ class AgentGraphModel(ResponsesAgent):
         """Run the agent graph synchronously and return the full response."""
         user_message = _extract_user_message(request)
         if not user_message:
-            return ResponsesAgentResponse(
-                id=_make_resp_id(),
-                output=[
-                    {
-                        "id": _make_msg_id(),
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": "No user message provided."}],
-                    }
-                ],
-            )
+            return _text_response("No user message provided.")
 
         thread_id = _get_thread_id(request)
         config = _build_config(self.checkpointer, thread_id)
@@ -281,48 +296,17 @@ class AgentGraphModel(ResponsesAgent):
 
         result = self.compiled_graph.invoke(invoke_input, config=config)
 
-        # Check for human-in-the-loop interrupt. invoke() returns normally
-        # with __interrupt__ in the result (it does NOT raise GraphInterrupt).
-        # The checkpointer persists state so the next request can resume.
-        interrupts = result.get("__interrupt__")
+        # Human-in-the-loop interrupt. ``invoke()`` returns normally with the
+        # interrupt parked on the result; ``stream_mode=["messages",…]`` keeps
+        # it on the checkpoint state instead. ``pending_interrupts`` covers both.
+        interrupts = result.get("__interrupt__") or pending_interrupts(self.compiled_graph, config)
         if interrupts:
-            prompt = str(interrupts[0].value) if interrupts else "Input needed"
-            return ResponsesAgentResponse(
-                id=_make_resp_id(),
-                output=[
-                    {
-                        "id": _make_msg_id(),
-                        "type": "message",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": prompt}],
-                    }
-                ],
-            )
+            return _text_response(interrupt_value(interrupts[0]) or "Input needed")
 
         output, _ = filter_output(result, self.graph_def)
-
-        # Fallback to last assistant message if filter returned empty
         if not output:
-            messages = result.get("messages", [])
-            for msg in reversed(messages):
-                if isinstance(msg, dict) and msg.get("role") == "assistant":
-                    output = msg.get("content", "")
-                    break
-                elif hasattr(msg, "type") and msg.type == "ai":
-                    output = msg.content
-                    break
-
-        return ResponsesAgentResponse(
-            id=_make_resp_id(),
-            output=[
-                {
-                    "id": _make_msg_id(),
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": str(output)}],
-                }
-            ],
-        )
+            output = _last_ai_content(result.get("messages", []))
+        return _text_response(output)
 
     def predict_stream(
         self, request: ResponsesAgentRequest
@@ -387,38 +371,50 @@ class AgentGraphModel(ResponsesAgent):
                 elif streamed_parts:
                     boundary_pending = True
 
-            elif mode == "updates":
-                # Accumulate state from node updates
-                if isinstance(data, dict):
-                    for node_output in data.values():
-                        if isinstance(node_output, dict):
-                            final_state.update(node_output)
+            elif mode == "updates" and isinstance(data, dict):
+                # Accumulate plain state updates so non-streaming-LLM nodes
+                # (structured output, Genie, VS, …) can populate the response.
+                # The ``__interrupt__`` key is read separately from the
+                # checkpoint state below — it arrives as a tuple, not a dict.
+                for node_output in data.values():
+                    if isinstance(node_output, dict):
+                        final_state.update(node_output)
 
-        # If nothing was streamed (non-LLM graphs, structured output,
-        # interrupts), emit the final output from accumulated state.
-        if not streamed_parts:
-            interrupts = final_state.get("__interrupt__")
+        # If the graph paused at a Human Input, surface the prompt.
+        interrupts = pending_interrupts(self.compiled_graph, config)
+
+        if streamed_parts:
+            # LLM tokens already streamed. If we then hit an interrupt, append
+            # only the *new* suffix of its prompt — the trailing question.
+            # Human-input prompts often embed resolved state (e.g.
+            # ``{draft_email}``) equal to what the LLM just streamed, so
+            # naively appending the whole prompt would duplicate text.
             if interrupts:
-                full_text = str(interrupts[0].value) if interrupts else ""
+                prompt = interrupt_value(interrupts[0])
+                streamed_text = "".join(streamed_parts)
+                if prompt and streamed_text in prompt:
+                    suffix = prompt.split(streamed_text, 1)[1]
+                elif prompt:
+                    suffix = "\n\n" + prompt
+                else:
+                    suffix = ""
+                if suffix.strip():
+                    yield ResponsesAgentStreamEvent(**create_text_delta(suffix, msg_id))
+        else:
+            # Nothing streamed — non-LLM graph, structured output, or an
+            # interrupt that fired before any LLM ran. Emit a single delta.
+            if interrupts:
+                full_text = interrupt_value(interrupts[0])
             else:
                 full_text, _ = filter_output(final_state, self.graph_def)
                 if not full_text:
-                    messages = final_state.get("messages", [])
-                    for m in reversed(messages):
-                        if isinstance(m, AIMessage) and m.content:
-                            full_text = m.content
-                            break
-            full_text = str(full_text or "")
-            yield ResponsesAgentStreamEvent(
-                **create_text_delta(full_text, msg_id)
-            )
-        else:
-            full_text = "".join(streamed_parts)
+                    full_text = _last_ai_content(final_state.get("messages", []))
+            yield ResponsesAgentStreamEvent(**create_text_delta(str(full_text or ""), msg_id))
 
-        # Do NOT emit response.completed or response.output_item.done —
-        # the Databricks AI Playground renders their content as additional
-        # text, duplicating everything already streamed via deltas.
-        # The serving layer's [DONE] signal is sufficient to end the stream.
+        # Do NOT emit ``response.completed`` or ``response.output_item.done`` —
+        # the Databricks AI Playground previously rendered their content as
+        # additional text, duplicating everything already streamed via deltas.
+        # The serving layer's ``[DONE]`` sentinel is enough to end the stream.
 
 
 # Register this model for MLflow "models from code" loading

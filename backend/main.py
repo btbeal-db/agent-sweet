@@ -47,7 +47,7 @@ from .auth import (
     create_pat_client,
 )
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
-from .graph_builder import build_graph, filter_output, prepare_invocation
+from .graph_builder import build_graph, filter_output, interrupt_value, pending_interrupts, prepare_invocation
 from .tools import discover_mcp_tool_metadata, managed_mcp_url_for_tool
 from .nodes import get_all_metadata
 from .lakebase import LakebaseConfig, provision_lakebase, resolve_lakebase
@@ -768,7 +768,7 @@ def _turn_messages(all_messages: list) -> list[dict]:
 
 
 @app.post("/api/graph/preview")
-def preview_graph(req: PreviewRequest):
+def preview_graph(req: PreviewRequest, request: FastAPIRequest):
     """Stream the graph as an SSE feed of token deltas + a final result event.
 
     Mirrors the deployed model's ``predict_stream`` so the playground UX
@@ -792,10 +792,12 @@ def preview_graph(req: PreviewRequest):
     if thread_id not in _preview_sessions:
         _preview_sessions[thread_id] = InMemorySaver()
 
-    # If the user provided a PAT, set it for this request so data-access
-    # nodes (VS, Genie) use it instead of SP credentials.  The PAT is held
-    # only in a ContextVar for the request lifetime — never stored or logged.
-    set_user_pat(req.pat)
+    # The SSE generator below runs in Starlette's threadpool, which has its
+    # own ContextVar context — neither the OBOMiddleware's ``_user_token``
+    # nor a route-handler ``set_user_pat`` would propagate. Capture both
+    # here and re-set them at the top of ``_generate``.
+    obo_token = request.headers.get("x-forwarded-access-token")
+    user_pat = req.pat
 
     # Enable MLflow tracing — swap to the preview tracking DB for this request.
     prev_tracking_uri = mlflow.get_tracking_uri()
@@ -804,6 +806,11 @@ def preview_graph(req: PreviewRequest):
     mlflow.langchain.autolog(log_traces=True)
 
     def _generate():
+        # Re-establish auth in the generator's context. Without this the
+        # data-access tools fall back to SP credentials and 403 on the
+        # user's own VS index / Genie space.
+        set_user_token(obo_token)
+        set_user_pat(user_pat)
         try:
             compiled = build_graph(req.graph, checkpointer=_preview_sessions[thread_id])
             invoke_input, config = prepare_invocation(
@@ -858,13 +865,15 @@ def preview_graph(req: PreviewRequest):
             # Stream finished cleanly — pull the final state from the checkpoint.
             final = compiled.get_state(config).values if config else {}
 
-            interrupts = final.get("__interrupt__")
+            # ``stream_mode=["messages", "updates"]`` parks the interrupt on
+            # ``snap.tasks[i].interrupts`` instead of raising, so we check
+            # there via the shared helper.
+            interrupts = pending_interrupts(compiled, config)
             if interrupts:
-                prompt = interrupts[0].get("value", "Input needed") if isinstance(interrupts[0], dict) else str(interrupts[0].value)
                 yield _sse({
                     "type": "interrupt",
                     "thread_id": thread_id,
-                    "prompt": str(prompt),
+                    "prompt": interrupt_value(interrupts[0]) or "Input needed",
                     "execution_trace": _turn_messages(final.get("messages", [])),
                     "state": {k: v for k, v in final.items() if k not in ("messages", "__interrupt__")},
                     "mlflow_trace": _extract_trace(),
@@ -885,6 +894,7 @@ def preview_graph(req: PreviewRequest):
             yield _sse({"type": "error", "message": str(e)})
         finally:
             set_user_pat(None)
+            set_user_token(None)
             mlflow.set_tracking_uri(prev_tracking_uri)
 
     return StreamingResponse(_generate(), media_type="text/event-stream")

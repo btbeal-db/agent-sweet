@@ -48,12 +48,23 @@ function preflight(graphGetter: (() => GraphDef) | null): string | null {
   return null;
 }
 
-/** Check if any LLM node has conversational mode enabled. */
-function hasConversationalNode(graphGetter: (() => GraphDef) | null): boolean {
+/** Whether the graph needs a persistent checkpointer (Lakebase) at serving time.
+ *
+ * Two cases require it:
+ * - any LLM with ``conversational: true`` — message history must persist
+ *   across turns
+ * - any ``human_input`` node — the checkpoint is what lets the next request
+ *   resume from the interrupt instead of restarting the graph
+ *
+ * Without one, the deployed endpoint silently restarts the graph on every
+ * request because LangGraph's in-memory saver is per-worker.
+ */
+function requiresPersistence(graphGetter: (() => GraphDef) | null): boolean {
   if (!graphGetter) return false;
   try {
     const graph = graphGetter();
     return graph.nodes.some((n) => {
+      if (n.type === "human_input") return true;
       if (n.type !== "llm") return false;
       const flag = n.config.include_message_history ?? n.config.conversational;
       return String(flag).toLowerCase() === "true";
@@ -113,12 +124,12 @@ export default function DeployModal({ graphGetter, onClose, defaultExperimentPat
   const [lakebaseExistingProjectId, setLakebaseExistingProjectId] = useState("");
   const [lakebaseConnString, setLakebaseConnString] = useState("");
 
-  const isConversational = hasConversationalNode(graphGetter);
+  const needsCheckpointer = requiresPersistence(graphGetter);
   const needsModelName = deployMode !== "log_only";
 
   const lakebaseValid = (() => {
     if (deployMode !== "full") return true;
-    if (!isConversational) return true;
+    if (!needsCheckpointer) return true;
     switch (lakebaseMode) {
       case "create": return lakebaseProjectId.trim().length > 0;
       case "existing": return lakebaseExistingProjectId.trim().length > 0;
@@ -296,7 +307,7 @@ export default function DeployModal({ graphGetter, onClose, defaultExperimentPat
               {deployMode === "full" && (
                 <>
                   <label className="deploy-label">
-                    Lakebase (Conversation Memory)
+                    Lakebase (Persistent State)
                     <select
                       className="deploy-input"
                       value={lakebaseMode}
@@ -305,11 +316,11 @@ export default function DeployModal({ graphGetter, onClose, defaultExperimentPat
                       <option value="create">Create new Lakebase project</option>
                       <option value="existing">Use existing Lakebase instance</option>
                       <option value="connstring">Connection string (advanced)</option>
-                      {!isConversational && <option value="none">None</option>}
+                      {!needsCheckpointer && <option value="none">None</option>}
                     </select>
                     <span className="deploy-hint">
-                      {isConversational
-                        ? "Required — your graph has conversational nodes."
+                      {needsCheckpointer
+                        ? "Required — your graph uses conversational LLMs or human input nodes that need state persisted across turns."
                         : "Optional. Enables multi-turn conversation memory."}
                     </span>
                   </label>
