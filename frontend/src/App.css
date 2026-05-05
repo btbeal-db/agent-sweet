@@ -2299,6 +2299,68 @@ code, pre, .mono {
   text-align: center;
 }
 
+.route-field-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.route-field-tag {
+  flex-shrink: 0;
+  width: 52px;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.route-test {
+  margin-top: 0.6rem;
+  padding: 0.5rem;
+  background: var(--bg-elevated);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.route-test-label {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+}
+
+.route-test-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 0.3rem 0.4rem;
+  font-size: 0.72rem;
+}
+
+.route-test-result {
+  margin-top: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.route-test-result strong {
+  color: #F26B6B;
+}
+
+.route-test-fallback {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.route-test-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 /* ── Route labels on nodes ────────────────────────────────────── */
 .agent-node-routes {
   display: flex;
