@@ -1,9 +1,11 @@
 import { Handle, Position, useReactFlow, useUpdateNodeInternals } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { Variable } from "lucide-react";
 import { NodeIcon } from "../NodeIcon";
 import ToolChip from "./ToolChip";
 import NodeSummary from "./NodeSummary";
+import ResourcePill from "./ResourcePill";
 import { useRenameNode } from "../../StateContext";
 import type { AttachedTool } from "../../types";
 
@@ -198,6 +200,19 @@ export default function AgentNode({ id, data, selected }: NodeProps) {
 
       <div className="agent-node-body">
         {!isRouter && <NodeSummary nodeType={nodeType} config={config} tools={tools} />}
+
+        {isRouter && (() => {
+          const evalField = (config.evaluates as string) ?? "";
+          const subField = (config._route_sub_field as string) ?? "";
+          const value = evalField ? (subField ? `${evalField}.${subField}` : evalField) : "";
+          return (
+            <ResourcePill
+              icon={<Variable size={13} />}
+              value={value}
+              placeholder="Select a field"
+            />
+          );
+        })()}
 
         {isRouter && routes.length > 0 && (
           <div className="router-outputs">
