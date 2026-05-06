@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect, useCallback, type RefObject } from "react";
-import { Send } from "lucide-react";
+import { ArrowUp } from "lucide-react";
 import SimpleMarkdown from "./SimpleMarkdown";
 import { sendAIChatMessage } from "../api";
-import type { GraphDef, StateFieldDef } from "../types";
+import type { GraphDef } from "../types";
 
 interface ChatMsg {
   id: string;
@@ -15,8 +15,6 @@ interface ChatMsg {
 interface Props {
   graphGetter: (() => GraphDef) | null;
   graphImporter: ((g: GraphDef) => void) | null;
-  stateFields: StateFieldDef[];
-  setStateFields: (fields: StateFieldDef[]) => void;
   onSwitchToBuilder: () => void;
   onClose: () => void;
   wrapperRef: RefObject<HTMLDivElement | null>;
@@ -25,8 +23,6 @@ interface Props {
 export default function AIChatDropdown({
   graphGetter,
   graphImporter,
-  stateFields,
-  setStateFields,
   onSwitchToBuilder,
   onClose,
   wrapperRef,
@@ -105,12 +101,9 @@ export default function AIChatDropdown({
     (graph: GraphDef) => {
       if (!graphImporter) return;
       graphImporter(graph);
-      if (graph.state_fields?.length) {
-        setStateFields(graph.state_fields);
-      }
       onSwitchToBuilder();
     },
-    [graphImporter, setStateFields, onSwitchToBuilder],
+    [graphImporter, onSwitchToBuilder],
   );
 
   return (
@@ -148,21 +141,25 @@ export default function AIChatDropdown({
       </div>
 
       <div className="chat-input-bar">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-          placeholder="Describe your agent..."
-          disabled={sending}
-          autoFocus
-        />
-        <button
-          className="btn btn-primary"
-          onClick={handleSend}
-          disabled={sending || !input.trim()}
-        >
-          <Send size={14} />
-        </button>
+        <div className="chat-input-pill">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+            placeholder="Describe your agent..."
+            disabled={sending}
+            autoFocus
+          />
+          <button
+            className="chat-send-btn"
+            onClick={handleSend}
+            disabled={sending || !input.trim()}
+            title="Send"
+          >
+            <ArrowUp size={16} />
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -46,24 +46,29 @@ def build_pydantic_model(sub_fields: list[dict[str, str]], model_name: str = "St
     return create_model(model_name, **field_definitions)
 
 
+_TEMPLATE_SKIP_KEYS = {"messages", "_writes_to", "_target_field"}
+
+
 def _resolve_templates(template: str, state: dict[str, Any]) -> str:
-    """Replace {field_name} placeholders in the template with state values."""
-    result = template
-    for key, val in state.items():
-        if key in ("messages", "_writes_to", "_target_field"):
-            continue
-        result = result.replace(f"{{{key}}}", str(val))
-    return result
+    """Replace ``{field}`` and ``{field.sub}`` placeholders with state values.
 
-
-def _build_state_context(state: dict[str, Any]) -> str:
-    """Format non-empty state fields as context for the LLM prompt."""
-    parts = []
+    Sub-paths (e.g. ``{verdict.reasoning}``) resolve against fields whose
+    value is a JSON-encoded structured output. Unknown placeholders are left
+    in place so the user notices the typo.
+    """
     for key, val in state.items():
-        if key in ("messages", "_writes_to", "_target_field") or not val:
+        if key in _TEMPLATE_SKIP_KEYS:
             continue
-        parts.append(f"{key}: {val}")
-    return "\n".join(parts)
+        template = template.replace(f"{{{key}}}", str(val))
+        if isinstance(val, str) and val.strip().startswith("{"):
+            try:
+                parsed = json.loads(val)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(parsed, dict):
+                for sub_key, sub_val in parsed.items():
+                    template = template.replace(f"{{{key}.{sub_key}}}", str(sub_val))
+    return template
 
 
 def _get_message_history(state: dict[str, Any], last_n: int = 0) -> list[BaseMessage]:
@@ -130,10 +135,6 @@ class LLMNode(BaseNode):
         return "#8b5cf6"
 
     @property
-    def default_field_template(self) -> dict[str, str] | None:
-        return {"name": "llm_output", "type": "str", "description": "LLM response"}
-
-    @property
     def config_fields(self) -> list[NodeConfigField]:
         return [
             NodeConfigField(
@@ -158,22 +159,13 @@ class LLMNode(BaseNode):
                 default=0.7,
             ),
             NodeConfigField(
-                name="include_state_variables",
-                label="Include State Variables",
-                field_type="select",
-                required=False,
-                default="true",
-                options=["true", "false"],
-                help_text="Pass all user-defined state variables to the LLM. When disabled, use {field_name} templates in the system prompt instead.",
-            ),
-            NodeConfigField(
-                name="include_message_history",
-                label="Include Message History",
+                name="conversational",
+                label="Conversational",
                 field_type="select",
                 required=False,
                 default="false",
                 options=["false", "true"],
-                help_text="Include prior conversation turns in the prompt for multi-turn awareness.",
+                help_text="Multi-turn awareness — pass prior user/assistant messages to the LLM each turn.",
             ),
             NodeConfigField(
                 name="last_n_messages",
@@ -181,29 +173,30 @@ class LLMNode(BaseNode):
                 field_type="number",
                 required=False,
                 default=0,
-                help_text="Number of recent messages to include (0 = all). Only used when Include Message History is enabled.",
+                help_text="Cap on prior messages to include (0 = all). Only used when Conversational is enabled.",
+                advanced=True,
+            ),
+            NodeConfigField(
+                name="output_schema",
+                label="Structured Output",
+                field_type="schema_editor",
+                required=False,
+                default=[],
+                help_text="Define structured output fields. Leave empty for plain text output.",
+                advanced=True,
             ),
         ]
 
     def execute(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         writes_to = config.get("_writes_to", "")
-        target_field = config.get("_target_field")
         endpoint = config.get("endpoint", "databricks-meta-llama-3-3-70b-instruct")
         temperature = float(config.get("temperature", 0.7))
         raw_prompt = config.get("system_prompt", "You are a helpful assistant.")
-        include_state_vars = str(config.get("include_state_variables", "true")).lower() == "true"
-        include_msg_history = str(config.get("include_message_history",
-                                             config.get("conversational", "false"))).lower() == "true"
+        conversational = str(config.get("conversational", "false")).lower() == "true"
         last_n = int(config.get("last_n_messages", 0) or 0)
 
-        # Resolve {field_name} templates in the system prompt from state
+        # Resolve {field} / {field.sub} placeholders against current state.
         system_prompt = _resolve_templates(raw_prompt, state)
-
-        # Optionally inject state fields into the system prompt
-        if include_state_vars:
-            state_context = _build_state_context(state)
-            if state_context:
-                system_prompt = f"{system_prompt}\n\nCurrent state:\n{state_context}"
 
         # LLM calls use the SP credentials (default env vars). FMAPI's data-plane
         # does not accept OBO tokens. Data-access nodes (VS, Genie, UC) use OBO.
@@ -228,22 +221,19 @@ class LLMNode(BaseNode):
             except Exception as exc:
                 return {writes_to: f"Error binding tools: {exc}"}
 
-        # Auto-detect structured output from the state field definition.
-        target_type = getattr(target_field, "type", "str") if target_field else "str"
+        # Structured output is configured directly on the node. Empty schema = plain text.
+        raw_schema = config.get("output_schema", [])
+        if isinstance(raw_schema, str):
+            try:
+                raw_schema = json.loads(raw_schema)
+            except (json.JSONDecodeError, ValueError):
+                raw_schema = []
+        sub_fields = [f for f in raw_schema if isinstance(f, dict) and f.get("name")] if isinstance(raw_schema, list) else []
 
-        if target_type == "structured":
-            sub_fields = getattr(target_field, "sub_fields", [])
-        elif target_type in _TYPE_MAP and target_type != "str":
-            sub_fields = [{"name": writes_to, "type": target_type, "description": getattr(target_field, "description", "") or writes_to}]
-        else:
-            sub_fields = []
-
-        # Build messages for the LLM. When message history is enabled,
-        # pass real message objects (like the standard LangGraph pattern)
-        # instead of formatting them as text.
-        if include_msg_history:
-            history = _get_message_history(state, last_n=last_n)
-            messages_for_llm = [SystemMessage(content=system_prompt)] + history
+        # In conversational mode, pass prior user/assistant turns as real
+        # message objects. Otherwise treat each invocation as a single turn.
+        if conversational:
+            messages_for_llm = [SystemMessage(content=system_prompt)] + _get_message_history(state, last_n=last_n)
         else:
             messages_for_llm = [
                 SystemMessage(content=system_prompt),
@@ -265,10 +255,7 @@ class LLMNode(BaseNode):
             result = structured_llm.invoke(messages_for_llm)
 
             result_dict = result.model_dump()
-            if target_type != "structured":
-                response_text = str(result_dict[writes_to])
-            else:
-                response_text = json.dumps(result_dict, indent=2)
+            response_text = json.dumps(result_dict, indent=2)
 
             return {
                 writes_to: response_text,

@@ -1,11 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { ExternalLink, Upload, Loader, Package } from "lucide-react";
 import { fetchModelGraph } from "../api";
-import type { ModelInfo, GraphDef, StateFieldDef } from "../types";
+import type { ModelInfo, GraphDef } from "../types";
 
 interface Props {
   graphImporter: ((g: GraphDef) => void) | null;
-  setStateFields: (fields: StateFieldDef[]) => void;
   onSwitchToBuilder: () => void;
   cachedModels: ModelInfo[] | null;
   modelsLoading: boolean;
@@ -26,7 +25,7 @@ function formatTime(raw: string | null): string {
     + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-export default function ModelsPage({ graphImporter, setStateFields, onSwitchToBuilder, cachedModels, modelsLoading, onRefresh }: Props) {
+export default function ModelsPage({ graphImporter, onSwitchToBuilder, cachedModels, modelsLoading, onRefresh }: Props) {
   const [loadingGraph, setLoadingGraph] = useState<string | null>(null);
 
   // Fetch on first visit only (when cache is empty)
@@ -43,9 +42,6 @@ export default function ModelsPage({ graphImporter, setStateFields, onSwitchToBu
     setLoadingGraph(model.experiment_id);
     try {
       const graph = await fetchModelGraph(model.latest_run_id);
-      if (graph.state_fields?.length) {
-        setStateFields(graph.state_fields);
-      }
       graphImporter(graph);
       onSwitchToBuilder();
     } catch (err) {
@@ -53,7 +49,7 @@ export default function ModelsPage({ graphImporter, setStateFields, onSwitchToBu
     } finally {
       setLoadingGraph(null);
     }
-  }, [graphImporter, setStateFields, onSwitchToBuilder]);
+  }, [graphImporter, onSwitchToBuilder]);
 
   if (modelsLoading && cachedModels === null) {
     return (

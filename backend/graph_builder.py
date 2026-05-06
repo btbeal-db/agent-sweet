@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
 
+from .auth import get_user_token, set_user_token
 from .nodes import get_node
 from .schema import GraphDef, StateFieldDef
 
@@ -26,13 +27,28 @@ def _build_state_type(state_fields: list[StateFieldDef]) -> type:
     return TypedDict("AgentState", fields)  # type: ignore[misc]
 
 
-def _make_node_fn(node_impl, config: dict[str, Any], writes_to: str, target_field: StateFieldDef | None):
+def _make_node_fn(
+    node_impl,
+    config: dict[str, Any],
+    writes_to: str,
+    target_field: StateFieldDef | None,
+    graph_name: str,
+):
     """Create a closure so each graph node captures its own config.
 
     Returns only the state *updates* — LangGraph merges them into state.
+
+    Captures the per-request OBO token at graph-build time and re-sets
+    it inside the closure. ``compiled.stream`` with
+    ``stream_mode=["messages", ...]`` runs node callbacks in an internal
+    async/executor context where the request-scope ``_user_token``
+    ContextVar is no longer visible — without restoring it here, tool
+    factories fall back to the SDK path with the app's SP credentials.
     """
+    captured_token = get_user_token()
 
     def fn(state: dict[str, Any]) -> dict[str, Any]:
+        set_user_token(captured_token)
         enriched_config = {
             **config,
             "_writes_to": writes_to,
@@ -41,18 +57,20 @@ def _make_node_fn(node_impl, config: dict[str, Any], writes_to: str, target_fiel
         updates = node_impl.execute(state, enriched_config)
         return updates
 
-    fn.__name__ = f"node_{writes_to or node_impl.node_type}"
+    fn.__name__ = graph_name
     return fn
 
 
-def _make_router_fn(node_impl, config: dict[str, Any]):
+def _make_router_fn(node_impl, config: dict[str, Any], graph_name: str):
     """Create a routing function that returns the chosen route key."""
+    captured_token = get_user_token()
 
     def fn(state: dict[str, Any]) -> str:
+        set_user_token(captured_token)
         result = node_impl.execute(state, config)
         return result.get("_route", "default")
 
-    fn.__name__ = f"router_{node_impl.node_type}"
+    fn.__name__ = graph_name
     return fn
 
 
@@ -62,8 +80,19 @@ def _resolve(node_id: str) -> str:
 
 
 def _graph_name(node_def) -> str:
-    """Return the LangGraph node name: user-set name if present, otherwise the canvas ID."""
-    return node_def.name.strip() if node_def.name and node_def.name.strip() else node_def.id
+    """Pick a human-readable name for tracing.
+
+    Priority: explicit user name → ``writes_to`` slug → typed canvas id.
+    The slug fallback covers nodes the user dropped without renaming
+    (e.g. ``llm``, ``llm_2``); the typed-id fallback only fires for
+    routers, which have no ``writes_to``.
+    """
+    if node_def.name and node_def.name.strip():
+        return node_def.name.strip()
+    if node_def.writes_to:
+        return node_def.writes_to
+    suffix = node_def.id.replace("node_", "") if node_def.id.startswith("node_") else node_def.id
+    return f"{node_def.type}_{suffix}" if suffix else node_def.type
 
 
 def build_graph(graph_def: GraphDef, checkpointer=None):
@@ -97,7 +126,7 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
         target_field = graph_def.get_state_field(node_def.writes_to)
         builder.add_node(
             gname,
-            _make_node_fn(node_impl, node_def.config, node_def.writes_to, target_field),
+            _make_node_fn(node_impl, node_def.config, node_def.writes_to, target_field, gname),
         )
 
     def _resolve_named(node_id: str) -> str:
@@ -130,7 +159,7 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
             }
             builder.add_conditional_edges(
                 src_name,
-                _make_router_fn(node_impl, node_def.config),
+                _make_router_fn(node_impl, node_def.config, src_name),
                 route_map,
             )
         else:
@@ -138,6 +167,77 @@ def build_graph(graph_def: GraphDef, checkpointer=None):
                 builder.add_edge(src_name, _resolve_named(edge.target))
 
     return builder.compile(checkpointer=checkpointer)
+
+
+def prepare_invocation(
+    compiled,
+    graph_def: GraphDef,
+    input_message: str,
+    thread_id: str | None,
+    resume_value: str | None,
+) -> tuple[Any, dict[str, Any]]:
+    """Build the (input, config) pair for ``compiled.invoke`` / ``compiled.stream``.
+
+    Continuations on an existing thread send only the new user message so the
+    checkpointer's prior state survives; fresh threads send the full initial
+    state. Resumes wrap the value in ``Command(resume=...)``.
+    """
+    config: dict[str, Any] = {}
+    if thread_id is not None:
+        config["configurable"] = {"thread_id": thread_id}
+
+    if resume_value is not None:
+        return Command(resume=resume_value), config
+
+    has_history = False
+    if thread_id:
+        existing = compiled.get_state(config)
+        if existing and existing.values:
+            has_history = True
+
+    if has_history:
+        return (
+            {
+                "input": input_message,
+                "messages": [{"role": "user", "content": input_message}],
+            },
+            config,
+        )
+
+    initial_state: dict[str, Any] = {f.name: "" for f in graph_def.state_fields}
+    initial_state["input"] = input_message
+    initial_state["messages"] = [{"role": "user", "content": input_message}]
+    return initial_state, config
+
+
+def pending_interrupts(compiled, config: dict[str, Any] | None) -> list:
+    """Return any pending interrupts from the graph's checkpoint state.
+
+    When ``stream()`` is invoked with ``stream_mode`` containing ``"messages"``,
+    LangGraph stops raising ``GraphInterrupt`` to the caller — it parks the
+    interrupt on ``snap.tasks[i].interrupts`` instead. This helper is the
+    authoritative way to detect a pending pause from either ``stream()`` or
+    ``invoke()`` (which still populates ``__interrupt__`` in the result).
+    """
+    if not config:
+        return []
+    try:
+        snap = compiled.get_state(config)
+    except Exception:
+        return []
+    out: list = []
+    for task in getattr(snap, "tasks", []) or []:
+        ints = getattr(task, "interrupts", None)
+        if ints:
+            out.extend(ints)
+    return out
+
+
+def interrupt_value(interrupt) -> str:
+    """Extract the human-facing prompt from an Interrupt (object or dict)."""
+    if isinstance(interrupt, dict):
+        return str(interrupt.get("value", ""))
+    return str(getattr(interrupt, "value", ""))
 
 
 def run_graph(
@@ -157,43 +257,10 @@ def run_graph(
     conversation history is preserved by the checkpointer.
     """
     compiled = build_graph(graph_def, checkpointer=checkpointer)
-
-    config: dict[str, Any] = {}
-    if thread_id is not None:
-        config["configurable"] = {"thread_id": thread_id}
-
-    if resume_value is not None:
-        result = compiled.invoke(Command(resume=resume_value), config=config)
-    else:
-        # Check if this thread already has conversation history
-        has_history = False
-        if checkpointer and thread_id:
-            existing = compiled.get_state(config)
-            if existing and existing.values:
-                has_history = True
-
-        if has_history:
-            # Continuation: send only the new user message; the checkpointer
-            # restores prior state and add_messages appends this message.
-            result = compiled.invoke(
-                {
-                    "input": input_message,
-                    "messages": [{"role": "user", "content": input_message}],
-                },
-                config=config,
-            )
-        else:
-            # First message: full initial state
-            initial_state: dict[str, Any] = {
-                f.name: "" for f in graph_def.state_fields
-            }
-            initial_state["input"] = input_message
-            initial_state["messages"] = [
-                {"role": "user", "content": input_message},
-            ]
-            result = compiled.invoke(initial_state, config=config if config else None)
-
-    return result
+    invoke_input, config = prepare_invocation(
+        compiled, graph_def, input_message, thread_id, resume_value
+    )
+    return compiled.invoke(invoke_input, config=config or None)
 
 
 def _resolve_field(result: dict[str, Any], field_path: str) -> tuple[str, Any]:

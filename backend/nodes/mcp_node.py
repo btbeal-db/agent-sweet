@@ -41,10 +41,6 @@ class MCPServerNode(BaseNode):
         return True
 
     @property
-    def default_field_template(self) -> dict[str, str] | None:
-        return {"name": "mcp_result", "type": "str", "description": "MCP tool output"}
-
-    @property
     def config_fields(self) -> list[NodeConfigField]:
         return [
             NodeConfigField(

@@ -37,7 +37,7 @@ from mlflow.models.resources import (
     DatabricksVectorSearchIndex,
 )
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessageChunk, BaseMessage
 
 from .auth import (
     set_user_token,
@@ -47,7 +47,7 @@ from .auth import (
     create_pat_client,
 )
 from .ai_chat import AIChatRequest, AIChatResponse, handle_ai_chat
-from .graph_builder import build_graph, filter_output, run_graph
+from .graph_builder import build_graph, filter_output, interrupt_value, pending_interrupts, prepare_invocation
 from .tools import discover_mcp_tool_metadata, managed_mcp_url_for_tool
 from .nodes import get_all_metadata
 from .lakebase import LakebaseConfig, provision_lakebase, resolve_lakebase
@@ -62,7 +62,6 @@ from .schema import (
     ModelInfo,
     ModelsResponse,
     PreviewRequest,
-    PreviewResponse,
 )
 
 logging.basicConfig(
@@ -553,6 +552,14 @@ app.include_router(discovery_router, prefix="/api/discover", tags=["discovery"])
 
 _preview_sessions: dict[str, InMemorySaver] = {}
 
+
+def _is_conversational_graph(graph: GraphDef) -> bool:
+    """A graph is conversational if any LLM node has ``conversational=true``."""
+    return any(
+        n.type == "llm" and str(n.config.get("conversational", "false")).lower() == "true"
+        for n in graph.nodes
+    )
+
 # ── MLflow preview tracing setup ──────────────────────────────────────────────
 # When deployed: use Lakebase Postgres for durable trace storage.
 # When local:    use in-memory SQLite — traces live only for the process lifetime.
@@ -737,21 +744,60 @@ def _truncate(obj, max_str_len: int = 500):
     return obj
 
 
-@app.post("/api/graph/preview", response_model=PreviewResponse)
-def preview_graph(req: PreviewRequest):
-    """Build the graph and run it with a test message.
+def _sse(event: dict) -> str:
+    """Format an SSE ``data:`` line, JSON-encoding the payload."""
+    return f"data: {json.dumps(event, default=str)}\n\n"
 
-    Supports multi-turn conversations (via *thread_id*) and human-in-the-loop
-    interrupts (via *resume_value*).
+
+def _turn_messages(all_messages: list) -> list[dict]:
+    """Extract serialized messages from the most recent user turn.
+
+    Walks backwards to find the last user message — anything after that
+    boundary is "this turn".
     """
-    thread_id = req.thread_id or str(uuid.uuid4())
+    turn_start = 0
+    for i in range(len(all_messages) - 1, -1, -1):
+        msg = all_messages[i]
+        is_user = (isinstance(msg, dict) and msg.get("role") == "user") or (
+            hasattr(msg, "type") and msg.type == "human"
+        )
+        if is_user:
+            turn_start = i
+            break
+    return _serialize_messages(all_messages[turn_start:])
+
+
+@app.post("/api/graph/preview")
+def preview_graph(req: PreviewRequest, request: FastAPIRequest):
+    """Stream the graph as an SSE feed of token deltas + a final result event.
+
+    Mirrors the deployed model's ``predict_stream`` so the playground UX
+    matches what the user will see from the served endpoint. Multi-turn via
+    ``thread_id``; human-in-the-loop via ``resume_value``.
+
+    Event types:
+      - ``delta`` ``{text}`` — incremental LLM token
+      - ``done`` — terminal: full output, state, execution_trace, mlflow_trace
+      - ``interrupt`` — terminal: graph paused at a HumanInput
+      - ``error`` — terminal: execution failed
+    """
+    # Non-conversational graphs should not carry state across user turns.
+    # Force a fresh thread unless the graph opted in or we're resuming an
+    # interrupt (resume needs the existing checkpoint).
+    is_resume = req.resume_value is not None
+    if is_resume or _is_conversational_graph(req.graph):
+        thread_id = req.thread_id or str(uuid.uuid4())
+    else:
+        thread_id = str(uuid.uuid4())
     if thread_id not in _preview_sessions:
         _preview_sessions[thread_id] = InMemorySaver()
 
-    # If the user provided a PAT, set it for this request so data-access
-    # nodes (VS, Genie) use it instead of SP credentials.  The PAT is held
-    # only in a ContextVar for the request lifetime — never stored or logged.
-    set_user_pat(req.pat)
+    # The SSE generator below runs in Starlette's threadpool, which has its
+    # own ContextVar context — neither the OBOMiddleware's ``_user_token``
+    # nor a route-handler ``set_user_pat`` would propagate. Capture both
+    # here and re-set them at the top of ``_generate``.
+    obo_token = request.headers.get("x-forwarded-access-token")
+    user_pat = req.pat
 
     # Enable MLflow tracing — swap to the preview tracking DB for this request.
     prev_tracking_uri = mlflow.get_tracking_uri()
@@ -759,72 +805,99 @@ def preview_graph(req: PreviewRequest):
     mlflow.set_experiment("playground")
     mlflow.langchain.autolog(log_traces=True)
 
-    try:
-        result = run_graph(
-            req.graph,
-            req.input_message,
-            checkpointer=_preview_sessions[thread_id],
-            thread_id=thread_id,
-            resume_value=req.resume_value,
-        )
-
-        # Only return messages from the current turn.
-        # Walk backwards from the end to find the last user message — that's
-        # the boundary of this turn.
-        all_messages = result.get("messages", [])
-        turn_start = 0
-        for i in range(len(all_messages) - 1, -1, -1):
-            msg = all_messages[i]
-            is_user = (isinstance(msg, dict) and msg.get("role") == "user") or (
-                hasattr(msg, "type") and msg.type == "human"
-            )
-            if is_user:
-                turn_start = i
-                break
-        messages = _serialize_messages(all_messages[turn_start:])
-        mlflow_trace = _extract_trace()
-
-        interrupts = result.get("__interrupt__")
-        if interrupts:
-            prompt = interrupts[0].get("value", "Input needed") if isinstance(interrupts[0], dict) else str(interrupts[0].value)
-            state_snapshot = {
-                k: v for k, v in result.items()
-                if k not in ("messages", "__interrupt__")
-            }
-            return PreviewResponse(
-                success=True,
-                interrupt=str(prompt),
-                thread_id=thread_id,
-                execution_trace=messages,
-                state=state_snapshot,
-                mlflow_trace=mlflow_trace,
+    def _generate():
+        # Re-establish auth in the generator's context. Without this the
+        # data-access tools fall back to SP credentials and 403 on the
+        # user's own VS index / Genie space.
+        set_user_token(obo_token)
+        set_user_pat(user_pat)
+        try:
+            compiled = build_graph(req.graph, checkpointer=_preview_sessions[thread_id])
+            invoke_input, config = prepare_invocation(
+                compiled, req.graph, req.input_message, thread_id, req.resume_value,
             )
 
-        output_text, state_snapshot = filter_output(result, req.graph)
-        return PreviewResponse(
-            success=True,
-            output=output_text,
-            execution_trace=messages,
-            state=state_snapshot,
-            thread_id=thread_id,
-            mlflow_trace=mlflow_trace,
-        )
-    except GraphInterrupt as gi:
-        prompt = gi.interrupts[0].value if gi.interrupts else "Input needed"
-        mlflow_trace = _extract_trace()
-        return PreviewResponse(
-            success=True,
-            interrupt=str(prompt),
-            thread_id=thread_id,
-            mlflow_trace=mlflow_trace,
-        )
-    except Exception as e:
-        logger.exception("Preview failed")
-        return PreviewResponse(success=False, error=str(e))
-    finally:
-        # Clear PAT from memory and restore previous tracking URI
-        set_user_pat(None)
-        mlflow.set_tracking_uri(prev_tracking_uri)
+            # Drive the graph with stream_mode=["messages", "updates"] so we get
+            # both token chunks (for live UX) and per-node state updates (so we
+            # can build the final result without a second pass).
+            try:
+                # Track when a non-chunk message (e.g. iter-1's full
+                # AIMessage with tool_calls, then a ToolMessage) appears
+                # between streaming runs — without a separator, iter-2's
+                # tokens get glued onto iter-1's text.
+                streamed_any = False
+                boundary_pending = False
+                for chunk in compiled.stream(
+                    invoke_input, config=config or None,
+                    stream_mode=["messages", "updates"],
+                ):
+                    mode, data = chunk
+                    if mode == "messages":
+                        msg, _metadata = data
+                        # Only AIMessageChunk represents an incremental token.
+                        # Plain AIMessage is the final completed message that
+                        # LangGraph yields at the end of each LLM node — emitting
+                        # it would duplicate text already streamed.
+                        if type(msg) is AIMessageChunk and msg.content and not getattr(msg, "tool_calls", None):
+                            text = str(msg.content)
+                            if boundary_pending:
+                                text = "\n\n" + text
+                                boundary_pending = False
+                            yield _sse({"type": "delta", "text": text})
+                            streamed_any = True
+                        elif streamed_any:
+                            # Non-streamable message between runs of chunks
+                            # marks an iteration boundary.
+                            boundary_pending = True
+            except GraphInterrupt as gi:
+                prompt = gi.interrupts[0].value if gi.interrupts else "Input needed"
+                final = compiled.get_state(config).values if config else {}
+                yield _sse({
+                    "type": "interrupt",
+                    "thread_id": thread_id,
+                    "prompt": str(prompt),
+                    "execution_trace": _turn_messages(final.get("messages", [])),
+                    "state": {k: v for k, v in final.items() if k not in ("messages", "__interrupt__")},
+                    "mlflow_trace": _extract_trace(),
+                })
+                return
+
+            # Stream finished cleanly — pull the final state from the checkpoint.
+            final = compiled.get_state(config).values if config else {}
+
+            # ``stream_mode=["messages", "updates"]`` parks the interrupt on
+            # ``snap.tasks[i].interrupts`` instead of raising, so we check
+            # there via the shared helper.
+            interrupts = pending_interrupts(compiled, config)
+            if interrupts:
+                yield _sse({
+                    "type": "interrupt",
+                    "thread_id": thread_id,
+                    "prompt": interrupt_value(interrupts[0]) or "Input needed",
+                    "execution_trace": _turn_messages(final.get("messages", [])),
+                    "state": {k: v for k, v in final.items() if k not in ("messages", "__interrupt__")},
+                    "mlflow_trace": _extract_trace(),
+                })
+                return
+
+            output_text, state_snapshot = filter_output(final, req.graph)
+            yield _sse({
+                "type": "done",
+                "thread_id": thread_id,
+                "output": output_text,
+                "execution_trace": _turn_messages(final.get("messages", [])),
+                "state": state_snapshot,
+                "mlflow_trace": _extract_trace(),
+            })
+        except Exception as e:
+            logger.exception("Preview failed")
+            yield _sse({"type": "error", "message": str(e)})
+        finally:
+            set_user_pat(None)
+            set_user_token(None)
+            mlflow.set_tracking_uri(prev_tracking_uri)
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
 

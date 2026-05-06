@@ -19,8 +19,9 @@ import AgentNode from "./nodes/AgentNode";
 import SentinelNode from "./nodes/SentinelNode";
 import ConfigPanel from "./ConfigPanel";
 import ToolConfigPanel from "./ToolConfigPanel";
-import type { NodeTypeMetadata, GraphDef, AttachedTool } from "../types";
-import { useAddField, useRemoveField, useStateFields } from "../StateContext";
+import type { NodeTypeMetadata, GraphDef, AttachedTool, StateFieldDef } from "../types";
+import { StateProvider } from "../StateContext";
+import { deriveStateFields, deriveStateNames, deriveNodeFieldName, deriveNewNodeLabel } from "../derivedState";
 
 const START_ID = "__start__";
 const END_ID = "__end__";
@@ -44,12 +45,11 @@ const INITIAL_NODES: Node[] = [
 
 interface Props {
   nodeTypes: NodeTypeMetadata[];
-  stateVariableNames: string[];
   onNodeSelect: (nodeId: string | null) => void;
   selectedNodeId: string | null;
   onGraphReady: (getter: () => GraphDef) => void;
   onImportReady?: (importer: (graph: GraphDef) => void) => void;
-  onNodesUpdaterReady?: (updater: (fn: (nodes: Node[]) => Node[]) => void) => void;
+  onStateFieldsChange?: (fields: StateFieldDef[]) => void;
   visible?: boolean;
 }
 
@@ -86,15 +86,79 @@ function usePopoverPosition(selectedNodeId: string | null, wrapperRef: React.Ref
   return pos;
 }
 
-export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, selectedNodeId, onGraphReady, onImportReady, onNodesUpdaterReady, visible = true }: Props) {
+export default function Canvas({ nodeTypes, onNodeSelect, selectedNodeId, onGraphReady, onImportReady, onStateFieldsChange, visible = true }: Props) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(INITIAL_NODES);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const { screenToFlowPosition, fitView } = useReactFlow();
-  const addField = useAddField();
-  const removeField = useRemoveField();
-  const currentFields = useStateFields();
   const [selectedTool, setSelectedTool] = useState<{ nodeId: string; toolId: string } | null>(null);
+
+  // Derive state fields from the current nodes.
+  const stateFields = useMemo(() => deriveStateFields(nodes), [nodes]);
+  const stateVariableNames = useMemo(() => deriveStateNames(stateFields), [stateFields]);
+
+  // Push the derived list up to App so save/deploy/chat consumers can read it.
+  useEffect(() => {
+    onStateFieldsChange?.(stateFields);
+  }, [stateFields, onStateFieldsChange]);
+
+  // Renaming a node retitles its state-field key and cascades ``{old}`` → ``{new}``
+  // through every other node's string config values.
+  const renameNode = useCallback(
+    (nodeId: string, newName: string) => {
+      setNodes((nds) => {
+        const target = nds.find((n) => n.id === nodeId);
+        if (!target) return nds;
+        const trimmed = newName.trim();
+        const oldField = (target.data?.writes_to as string) ?? "";
+        const isRouter = (target.data?.is_router as boolean) ?? false;
+
+        const others = new Set<string>();
+        for (const n of nds) {
+          if (n.id === nodeId) continue;
+          const wt = (n.data?.writes_to as string) ?? "";
+          if (wt) others.add(wt);
+        }
+
+        const displayName = (target.data?.display_name as string) ?? "Node";
+        const newField = isRouter
+          ? ""
+          : deriveNodeFieldName(trimmed, displayName, nodeId, others);
+
+        return nds.map((n) => {
+          if (n.id === nodeId) {
+            return {
+              ...n,
+              data: { ...n.data, name: trimmed, writes_to: isRouter ? "" : newField },
+            };
+          }
+          // Cascade rename of {oldField} → {newField} in every other node's config strings.
+          if (!oldField || !newField || oldField === newField) return n;
+          const config = n.data?.config as Record<string, unknown> | undefined;
+          if (!config) return n;
+          let changed = false;
+          const updated: Record<string, unknown> = { ...config };
+          for (const key of Object.keys(updated)) {
+            const v = updated[key];
+            if (typeof v === "string" && v.includes(`{${oldField}}`)) {
+              updated[key] = v.split(`{${oldField}}`).join(`{${newField}}`);
+              changed = true;
+            } else if (v === oldField) {
+              updated[key] = newField;
+              changed = true;
+            }
+          }
+          return changed ? { ...n, data: { ...n.data, config: updated } } : n;
+        });
+      });
+    },
+    [setNodes],
+  );
+
+  const stateContextValue = useMemo(
+    () => ({ names: stateVariableNames, fields: stateFields, renameNode }),
+    [stateVariableNames, stateFields, renameNode],
+  );
 
   // Re-fit the viewport when the canvas becomes visible (e.g. switching back from Home/Help)
   useEffect(() => {
@@ -120,34 +184,10 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
       const removedIds = new Set(
         safe.filter((c) => c.type === "remove").map((c) => c.id)
       );
-      if (removedIds.size > 0) {
-        onNodeSelect(null);
-
-        // Collect fields owned by removed nodes (auto-created + current writes_to)
-        const removedFields = new Set<string>();
-        for (const n of nodes) {
-          if (!removedIds.has(n.id)) continue;
-          if (n.data?.auto_field) removedFields.add(n.data.auto_field as string);
-          if (n.data?.writes_to) removedFields.add(n.data.writes_to as string);
-        }
-        // Only remove fields that no surviving node references
-        if (removedFields.size > 0) {
-          const survivingFields = new Set<string>();
-          for (const n of nodes) {
-            if (removedIds.has(n.id)) continue;
-            if (n.data?.auto_field) survivingFields.add(n.data.auto_field as string);
-            if (n.data?.writes_to) survivingFields.add(n.data.writes_to as string);
-          }
-          for (const field of removedFields) {
-            if (!survivingFields.has(field)) {
-              removeField(field);
-            }
-          }
-        }
-      }
+      if (removedIds.size > 0) onNodeSelect(null);
       onNodesChange(safe);
     },
-    [onNodesChange, onNodeSelect, nodes, removeField]
+    [onNodesChange, onNodeSelect]
   );
 
   const onConnect = useCallback(
@@ -209,7 +249,8 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
       }));
       const endNode = nodesRef.current.find((n) => n.id === END_ID);
       const outputFields = (endNode?.data?.output_fields as string[]) ?? [];
-      return { nodes: graphNodes, edges: graphEdges, state_fields: [], output_fields: outputFields } as GraphDef;
+      const derivedFields = deriveStateFields(nodesRef.current);
+      return { nodes: graphNodes, edges: graphEdges, state_fields: derivedFields, output_fields: outputFields } as GraphDef;
     });
   }, [onGraphReady]);
 
@@ -277,11 +318,6 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
       setEdges(newEdges);
     });
   }, [onImportReady, nodeTypes, setNodes, setEdges]);
-
-  // Expose setNodes for cascade rename from App
-  useEffect(() => {
-    if (onNodesUpdaterReady) onNodesUpdaterReady(setNodes);
-  }, [onNodesUpdaterReady, setNodes]);
 
   // Drop from palette
   const onDragOver = useCallback((e: React.DragEvent) => {
@@ -366,42 +402,45 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
         }
       }
 
-      // Auto-create a state field for this node type if it has a template
-      let defaultWritesTo = "";
-      const template = meta.default_field_template;
-      if (template && meta.type !== "router") {
-        const existingNames = new Set(currentFields.map((f) => f.name));
-        let fieldName = template.name;
-        let counter = 1;
-        while (existingNames.has(fieldName)) {
-          counter++;
-          fieldName = `${template.name}_${counter}`;
+      const isRouter = meta.type === "router";
+      const newId = `node_${++nodeIdCounter}`;
+
+      // Pick the header label + state-field key together so they stay aligned
+      // ("LLM" / "llm", "LLM 2" / "llm_2"). Routers don't write to state.
+      let writesTo = "";
+      let initialName = "";
+      if (!isRouter) {
+        const taken = new Set<string>();
+        for (const n of nodesRef.current) {
+          const wt = (n.data?.writes_to as string) ?? "";
+          if (wt) taken.add(wt);
         }
-        addField({ name: fieldName, type: template.type, description: template.description, sub_fields: [] });
-        defaultWritesTo = fieldName;
+        const labeled = deriveNewNodeLabel(meta.display_name, taken);
+        writesTo = labeled.writesTo;
+        initialName = labeled.name;
       }
 
       const newNode: Node = {
-        id: `node_${++nodeIdCounter}`,
+        id: newId,
         type: "agentNode",
         position,
         data: {
           nodeType: meta.type,
+          name: initialName,
           display_name: meta.display_name,
           description: meta.description,
           icon: meta.icon,
           color: meta.color,
           config_fields: meta.config_fields,
-          is_router: meta.type === "router",
-          writes_to: defaultWritesTo,
-          auto_field: defaultWritesTo || undefined,
+          is_router: isRouter,
+          writes_to: writesTo,
           config: defaultConfig,
         },
       };
 
       setNodes((nds) => [...nds, newNode]);
     },
-    [nodeTypes, setNodes, findLlmNodeAtPosition, screenToFlowPosition, currentFields, addField]
+    [nodeTypes, setNodes, findLlmNodeAtPosition, screenToFlowPosition]
   );
 
   // ── Tool chip selection ──────────────────────────────────────────────────
@@ -414,6 +453,7 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
     window.addEventListener("tool-chip-click", handler);
     return () => window.removeEventListener("tool-chip-click", handler);
   }, [onNodeSelect]);
+
 
   // Clear tool selection when the main node selection changes externally
   const prevSelectedRef = useRef(selectedNodeId);
@@ -431,60 +471,62 @@ export default function Canvas({ nodeTypes, stateVariableNames, onNodeSelect, se
   const popoverPos = usePopoverPosition(selectedNodeId, reactFlowWrapper);
 
   return (
-    <div className="canvas-wrapper" ref={reactFlowWrapper}>
-      <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={handleNodesChange}
-        onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
-        connectOnClick={false}
-        onNodeClick={onNodeClick}
-        onPaneClick={onPaneClick}
-        onDragOver={onDragOver}
-        onDrop={onDrop}
-        nodeTypes={customNodeTypes}
-        fitView
-        defaultEdgeOptions={{ type: "smoothstep" }}
-      >
-        <Background />
-      </ReactFlow>
-
-      {/* Floating config popover */}
-      {selectedNodeId && popoverPos && (
-        <div
-          className="config-popover"
-          style={{ left: popoverPos.x, top: popoverPos.y }}
-          onKeyDown={(e) => e.stopPropagation()}
-          onClick={(e) => e.stopPropagation()}
+    <StateProvider value={stateContextValue}>
+      <div className="canvas-wrapper" ref={reactFlowWrapper}>
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          onNodesChange={handleNodesChange}
+          onEdgesChange={onEdgesChange}
+          onConnect={onConnect}
+          connectOnClick={false}
+          onNodeClick={onNodeClick}
+          onPaneClick={onPaneClick}
+          onDragOver={onDragOver}
+          onDrop={onDrop}
+          nodeTypes={customNodeTypes}
+          fitView
+          defaultEdgeOptions={{ type: "smoothstep" }}
         >
-          <button
-            className="config-popover-close"
-            onClick={() => {
-              if (selectedTool) {
-                setSelectedTool(null);
-              } else {
-                onNodeSelect(null);
-              }
-            }}
+          <Background />
+        </ReactFlow>
+
+        {/* Floating config popover */}
+        {selectedNodeId && popoverPos && (
+          <div
+            className="config-popover"
+            style={{ left: popoverPos.x, top: popoverPos.y }}
+            onKeyDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
           >
-            <X size={14} />
-          </button>
-          {selectedTool && selectedTool.nodeId === selectedNodeId ? (
-            <ToolConfigPanel
-              parentNodeId={selectedTool.nodeId}
-              toolId={selectedTool.toolId}
-              nodeTypes={nodeTypes}
-            />
-          ) : (
-            <ConfigPanel
-              selectedNodeId={selectedNodeId}
-              nodeTypes={nodeTypes}
-              stateVariables={stateVariableNames}
-            />
-          )}
-        </div>
-      )}
-    </div>
+            <button
+              className="config-popover-close"
+              onClick={() => {
+                if (selectedTool) {
+                  setSelectedTool(null);
+                } else {
+                  onNodeSelect(null);
+                }
+              }}
+            >
+              <X size={14} />
+            </button>
+            {selectedTool && selectedTool.nodeId === selectedNodeId ? (
+              <ToolConfigPanel
+                parentNodeId={selectedTool.nodeId}
+                toolId={selectedTool.toolId}
+                nodeTypes={nodeTypes}
+              />
+            ) : (
+              <ConfigPanel
+                selectedNodeId={selectedNodeId}
+                nodeTypes={nodeTypes}
+                stateVariables={stateVariableNames}
+              />
+            )}
+          </div>
+        )}
+      </div>
+    </StateProvider>
   );
 }

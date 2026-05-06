@@ -1,10 +1,9 @@
 import { useState, useCallback } from "react";
 import { validateGraph, deployGraphStream } from "../api";
-import type { GraphDef, StateFieldDef, DeployMode, AuthMode, DeployStepName, DeployStepStatus, DeployEvent } from "../types";
+import type { GraphDef, DeployMode, AuthMode, DeployStepName, DeployStepStatus, DeployEvent } from "../types";
 
 interface Props {
   graphGetter: (() => GraphDef) | null;
-  stateFieldsRef: React.RefObject<StateFieldDef[]>;
   onClose: () => void;
   defaultExperimentPath?: string;
   onGoToSetup?: () => void;
@@ -27,7 +26,7 @@ const STEP_LABELS: Record<string, string> = {
   create_endpoint: "Create Serving Endpoint",
 };
 
-function preflight(graphGetter: (() => GraphDef) | null, stateFields: StateFieldDef[]): string | null {
+function preflight(graphGetter: (() => GraphDef) | null): string | null {
   if (!graphGetter) return "The graph hasn't loaded yet.";
 
   let graph: GraphDef;
@@ -46,23 +45,30 @@ function preflight(graphGetter: (() => GraphDef) | null, stateFields: StateField
   if (!hasStart) return "Connect the START node to your first node.";
   if (!hasEnd) return "Connect your last node to the END node.";
 
-  for (const node of graph.nodes) {
-    if (node.type === "router") continue;
-    if (!node.writes_to) {
-      return `Node "${node.id}" doesn't have a target state field selected.`;
-    }
-  }
   return null;
 }
 
-/** Check if any LLM node has conversational mode enabled. */
-function hasConversationalNode(graphGetter: (() => GraphDef) | null): boolean {
+/** Whether the graph needs a persistent checkpointer (Lakebase) at serving time.
+ *
+ * Two cases require it:
+ * - any LLM with ``conversational: true`` — message history must persist
+ *   across turns
+ * - any ``human_input`` node — the checkpoint is what lets the next request
+ *   resume from the interrupt instead of restarting the graph
+ *
+ * Without one, the deployed endpoint silently restarts the graph on every
+ * request because LangGraph's in-memory saver is per-worker.
+ */
+function requiresPersistence(graphGetter: (() => GraphDef) | null): boolean {
   if (!graphGetter) return false;
   try {
     const graph = graphGetter();
-    return graph.nodes.some(
-      (n) => n.type === "llm" && String(n.config.conversational).toLowerCase() === "true"
-    );
+    return graph.nodes.some((n) => {
+      if (n.type === "human_input") return true;
+      if (n.type !== "llm") return false;
+      const flag = n.config.include_message_history ?? n.config.conversational;
+      return String(flag).toLowerCase() === "true";
+    });
   } catch {
     return false;
   }
@@ -95,7 +101,7 @@ function StepIcon({ status }: { status: DeployStepStatus }) {
   }
 }
 
-export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defaultExperimentPath, onGoToSetup }: Props) {
+export default function DeployModal({ graphGetter, onClose, defaultExperimentPath, onGoToSetup }: Props) {
   const [modelName, setModelName] = useState("");
   const [experimentName, setExperimentName] = useState("");
   // The full experiment path: base folder from setup + user-provided experiment name.
@@ -118,12 +124,12 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
   const [lakebaseExistingProjectId, setLakebaseExistingProjectId] = useState("");
   const [lakebaseConnString, setLakebaseConnString] = useState("");
 
-  const isConversational = hasConversationalNode(graphGetter);
+  const needsCheckpointer = requiresPersistence(graphGetter);
   const needsModelName = deployMode !== "log_only";
 
   const lakebaseValid = (() => {
     if (deployMode !== "full") return true;
-    if (!isConversational) return true;
+    if (!needsCheckpointer) return true;
     switch (lakebaseMode) {
       case "create": return lakebaseProjectId.trim().length > 0;
       case "existing": return lakebaseExistingProjectId.trim().length > 0;
@@ -133,8 +139,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
   })();
 
   const handleDeploy = useCallback(async () => {
-    const stateFields = stateFieldsRef.current ?? [];
-    const err = preflight(graphGetter, stateFields);
+    const err = preflight(graphGetter);
     if (err) {
       setErrorMsg(err);
       setPhase("error");
@@ -142,7 +147,6 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
     }
 
     const graph = graphGetter!();
-    graph.state_fields = stateFields;
 
     // Initialize steps
     const initial: Record<string, StepState> = {};
@@ -199,7 +203,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
       setErrorMsg(e instanceof Error ? e.message : "Connection error");
       setPhase("error");
     }
-  }, [graphGetter, stateFieldsRef, modelName, experimentPath, lakebaseMode, lakebaseProjectId, lakebaseExistingProjectId, lakebaseConnString, deployMode, pat]);
+  }, [graphGetter, modelName, experimentPath, lakebaseMode, lakebaseProjectId, lakebaseExistingProjectId, lakebaseConnString, deployMode, pat]);
 
   const doneMessage = deployMode === "full"
     ? "Agent deployed successfully!"
@@ -303,7 +307,7 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
               {deployMode === "full" && (
                 <>
                   <label className="deploy-label">
-                    Lakebase (Conversation Memory)
+                    Lakebase (Persistent State)
                     <select
                       className="deploy-input"
                       value={lakebaseMode}
@@ -312,11 +316,11 @@ export default function DeployModal({ graphGetter, stateFieldsRef, onClose, defa
                       <option value="create">Create new Lakebase project</option>
                       <option value="existing">Use existing Lakebase instance</option>
                       <option value="connstring">Connection string (advanced)</option>
-                      {!isConversational && <option value="none">None</option>}
+                      {!needsCheckpointer && <option value="none">None</option>}
                     </select>
                     <span className="deploy-hint">
-                      {isConversational
-                        ? "Required — your graph has conversational nodes."
+                      {needsCheckpointer
+                        ? "Required — your graph uses conversational LLMs or human input nodes that need state persisted across turns."
                         : "Optional. Enables multi-turn conversation memory."}
                     </span>
                   </label>

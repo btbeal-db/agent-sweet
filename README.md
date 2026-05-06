@@ -6,7 +6,7 @@ Visual drag-and-drop [LangGraph](https://langchain-ai.github.io/langgraph/) agen
 
 ## Deploy
 
-No custom scopes, no infrastructure, no bundle variables. Just link the repo:
+No infrastructure to provision and no bundle variables to set — the repo's `databricks.yml` handles everything, including the OBO scopes the app needs. Just link the repo:
 
 1. In your Databricks workspace, go to **Compute > Apps**
 2. Click **Create App** and give it a name
@@ -26,6 +26,20 @@ This lets the app log MLflow models on your behalf when you deploy.
 1. Create a folder under your user directory (e.g. `/Users/you@company.com/agent-sweet`)
 2. The Setup page shows the app's service principal name — grant it **Can Manage** on your folder
 3. Click **Validate** to confirm
+
+### 2. Confirm the app's OBO scopes
+
+Preview routes data-access requests (Vector Search, Genie, UC Functions, external MCP) through Databricks managed MCP servers, which require specific OBO scopes on your token. The bundle in `databricks.yml` declares them automatically when you deploy via "Deploy from Git", but it's worth verifying — if your workspace has app-authorization policies that strip scopes, or you created the app outside the bundle flow, preview will fail with auth errors that don't obviously point at scopes.
+
+Open your app's **Authorization** page and confirm the user-token scopes include all of:
+
+- `mcp.functions`
+- `mcp.vectorsearch`
+- `mcp.genie`
+- `mcp.external`
+- `workspace.workspace`
+
+If any are missing, add them and redeploy. The full mapping of scope → node type is in [How data-access auth works](#how-data-access-auth-works).
 
 ## Using the App
 
@@ -161,6 +175,7 @@ CI runs `Frontend Build` and `Backend Tests` on every PR to `dev` and `main`. Se
 | Issue | Fix |
 |---|---|
 | Setup validation fails | Make sure you created a **folder** (not an MLflow experiment) and granted the SP "Can Manage" |
+| Preview fails with an OBO/auth error after you added scopes | Your browser is still using the OAuth session from before the scopes existed — newly-added scopes are **not** re-requested for an existing session. Clear cookies for the app's hostname (or open it in a private window) and log in again to get a fresh token with the updated scopes. |
 | Registration fails with auth error | Check that your PAT is valid and you have `CREATE MODEL` on the target catalog/schema |
 | Endpoint creation fails | Verify your PAT has `CREATE SERVING ENDPOINT` permissions |
 | `requirements-serving.txt` not found | Run `uv pip compile pyproject.toml -o requirements-serving.txt --python-version 3.11` |
