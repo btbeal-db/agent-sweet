@@ -15,6 +15,7 @@ import os
 import time
 
 import mlflow
+from databricks.sdk.service.iam import AccessControlRequest, PermissionLevel
 from databricks.sdk.service.workspace import ExportFormat, ImportFormat
 from fastapi import APIRouter, HTTPException
 
@@ -131,6 +132,94 @@ def setup_info():
     sp_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
     sp_name = _get_sp_display_name()
     return SetupInfoResponse(user_email=email, sp_display_name=sp_name, sp_id=sp_id)
+
+
+@router.post("/auto-setup", response_model=SetupValidateResponse)
+def auto_setup(req: SetupValidateRequest):
+    """Create the experiment folder + grant SP access via OBO, then validate.
+
+    The OBO token has the ``workspace.workspace`` scope (declared in
+    ``databricks.yml``), and the user owns any folder they create under
+    ``/Users/{their_email}/...`` — so they can both ``mkdirs`` and grant
+    permissions on it without admin help. Falls through to the same
+    validate + persist path the manual flow uses, so the post-conditions
+    are identical.
+    """
+    sp_app_id = os.environ.get("DATABRICKS_CLIENT_ID", "")
+    if not sp_app_id:
+        return SetupValidateResponse(
+            success=False,
+            experiment_id=None,
+            error="App service principal client ID is not configured (DATABRICKS_CLIENT_ID is unset).",
+        )
+
+    try:
+        user_w = get_workspace_client()
+    except Exception as exc:
+        return SetupValidateResponse(
+            success=False,
+            experiment_id=None,
+            error=f"Could not establish workspace access: {exc}",
+        )
+
+    # 1. Create the folder. ``mkdirs`` is idempotent.
+    try:
+        user_w.workspace.mkdirs(req.experiment_path)
+    except Exception as exc:
+        logger.warning("Auto-setup: mkdirs(%s) failed: %s", req.experiment_path, exc)
+        return SetupValidateResponse(
+            success=False,
+            experiment_id=None,
+            error=(
+                f"Could not create folder '{req.experiment_path}'. "
+                f"Make sure the path is under your user directory. Error: {exc}"
+            ),
+        )
+
+    # 2. Look up the folder's object_id so we can target its ACL.
+    try:
+        status = user_w.workspace.get_status(req.experiment_path)
+        directory_id = str(status.object_id) if status.object_id is not None else ""
+    except Exception as exc:
+        return SetupValidateResponse(
+            success=False,
+            experiment_id=None,
+            error=f"Could not look up folder '{req.experiment_path}' after creating it: {exc}",
+        )
+    if not directory_id:
+        return SetupValidateResponse(
+            success=False,
+            experiment_id=None,
+            error=f"Folder '{req.experiment_path}' has no object_id — cannot set permissions.",
+        )
+
+    # 3. Grant the app SP ``CAN_MANAGE``. ``permissions.update`` is additive
+    # (PATCH semantics) so existing grants for the user are preserved.
+    try:
+        user_w.permissions.update(
+            request_object_type="directories",
+            request_object_id=directory_id,
+            access_control_list=[
+                AccessControlRequest(
+                    service_principal_name=sp_app_id,
+                    permission_level=PermissionLevel.CAN_MANAGE,
+                ),
+            ],
+        )
+    except Exception as exc:
+        logger.warning("Auto-setup: permissions.update failed for %s: %s", directory_id, exc)
+        return SetupValidateResponse(
+            success=False,
+            experiment_id=None,
+            error=(
+                f"Could not grant the app service principal access to '{req.experiment_path}'. "
+                f"Error: {exc}"
+            ),
+        )
+
+    # 4. Run the existing validate path: confirms the SP can write,
+    # creates a test experiment, persists the setup record.
+    return validate_setup(req)
 
 
 @router.post("/validate", response_model=SetupValidateResponse)

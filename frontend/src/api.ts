@@ -177,3 +177,13 @@ export async function validateSetup(experimentPath: string): Promise<SetupValida
   if (!res.ok) throw new Error("Failed to validate setup");
   return res.json();
 }
+
+export async function autoSetup(experimentPath: string): Promise<SetupValidateResponse> {
+  const res = await fetch(`${BASE}/setup/auto-setup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ experiment_path: experimentPath }),
+  });
+  if (!res.ok) throw new Error("Failed to auto-setup");
+  return res.json();
+}
