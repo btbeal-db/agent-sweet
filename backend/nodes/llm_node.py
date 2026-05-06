@@ -46,6 +46,17 @@ def build_pydantic_model(sub_fields: list[dict[str, str]], model_name: str = "St
     return create_model(model_name, **field_definitions)
 
 
+# Endpoints that reject the ``temperature`` parameter at the FMAPI layer
+# (Anthropic reasoning models). Match as substrings against the lowercased
+# endpoint name. Extend as new reasoning endpoints land.
+_NO_TEMPERATURE_PATTERNS = ("claude-opus-4-",)
+
+
+def _endpoint_supports_temperature(endpoint: str) -> bool:
+    name = endpoint.lower()
+    return not any(p in name for p in _NO_TEMPERATURE_PATTERNS)
+
+
 _TEMPLATE_SKIP_KEYS = {"messages", "_writes_to", "_target_field"}
 
 
@@ -200,7 +211,15 @@ class LLMNode(BaseNode):
 
         # LLM calls use the SP credentials (default env vars). FMAPI's data-plane
         # does not accept OBO tokens. Data-access nodes (VS, Genie, UC) use OBO.
-        llm = ChatDatabricks(endpoint=endpoint, temperature=temperature)
+        llm_kwargs: dict[str, Any] = {"endpoint": endpoint}
+        if _endpoint_supports_temperature(endpoint):
+            llm_kwargs["temperature"] = temperature
+        else:
+            logger.info(
+                "Endpoint %s does not accept the temperature parameter; ignoring configured value %s.",
+                endpoint, temperature,
+            )
+        llm = ChatDatabricks(**llm_kwargs)
 
         # Bind tools if configured
         tools_json_raw = config.get("tools_json", "")
