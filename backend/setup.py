@@ -108,6 +108,7 @@ def setup_status():
     """Check whether the current user has completed MLflow experiment setup."""
     email = _get_user_email()
     sp_name = _get_sp_display_name()
+    default_path = f"/Users/{email}/agent-sweet"
 
     config = _read_user_config(email)
     if config and config.get("experiment_path"):
@@ -116,12 +117,25 @@ def setup_status():
             user_email=email,
             sp_display_name=sp_name,
             experiment_path=config["experiment_path"],
+            default_folder_exists=True,
+            default_experiment_path=default_path,
         )
+
+    # Not configured yet — check if the default folder already exists from
+    # the user's perspective so the frontend can decide whether to prompt.
+    folder_exists = False
+    try:
+        get_workspace_client().workspace.get_status(default_path)
+        folder_exists = True
+    except Exception:
+        folder_exists = False
 
     return SetupStatusResponse(
         setup_complete=False,
         user_email=email,
         sp_display_name=sp_name,
+        default_folder_exists=folder_exists,
+        default_experiment_path=default_path,
     )
 
 

@@ -142,6 +142,12 @@ class SetupStatusResponse(BaseModel):
     user_email: str
     sp_display_name: str
     experiment_path: str | None = None
+    # Whether the conventional default folder (/Users/{email}/agent-sweet)
+    # exists from the user's perspective. Only meaningful when
+    # ``setup_complete`` is ``False`` — the frontend uses this to decide
+    # whether to prompt the user with the "create folder" modal on sign-in.
+    default_folder_exists: bool = False
+    default_experiment_path: str | None = None
 
 
 class SetupInfoResponse(BaseModel):
