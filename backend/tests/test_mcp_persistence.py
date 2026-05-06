@@ -208,8 +208,13 @@ class TestMakeToolsFromJSONWithPersistedMCP:
         assert tools[0].name == "search_docs"
         assert tools[1].name == "get_schema"
 
-    def test_mixed_tool_types_with_persisted_mcp(self):
-        """MCP tools alongside other tool types (e.g. genie) — both use persisted metadata."""
+    @patch("backend.tools.get_user_token", return_value="fake-obo-token")
+    def test_mixed_tool_types_with_persisted_mcp(self, _mock_token):
+        """MCP tools alongside other tool types (e.g. genie) — both use persisted metadata.
+
+        Genie tools route via SDK when no OBO token is present (local dev). Patch
+        get_user_token so routing chooses the MCP path, where discovered_tools apply.
+        """
         tools_json = json.dumps([
             {
                 "type": "mcp_server",
