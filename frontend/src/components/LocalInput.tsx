@@ -5,13 +5,15 @@ interface Props {
   type: "text" | "number";
   placeholder?: string;
   onChange: (value: string) => void;
+  disabled?: boolean;
+  title?: string;
 }
 
 /** A text/number input that holds its DOM value in local state and only
  *  syncs from props when the prop diverges from the last committed local
  *  value. Defends against parent re-renders that briefly feed a stale
  *  ``value`` back in mid-keystroke and reset the cursor to the end. */
-export default function LocalInput({ value, type, placeholder, onChange }: Props) {
+export default function LocalInput({ value, type, placeholder, onChange, disabled, title }: Props) {
   const [local, setLocal] = useState(value);
   const lastLocalRef = useRef(value);
 
@@ -27,6 +29,8 @@ export default function LocalInput({ value, type, placeholder, onChange }: Props
       type={type}
       value={local}
       placeholder={placeholder}
+      disabled={disabled}
+      title={title}
       onChange={(e) => {
         const next = e.target.value;
         lastLocalRef.current = next;

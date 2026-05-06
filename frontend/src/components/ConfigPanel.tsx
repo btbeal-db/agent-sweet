@@ -1,13 +1,18 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useReactFlow, useNodes } from "@xyflow/react";
-import type { NodeTypeMetadata, NodeConfigField } from "../types";
+import type { NodeTypeMetadata, NodeConfigField, DiscoveryOption } from "../types";
 import { useStateFields } from "../StateContext";
+import { fetchDiscoveryOptions, getDiscoveryCache } from "../api";
 import RouteEditor, { type Route } from "./RouteEditor";
 import SchemaEditor, { type SchemaField } from "./SchemaEditor";
 import SearchableSelect from "./SearchableSelect";
 import TemplatedTextarea from "./TemplatedTextarea";
 import LocalInput from "./LocalInput";
+
+const SERVING_ENDPOINTS_DISCOVERY_URL = "/api/discover/serving-endpoints";
+const TEMPERATURE_UNSUPPORTED_HINT =
+  "This serving endpoint does not accept the temperature parameter.";
 
 interface Props {
   selectedNodeId: string;
@@ -29,6 +34,33 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
   const meta = useMemo(() => nodeTypes.find((nt) => nt.type === nodeType), [nodeTypes, nodeType]);
   const isRouter = (node?.data.is_router as boolean) ?? false;
   const config = (node?.data.config ?? {}) as Record<string, unknown>;
+
+  // For the LLM node, fetch the serving-endpoints discovery list so we can
+  // gate the temperature input on whether the selected endpoint accepts
+  // ``temperature``. The fetch is cached at module scope, so this is free
+  // after the first call per page load.
+  const isLLMNode = nodeType === "llm";
+  const [endpointOptions, setEndpointOptions] = useState<DiscoveryOption[]>(
+    () => getDiscoveryCache(SERVING_ENDPOINTS_DISCOVERY_URL)?.options ?? []
+  );
+  useEffect(() => {
+    if (!isLLMNode) return;
+    let cancelled = false;
+    fetchDiscoveryOptions(SERVING_ENDPOINTS_DISCOVERY_URL).then((res) => {
+      if (!cancelled) setEndpointOptions(res.options);
+    });
+    return () => { cancelled = true; };
+  }, [isLLMNode]);
+
+  const selectedEndpoint = (config.endpoint as string) ?? "";
+  const selectedEndpointMeta = useMemo(
+    () => endpointOptions.find((o) => o.value === selectedEndpoint) ?? null,
+    [endpointOptions, selectedEndpoint],
+  );
+  // Default permissive: an endpoint we haven't loaded metadata for yet
+  // shouldn't have its temperature field disabled.
+  const endpointSupportsTemperature =
+    selectedEndpointMeta?.supports_temperature ?? true;
 
   /** Remove all outgoing edges from this router node. */
   const clearRouterEdges = useCallback(() => {
@@ -208,6 +240,15 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
 
     const val = (config[field.name] ?? field.default ?? "") as string;
 
+    // Capability-based gating: the LLM node's temperature input is disabled
+    // when the currently-selected serving endpoint rejects ``temperature``.
+    const temperatureDisabled =
+      isLLMNode &&
+      field.name === "temperature" &&
+      !!selectedEndpoint &&
+      !endpointSupportsTemperature;
+    const hint = temperatureDisabled ? TEMPERATURE_UNSUPPORTED_HINT : field.help_text;
+
     return (
       <div key={field.name} className="config-field">
         <label>
@@ -238,6 +279,8 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
             type={field.field_type === "number" ? "number" : "text"}
             value={String(val)}
             placeholder={field.placeholder}
+            disabled={temperatureDisabled}
+            title={temperatureDisabled ? TEMPERATURE_UNSUPPORTED_HINT : undefined}
             onChange={(next) =>
               updateConfig(
                 field.name,
@@ -246,8 +289,8 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
             }
           />
         )}
-        {field.help_text && (
-          <span className="config-hint">{field.help_text}</span>
+        {hint && (
+          <span className="config-hint">{hint}</span>
         )}
       </div>
     );

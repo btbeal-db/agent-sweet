@@ -29,6 +29,7 @@ export interface DiscoveryOption {
   label: string;
   description: string;
   provider?: string | null;
+  supports_temperature?: boolean;
 }
 
 export interface DiscoveryResponse {
