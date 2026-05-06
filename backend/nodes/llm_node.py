@@ -158,6 +158,7 @@ class LLMNode(BaseNode):
                 field_type="number",
                 required=False,
                 default=0.7,
+                advanced=True,
             ),
             NodeConfigField(
                 name="conversational",
