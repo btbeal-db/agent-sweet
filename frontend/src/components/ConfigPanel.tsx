@@ -12,7 +12,7 @@ import LocalInput from "./LocalInput";
 
 const SERVING_ENDPOINTS_DISCOVERY_URL = "/api/discover/serving-endpoints";
 const TEMPERATURE_UNSUPPORTED_HINT =
-  "This serving endpoint does not accept the temperature parameter.";
+  "is not supported by this serving endpoint.";
 
 interface Props {
   selectedNodeId: string;
@@ -238,16 +238,26 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
       );
     }
 
-    const val = (config[field.name] ?? field.default ?? "") as string;
-
-    // Capability-based gating: the LLM node's temperature input is disabled
-    // when the currently-selected serving endpoint rejects ``temperature``.
-    const temperatureDisabled =
+    // Capability-based gating: when the currently-selected serving endpoint
+    // rejects ``temperature``, hide the input entirely and show a notice
+    // instead so the user understands why they can't set a value.
+    const hideTemperatureField =
       isLLMNode &&
       field.name === "temperature" &&
       !!selectedEndpoint &&
       !endpointSupportsTemperature;
-    const hint = temperatureDisabled ? TEMPERATURE_UNSUPPORTED_HINT : field.help_text;
+
+    if (hideTemperatureField) {
+      return (
+        <div key={field.name} className="config-field">
+          <div className="config-notice" role="note">
+            <strong>{field.label}</strong> {TEMPERATURE_UNSUPPORTED_HINT}
+          </div>
+        </div>
+      );
+    }
+
+    const val = (config[field.name] ?? field.default ?? "") as string;
 
     return (
       <div key={field.name} className="config-field">
@@ -279,8 +289,6 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
             type={field.field_type === "number" ? "number" : "text"}
             value={String(val)}
             placeholder={field.placeholder}
-            disabled={temperatureDisabled}
-            title={temperatureDisabled ? TEMPERATURE_UNSUPPORTED_HINT : undefined}
             onChange={(next) =>
               updateConfig(
                 field.name,
@@ -289,8 +297,8 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
             }
           />
         )}
-        {hint && (
-          <span className="config-hint">{hint}</span>
+        {field.help_text && (
+          <span className="config-hint">{field.help_text}</span>
         )}
       </div>
     );
