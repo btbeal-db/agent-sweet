@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, type RefObject } from "react";
-import { Send } from "lucide-react";
+import { ArrowUp } from "lucide-react";
 import SimpleMarkdown from "./SimpleMarkdown";
 import { sendAIChatMessage } from "../api";
 import type { GraphDef } from "../types";
@@ -141,21 +141,25 @@ export default function AIChatDropdown({
       </div>
 
       <div className="chat-input-bar">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
-          placeholder="Describe your agent..."
-          disabled={sending}
-          autoFocus
-        />
-        <button
-          className="btn btn-primary"
-          onClick={handleSend}
-          disabled={sending || !input.trim()}
-        >
-          <Send size={14} />
-        </button>
+        <div className="chat-input-pill">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSend()}
+            placeholder="Describe your agent..."
+            disabled={sending}
+            autoFocus
+          />
+          <button
+            className="chat-send-btn"
+            onClick={handleSend}
+            disabled={sending || !input.trim()}
+            title="Send"
+          >
+            <ArrowUp size={16} />
+          </button>
+        </div>
       </div>
     </div>
   );
