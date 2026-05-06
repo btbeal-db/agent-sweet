@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from backend.graph_builder import build_graph, filter_output, generate_code, _build_state_type
+from backend import auth
+from backend.graph_builder import (
+    _build_state_type,
+    _make_node_fn,
+    _make_router_fn,
+    build_graph,
+    filter_output,
+    generate_code,
+)
 from backend.schema import GraphDef, StateFieldDef, NodeDef, EdgeDef
 from backend.tests.conftest import make_graph
 
@@ -93,6 +101,45 @@ class TestGenerateCode:
         code = generate_code(router_graph_def)
         compile(code, "<test>", "exec")
         assert "router" in code.lower() or "conditional" in code.lower()
+
+
+class TestAuthContextCapture:
+    """Node-fn closures must capture the OBO token so it survives LangGraph's
+    internal executors (``stream_mode=["messages",...]`` runs nodes in a context
+    where the request-scope ``_user_token`` ContextVar is no longer visible)."""
+
+    class _Recorder:
+        node_type = "recorder"
+
+        def __init__(self):
+            self.observed_token: str | None = "<unset>"
+
+        def execute(self, state, config):
+            self.observed_token = auth.get_user_token()
+            return {}
+
+    def _run_with(self, factory, set_at_run, set_at_build):
+        rec = self._Recorder()
+        # Pre-build context: simulates the request handler having extracted
+        # the user's OBO token from the apps proxy.
+        auth.set_user_token(set_at_build)
+        fn = factory(rec, {}, "field", None, "n") if factory is _make_node_fn else factory(rec, {}, "n")
+        # Simulate LangGraph running the node in a context that lost the token.
+        auth.set_user_token(set_at_run)
+        fn({})
+        return rec
+
+    def test_node_fn_restores_captured_token(self):
+        rec = self._run_with(_make_node_fn, set_at_run=None, set_at_build="user-obo-abc")
+        assert rec.observed_token == "user-obo-abc"
+
+    def test_router_fn_restores_captured_token(self):
+        rec = self._run_with(_make_router_fn, set_at_run=None, set_at_build="user-obo-xyz")
+        assert rec.observed_token == "user-obo-xyz"
+
+    def test_no_token_at_build_means_none_at_execute(self):
+        rec = self._run_with(_make_node_fn, set_at_run="leaked", set_at_build=None)
+        assert rec.observed_token is None
 
 
 class TestFilterOutput:
