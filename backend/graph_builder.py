@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
 
+from .auth import get_user_pat, get_user_token, set_user_pat, set_user_token
 from .nodes import get_node
 from .schema import GraphDef, StateFieldDef
 
@@ -36,9 +37,20 @@ def _make_node_fn(
     """Create a closure so each graph node captures its own config.
 
     Returns only the state *updates* — LangGraph merges them into state.
+
+    Captures the per-request OBO token / PAT at graph-build time and
+    re-sets them inside the closure. ``compiled.stream`` with
+    ``stream_mode=["messages", ...]`` runs node callbacks in an internal
+    async/executor context where the request-scope ``_user_token``
+    ContextVar is no longer visible — without restoring it here, tool
+    factories fall back to the SDK path with the app's SP credentials.
     """
+    captured_token = get_user_token()
+    captured_pat = get_user_pat()
 
     def fn(state: dict[str, Any]) -> dict[str, Any]:
+        set_user_token(captured_token)
+        set_user_pat(captured_pat)
         enriched_config = {
             **config,
             "_writes_to": writes_to,
@@ -53,8 +65,12 @@ def _make_node_fn(
 
 def _make_router_fn(node_impl, config: dict[str, Any], graph_name: str):
     """Create a routing function that returns the chosen route key."""
+    captured_token = get_user_token()
+    captured_pat = get_user_pat()
 
     def fn(state: dict[str, Any]) -> str:
+        set_user_token(captured_token)
+        set_user_pat(captured_pat)
         result = node_impl.execute(state, config)
         return result.get("_route", "default")
 
