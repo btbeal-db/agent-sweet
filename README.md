@@ -29,17 +29,26 @@ This lets the app log MLflow models on your behalf when you deploy.
 
 ### 2. Confirm the app's OBO scopes
 
-Preview routes data-access requests (Vector Search, Genie, UC Functions, external MCP) through Databricks managed MCP servers, which require specific OBO scopes on your token. The bundle in `databricks.yml` declares them automatically when you deploy via "Deploy from Git", but it's worth verifying — if your workspace has app-authorization policies that strip scopes, or you created the app outside the bundle flow, preview will fail with auth errors that don't obviously point at scopes.
+Preview routes data-access requests (Vector Search, Genie, UC Functions, external MCP) through Databricks managed MCP servers, which require specific OBO scopes on your token. The bundle in `databricks.yml` declares them automatically when you deploy via "Deploy from Git" — but if your workspace has app-authorization policies that strip scopes, or you created the app outside the bundle flow, preview will fail with auth errors that don't obviously point at scopes.
 
-Open your app's **Authorization** page and confirm the user-token scopes include all of:
+Open your app's **Authorization** page and confirm the user-token scopes include all of the following:
 
-- `mcp.functions`
-- `mcp.vectorsearch`
-- `mcp.genie`
-- `mcp.external`
-- `workspace.workspace`
+| Scope | Required for |
+|---|---|
+| `mcp.functions` | UC Function nodes; UC functions exposed via the MCP Server node |
+| `mcp.vectorsearch` | Vector Search nodes; VS indexes exposed via the MCP Server node |
+| `mcp.genie` | Genie nodes; Genie rooms exposed via the MCP Server node |
+| `mcp.external` | External MCP servers (GitHub, Slack, etc.) connected via Unity Catalog connections |
+| `workspace.workspace` | Reading and writing graph definitions in your workspace folder |
 
-If any are missing, add them and redeploy. The full mapping of scope → node type is in [How data-access auth works](#how-data-access-auth-works).
+`iam.current-user` is granted by default and is what the app uses to identify you — you don't need to add it.
+
+**If any are missing:**
+
+- *Deployed via bundle:* edit `user_api_scopes` in `databricks.yml`, then `databricks bundle deploy`.
+- *Created via the UI:* go to the app's **Authorization** page, add the missing scopes, and redeploy the app.
+
+After adding scopes, **clear cookies for the app's hostname or open it in a private window** — newly-added scopes are not re-requested for an existing OAuth session.
 
 ## Using the App
 
