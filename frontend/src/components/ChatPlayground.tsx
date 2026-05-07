@@ -90,10 +90,19 @@ export default function ChatPlayground({ graphGetter, onClose }: Props) {
   const [threadId, setThreadId] = useState<string | null>(null);
   const [pendingInterrupt, setPendingInterrupt] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Tracks the in-flight preview stream so we can abort it on unmount or
+  // when the user fires off a new send before the previous one finishes.
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const scrollOnToggle = useCallback((e: React.SyntheticEvent<HTMLDetailsElement>) => {
     const details = e.currentTarget;
@@ -176,6 +185,10 @@ export default function ChatPlayground({ graphGetter, onClose }: Props) {
       }, delay);
     };
 
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
       const graph = graphGetter!();
 
@@ -234,9 +247,14 @@ export default function ChatPlayground({ graphGetter, onClose }: Props) {
           setPendingInterrupt(false);
           updatePlaceholder({ content: "", thinking: null, error: event.message });
         }
-      });
+      }, controller.signal);
     } catch (err) {
       stopThinking();
+      // Aborts (unmount or new send superseded this one) are intentional —
+      // don't render them as errors.
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return;
+      }
       const message =
         err instanceof Error ? err.message : String(err);
       updatePlaceholder({
@@ -247,6 +265,9 @@ export default function ChatPlayground({ graphGetter, onClose }: Props) {
       setPendingInterrupt(false);
     } finally {
       stopThinking();
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+      }
       setIsLoading(false);
     }
   }, [input, graphGetter, isLoading, addErrorMessage, threadId, pendingInterrupt]);

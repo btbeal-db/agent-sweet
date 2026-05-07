@@ -37,6 +37,7 @@ export async function streamPreview(
   resumeValue: string | null | undefined,
   pat: string | null | undefined,
   onEvent: (event: PreviewEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const body: Record<string, unknown> = {
     graph,
@@ -50,6 +51,7 @@ export async function streamPreview(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) throw new Error(`Preview failed: ${res.status} ${res.statusText}`);
 
