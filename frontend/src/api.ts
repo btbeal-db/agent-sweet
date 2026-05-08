@@ -8,6 +8,7 @@ import type {
   SetupInfoResponse,
   SetupValidateResponse,
   DiscoveryResponse,
+  EndpointCapabilities,
 } from "./types";
 
 const BASE = "/api";
@@ -151,6 +152,24 @@ export async function fetchDiscoveryOptions(endpoint: string): Promise<Discovery
     return data;
   } catch {
     return { options: [], error: "Network error" };
+  }
+}
+
+// Per-name cache mirrors the backend's process cache so we don't re-fire the
+// probe on every ConfigPanel re-render for the same endpoint.
+const _capabilitiesCache = new Map<string, EndpointCapabilities>();
+
+export async function fetchEndpointCapabilities(name: string): Promise<EndpointCapabilities> {
+  const cached = _capabilitiesCache.get(name);
+  if (cached) return cached;
+  try {
+    const res = await fetch(`${BASE}/discover/serving-endpoints/${encodeURIComponent(name)}/capabilities`);
+    if (!res.ok) return { supports_temperature: true, error: `HTTP ${res.status}` };
+    const data: EndpointCapabilities = await res.json();
+    if (!data.error) _capabilitiesCache.set(name, data);
+    return data;
+  } catch {
+    return { supports_temperature: true, error: "Network error" };
   }
 }
 
