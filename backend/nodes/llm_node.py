@@ -9,7 +9,6 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from databricks_langchain import ChatDatabricks
 
-from ..capabilities import name_likely_rejects_temperature
 from .base import BaseNode, NodeConfigField
 from . import register
 
@@ -157,7 +156,8 @@ class LLMNode(BaseNode):
                 label="Temperature",
                 field_type="number",
                 required=False,
-                default=0.7,
+                default=None,
+                help_text="Leave blank to use the endpoint's default. Reasoning models (e.g. Claude Opus 4) reject this parameter.",
                 advanced=True,
             ),
             NodeConfigField(
@@ -192,7 +192,6 @@ class LLMNode(BaseNode):
     def execute(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         writes_to = config.get("_writes_to", "")
         endpoint = config.get("endpoint", "databricks-meta-llama-3-3-70b-instruct")
-        temperature = float(config.get("temperature", 0.7))
         raw_prompt = config.get("system_prompt", "You are a helpful assistant.")
         conversational = str(config.get("conversational", "false")).lower() == "true"
         last_n = int(config.get("last_n_messages", 0) or 0)
@@ -202,18 +201,17 @@ class LLMNode(BaseNode):
 
         # LLM calls use the SP credentials (default env vars). FMAPI's data-plane
         # does not accept OBO tokens. Data-access nodes (VS, Genie, UC) use OBO.
-        # Skip ``temperature`` for endpoints known to reject it (e.g. Claude
-        # reasoning models). The frontend gates the input via the discovery
-        # capability flag, but a stale value can still arrive here if the user
-        # switched endpoints after setting a temperature — drop it defensively.
+        # ``temperature`` is opt-in: only forward it when the user explicitly
+        # set a parsable value. Reasoning endpoints (e.g. Claude Opus 4) reject
+        # the parameter — leaving it unset lets ChatDatabricks omit it from the
+        # request payload entirely.
         llm_kwargs: dict[str, Any] = {"endpoint": endpoint}
-        if name_likely_rejects_temperature(endpoint):
-            logger.info(
-                "Endpoint %s rejects the temperature parameter; ignoring configured value %s.",
-                endpoint, temperature,
-            )
-        else:
-            llm_kwargs["temperature"] = temperature
+        raw_temp = config.get("temperature")
+        if raw_temp not in (None, "", "null"):
+            try:
+                llm_kwargs["temperature"] = float(raw_temp)
+            except (TypeError, ValueError):
+                pass
         llm = ChatDatabricks(**llm_kwargs)
 
         # Bind tools if configured

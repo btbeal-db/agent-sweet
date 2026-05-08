@@ -1,18 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useReactFlow, useNodes } from "@xyflow/react";
-import type { NodeTypeMetadata, NodeConfigField, DiscoveryOption } from "../types";
+import type { NodeTypeMetadata, NodeConfigField } from "../types";
 import { useStateFields } from "../StateContext";
-import { fetchDiscoveryOptions, getDiscoveryCache } from "../api";
 import RouteEditor, { type Route } from "./RouteEditor";
 import SchemaEditor, { type SchemaField } from "./SchemaEditor";
 import SearchableSelect from "./SearchableSelect";
 import TemplatedTextarea from "./TemplatedTextarea";
 import LocalInput from "./LocalInput";
-
-const SERVING_ENDPOINTS_DISCOVERY_URL = "/api/discover/serving-endpoints";
-const TEMPERATURE_UNSUPPORTED_HINT =
-  "is not supported by this serving endpoint.";
 
 interface Props {
   selectedNodeId: string;
@@ -34,33 +29,6 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
   const meta = useMemo(() => nodeTypes.find((nt) => nt.type === nodeType), [nodeTypes, nodeType]);
   const isRouter = (node?.data.is_router as boolean) ?? false;
   const config = (node?.data.config ?? {}) as Record<string, unknown>;
-
-  // For the LLM node, fetch the serving-endpoints discovery list so we can
-  // gate the temperature input on whether the selected endpoint accepts
-  // ``temperature``. The fetch is cached at module scope, so this is free
-  // after the first call per page load.
-  const isLLMNode = nodeType === "llm";
-  const [endpointOptions, setEndpointOptions] = useState<DiscoveryOption[]>(
-    () => getDiscoveryCache(SERVING_ENDPOINTS_DISCOVERY_URL)?.options ?? []
-  );
-  useEffect(() => {
-    if (!isLLMNode) return;
-    let cancelled = false;
-    fetchDiscoveryOptions(SERVING_ENDPOINTS_DISCOVERY_URL).then((res) => {
-      if (!cancelled) setEndpointOptions(res.options);
-    });
-    return () => { cancelled = true; };
-  }, [isLLMNode]);
-
-  const selectedEndpoint = (config.endpoint as string) ?? "";
-  const selectedEndpointMeta = useMemo(
-    () => endpointOptions.find((o) => o.value === selectedEndpoint) ?? null,
-    [endpointOptions, selectedEndpoint],
-  );
-  // Default permissive: an endpoint we haven't loaded metadata for yet
-  // shouldn't have its temperature field disabled.
-  const endpointSupportsTemperature =
-    selectedEndpointMeta?.supports_temperature ?? true;
 
   /** Remove all outgoing edges from this router node. */
   const clearRouterEdges = useCallback(() => {
@@ -238,25 +206,6 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
       );
     }
 
-    // Capability-based gating: when the currently-selected serving endpoint
-    // rejects ``temperature``, hide the input entirely and show a notice
-    // instead so the user understands why they can't set a value.
-    const hideTemperatureField =
-      isLLMNode &&
-      field.name === "temperature" &&
-      !!selectedEndpoint &&
-      !endpointSupportsTemperature;
-
-    if (hideTemperatureField) {
-      return (
-        <div key={field.name} className="config-field">
-          <div className="config-notice" role="note">
-            <strong>{field.label}</strong> {TEMPERATURE_UNSUPPORTED_HINT}
-          </div>
-        </div>
-      );
-    }
-
     const val = (config[field.name] ?? field.default ?? "") as string;
 
     return (
@@ -289,12 +238,18 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
             type={field.field_type === "number" ? "number" : "text"}
             value={String(val)}
             placeholder={field.placeholder}
-            onChange={(next) =>
-              updateConfig(
-                field.name,
-                field.field_type === "number" ? parseFloat(next) || 0 : next
-              )
-            }
+            onChange={(next) => {
+              if (field.field_type !== "number") {
+                updateConfig(field.name, next);
+                return;
+              }
+              if (next === "") {
+                updateConfig(field.name, "");
+                return;
+              }
+              const parsed = parseFloat(next);
+              updateConfig(field.name, Number.isNaN(parsed) ? next : parsed);
+            }}
           />
         )}
         {field.help_text && (

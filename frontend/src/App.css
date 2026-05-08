@@ -1450,21 +1450,6 @@ code, pre, .mono {
   font-family: "JetBrains Mono", monospace;
 }
 
-.config-notice {
-  padding: 0.55rem 0.7rem;
-  background: var(--warning-subtle);
-  border-left: 3px solid var(--warning);
-  border-radius: 4px;
-  font-size: 0.78rem;
-  color: var(--text);
-  line-height: 1.45;
-}
-
-.config-notice strong {
-  color: var(--warning);
-  font-weight: 600;
-}
-
 .config-advanced {
   margin-top: 0.75rem;
   border-top: 1px dashed var(--border);

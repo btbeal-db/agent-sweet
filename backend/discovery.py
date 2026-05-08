@@ -15,7 +15,6 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from .auth import get_workspace_client
-from .capabilities import endpoint_supports_temperature
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +28,6 @@ class DiscoveryOption(BaseModel):
     label: str
     description: str = ""
     provider: str | None = None  # only for serving endpoints
-    # Capability flags — only meaningful for serving endpoints. ``True`` is
-    # a permissive default so non-LLM discovery types don't have to opt in.
-    supports_temperature: bool = True
 
 
 class DiscoveryResponse(BaseModel):
@@ -81,7 +77,6 @@ def list_serving_endpoints() -> DiscoveryResponse:
                     label=ep.name,
                     description=" | ".join(desc_parts),
                     provider=_detect_provider(ep.name),
-                    supports_temperature=endpoint_supports_temperature(ep),
                 )
             )
         return DiscoveryResponse(options=options)
