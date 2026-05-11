@@ -156,7 +156,17 @@ export default function ChatPlayground({ graphGetter, onClose }: Props) {
       thinking: pickVerb(),
     };
 
-    setMessages((prev) => [...prev, userMsg, placeholder]);
+    // Drop trace blobs from prior turns. Each mlflow_trace/execution_trace can
+    // be hundreds of KB (full LLM IO + span tree); without this, long sessions
+    // grow the heap unboundedly and Chrome eventually OOM-kills the renderer.
+    setMessages((prev) => {
+      const trimmed = prev.map((m) =>
+        m.execution_trace || m.mlflow_trace
+          ? { ...m, execution_trace: undefined, mlflow_trace: undefined }
+          : m
+      );
+      return [...trimmed, userMsg, placeholder];
+    });
     const userInput = input.trim();
     setInput("");
     setIsLoading(true);
