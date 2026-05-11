@@ -9,6 +9,7 @@ import HomePage from "./components/HomePage";
 import BuilderWalkthrough from "./components/BuilderWalkthrough";
 import AIChatDropdown from "./components/AIChatDropdown";
 import SetupPage from "./components/SetupPage";
+import SetupPromptModal from "./components/SetupPromptModal";
 import ModelsPage from "./components/ModelsPage";
 import { fetchNodeTypes, fetchModels, getSetupStatus } from "./api";
 import type { NodeTypeMetadata, GraphDef, SetupStatusResponse, ModelInfo } from "./types";
@@ -33,6 +34,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null);
   const [experimentPath, setExperimentPath] = useState<string | null>(null);
+  const [setupPromptDismissed, setSetupPromptDismissed] = useState(false);
   const [cachedModels, setCachedModels] = useState<ModelInfo[] | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
 
@@ -303,6 +305,30 @@ export default function App() {
           onGoToSetup={() => { setShowDeploy(false); setView("setup"); }}
         />
       )}
+
+      {/* First-sign-in prompt — shown until setup is complete or dismissed
+          for this session. Auto-setup creates the conventional folder and
+          grants the SP access; dismissing falls through to the Setup tab. */}
+      {setupStatus &&
+        !setupStatus.setup_complete &&
+        !setupPromptDismissed && (
+          <SetupPromptModal
+            experimentPath={setupStatus.experiment_path ?? `/Users/${setupStatus.user_email}/agent-sweet`}
+            spDisplayName={setupStatus.sp_display_name}
+            onCreated={(path) => {
+              setExperimentPath(path);
+              setSetupStatus((prev) =>
+                prev ? { ...prev, setup_complete: true, experiment_path: path } : prev
+              );
+              setSetupPromptDismissed(true);
+            }}
+            onDismiss={() => setSetupPromptDismissed(true)}
+            onGoToSetup={() => {
+              setSetupPromptDismissed(true);
+              setView("setup");
+            }}
+          />
+        )}
 
       {/* Import graph JSON modal */}
       {showImportJson && (
