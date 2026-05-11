@@ -306,23 +306,19 @@ export default function App() {
         />
       )}
 
-      {/* First-sign-in prompt: only shown when setup isn't complete and the
-          user's default folder doesn't exist yet. Dismissing falls through
-          to the manual setup page; creating runs auto-setup with their
-          chosen path. */}
+      {/* First-sign-in prompt — shown until setup is complete or dismissed
+          for this session. Auto-setup creates the conventional folder and
+          grants the SP access; dismissing falls through to the Setup tab. */}
       {setupStatus &&
         !setupStatus.setup_complete &&
-        !setupStatus.default_folder_exists &&
         !setupPromptDismissed && (
           <SetupPromptModal
-            defaultPath={setupStatus.default_experiment_path ?? `/Users/${setupStatus.user_email}/agent-sweet`}
+            experimentPath={setupStatus.experiment_path ?? `/Users/${setupStatus.user_email}/agent-sweet`}
             spDisplayName={setupStatus.sp_display_name}
             onCreated={(path) => {
               setExperimentPath(path);
               setSetupStatus((prev) =>
-                prev
-                  ? { ...prev, setup_complete: true, experiment_path: path, default_folder_exists: true }
-                  : prev
+                prev ? { ...prev, setup_complete: true, experiment_path: path } : prev
               );
               setSetupPromptDismissed(true);
             }}

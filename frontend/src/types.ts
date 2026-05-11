@@ -187,8 +187,6 @@ export interface SetupStatusResponse {
   user_email: string;
   sp_display_name: string;
   experiment_path: string | null;
-  default_folder_exists: boolean;
-  default_experiment_path: string | null;
 }
 
 export interface SetupInfoResponse {

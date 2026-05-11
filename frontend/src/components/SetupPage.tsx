@@ -58,11 +58,10 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
   }, []);
 
   const handleAutoSetup = useCallback(async () => {
-    if (!experimentPath.trim()) return;
     setAutoLoading(true);
     setAutoError(null);
     try {
-      const result = await autoSetup(experimentPath);
+      const result = await autoSetup();
       if (result.success) {
         setStepStatuses({ create: "done", grant: "done", validate: "done" });
         setIsComplete(true);
@@ -78,10 +77,9 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
   }, [experimentPath, onSetupComplete]);
 
   const handlePathConfirm = useCallback(() => {
-    if (!experimentPath.trim()) return;
     setStepStatuses((prev) => ({ ...prev, create: "done", grant: "active" }));
     setCurrentStep("grant");
-  }, [experimentPath]);
+  }, []);
 
   const handleGrantDone = useCallback(() => {
     setStepStatuses((prev) => ({ ...prev, grant: "done", validate: "active" }));
@@ -92,7 +90,7 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
     setValidateLoading(true);
     setValidateError(null);
     try {
-      const result = await validateSetup(experimentPath);
+      const result = await validateSetup();
       if (result.success) {
         setStepStatuses((prev) => ({ ...prev, validate: "done" }));
         setIsComplete(true);
@@ -211,7 +209,7 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
               type="text"
               className="deploy-input"
               value={experimentPath}
-              onChange={(e) => setExperimentPath(e.target.value)}
+              readOnly
             />
           </div>
 
@@ -237,7 +235,7 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
           <div className="setup-actions">
             <button
               className="btn btn-primary"
-              disabled={autoLoading || !experimentPath.trim()}
+              disabled={autoLoading}
               onClick={handleAutoSetup}
             >
               {autoLoading ? (
@@ -291,7 +289,6 @@ export default function SetupPage({ setupStatus, onSetupComplete }: Props) {
             </button>
             <button
               className="btn btn-primary"
-              disabled={!experimentPath.trim()}
               onClick={handlePathConfirm}
             >
               Continue

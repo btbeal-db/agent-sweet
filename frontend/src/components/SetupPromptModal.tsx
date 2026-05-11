@@ -3,37 +3,34 @@ import { Loader, FolderPlus, X } from "lucide-react";
 import { autoSetup } from "../api";
 
 interface Props {
-  defaultPath: string;
+  experimentPath: string;
   spDisplayName: string;
   onCreated: (experimentPath: string) => void;
   onDismiss: () => void;
   onGoToSetup: () => void;
 }
 
-/** First-sign-in prompt asking the user to create their MLflow experiment
- *  folder. Only shown when ``default_folder_exists`` is false on
- *  ``/setup/status``. The user can edit the path or cancel — cancelling
- *  falls through to the regular Setup page.
+/** First-sign-in prompt that creates the conventional MLflow folder
+ *  (`/Users/{email}/agent-sweet`) and grants the app SP Can Manage on it.
+ *  The path is fixed — see ``backend/setup.py`` for why.
  */
 export default function SetupPromptModal({
-  defaultPath,
+  experimentPath,
   spDisplayName,
   onCreated,
   onDismiss,
   onGoToSetup,
 }: Props) {
-  const [path, setPath] = useState(defaultPath);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleCreate = async () => {
-    if (!path.trim()) return;
     setLoading(true);
     setError(null);
     try {
-      const result = await autoSetup(path);
+      const result = await autoSetup();
       if (result.success) {
-        onCreated(path);
+        onCreated(experimentPath);
       } else {
         setError(result.error || "Could not create the folder. Try the manual setup flow.");
       }
@@ -75,10 +72,8 @@ export default function SetupPromptModal({
             <input
               type="text"
               className="deploy-input"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              disabled={loading}
-              autoFocus
+              value={experimentPath}
+              readOnly
             />
           </div>
 
@@ -104,7 +99,7 @@ export default function SetupPromptModal({
           <button
             className="btn btn-primary"
             onClick={handleCreate}
-            disabled={loading || !path.trim()}
+            disabled={loading}
           >
             {loading ? (
               <>
