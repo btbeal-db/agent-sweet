@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from pydantic import Field, create_model
@@ -93,6 +94,31 @@ def _get_message_history(state: dict[str, Any], last_n: int = 0) -> list[BaseMes
         messages = messages[-last_n:]
 
     return messages
+
+
+_INNER_MESSAGE_RE = re.compile(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _humanize_llm_error(exc: Exception, endpoint: str) -> str:
+    """Pull a human-readable message out of an FMAPI / OpenAI-style error.
+
+    These errors arrive doubly nested — a Python dict repr wrapping a JSON
+    string whose ``error.message`` is the actual user-facing text. The default
+    ``str(exc)`` dumps all of it. Surface only the inner message, and append
+    an actionable tip when we recognize the temperature-rejection case.
+    """
+    raw = str(exc)
+    matches = _INNER_MESSAGE_RE.findall(raw)
+    if not matches:
+        return raw
+    inner = matches[-1].replace("\\'", "'").replace('\\"', '"').replace('\\n', ' ').strip()
+    lower = inner.lower()
+    if "temperature" in lower and ("does not support" in lower or "unsupported" in lower):
+        return (
+            f"You configured a Temperature value, but this model does not support that parameter.\n\n"
+            f"Tip: clear the Temperature field on the LLM node — `{endpoint}` uses its built-in default."
+        )
+    return inner
 
 
 def _build_schema_instruction(sub_fields: list[dict[str, str]], field_name: str) -> str:
@@ -264,7 +290,10 @@ class LLMNode(BaseNode):
             )
 
             structured_llm = llm.with_structured_output(model_cls)
-            result = structured_llm.invoke(messages_for_llm)
+            try:
+                result = structured_llm.invoke(messages_for_llm)
+            except Exception as exc:
+                raise RuntimeError(_humanize_llm_error(exc, endpoint)) from exc
 
             result_dict = result.model_dump()
             response_text = json.dumps(result_dict, indent=2)
@@ -279,7 +308,10 @@ class LLMNode(BaseNode):
         max_iterations = int(config.get("max_tool_iterations", 10) or 10)
 
         for _ in range(max_iterations):
-            response = llm.invoke(messages_for_llm)
+            try:
+                response = llm.invoke(messages_for_llm)
+            except Exception as exc:
+                raise RuntimeError(_humanize_llm_error(exc, endpoint)) from exc
 
             if not tools or not hasattr(response, "tool_calls") or not response.tool_calls:
                 return {
