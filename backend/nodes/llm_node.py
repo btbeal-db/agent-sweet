@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any
 
-from pydantic import Field, create_model
+from pydantic import Field, ValidationError, create_model
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from databricks_langchain import ChatDatabricks
@@ -14,6 +14,67 @@ from .base import BaseNode, NodeConfigField
 from . import register
 
 logger = logging.getLogger(__name__)
+
+
+def _text_from_blocks(blocks: list) -> str:
+    return "".join(
+        b.get("text", "") for b in blocks
+        if isinstance(b, dict) and b.get("type") == "text"
+    )
+
+
+def _looks_like_harmony(obj: Any) -> bool:
+    """True if ``obj`` is a list whose first dict has a harmony ``type``."""
+    if not isinstance(obj, list) or not obj:
+        return False
+    first = obj[0]
+    return isinstance(first, dict) and first.get("type") in {"reasoning", "text"}
+
+
+def extract_visible_text(content: Any) -> str:
+    """Strip gpt-oss harmony reasoning blocks; return only user-facing text.
+
+    databricks_langchain's _convert_dict_to_message stringifies non-string
+    content via ``json.dumps``, which destroys the typed-block shape that
+    AIMessage.text would normally use. This helper reverses that: parses
+    leading JSON list literals and keeps only ``type=="text"`` blocks.
+
+    Content shapes seen in practice:
+    - Plain string (Claude, Llama): pass through.
+    - List of typed blocks: keep ``type=="text"`` blocks.
+    - JSON-encoded list-of-blocks (single bundled chunk): same as above after parse.
+    - One harmony JSON literal per stream chunk (LangGraph 1.x): a single
+      ``[{...reasoning...}]`` literal arrives per chunk. After stripping we
+      return ``""`` so the caller can skip the chunk entirely.
+    - Concatenated literals + trailing text (older accumulation behavior):
+      walk leading literals, skip reasoning blocks, keep trailing plain text.
+    """
+    if isinstance(content, list):
+        return _text_from_blocks(content)
+    if not isinstance(content, str):
+        return str(content)
+    stripped = content.lstrip()
+    if not stripped.startswith("["):
+        return content
+    decoder = json.JSONDecoder()
+    text_parts: list[str] = []
+    saw_harmony = False
+    remaining = stripped
+    while remaining.startswith("["):
+        try:
+            obj, end = decoder.raw_decode(remaining)
+        except (json.JSONDecodeError, ValueError):
+            break
+        if _looks_like_harmony(obj):
+            saw_harmony = True
+            text_parts.append(_text_from_blocks(obj))
+            remaining = remaining[end:].lstrip()
+        else:
+            break
+    if remaining:
+        text_parts.append(remaining)
+    return "".join(text_parts) if saw_harmony else content
+
 
 _TYPE_MAP: dict[str, type] = {
     "str": str,
@@ -289,13 +350,41 @@ class LLMNode(BaseNode):
                 content=f"{system_prompt}\n\n{schema_instruction}"
             )
 
-            structured_llm = llm.with_structured_output(model_cls)
+            # Use FMAPI's server-side strict json_schema response_format. The
+            # default with_structured_output(method="function_calling") path
+            # forces a tool call that some endpoints (e.g. databricks-gpt-oss-*)
+            # don't reliably emit. databricks-langchain's built-in
+            # method="json_schema" omits the required ``name`` field, so we
+            # build the payload manually here.
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": model_cls.__name__,
+                    "strict": True,
+                    "schema": model_cls.model_json_schema(),
+                },
+            }
+            # FMAPI rejects structured output + streaming for some endpoints
+            # (gpt-oss-* explicitly errors with "Structured output is not
+            # currently supported with streaming"). LangGraph drives nodes
+            # in a streaming context during preview, which forces .invoke()
+            # to stream unless we pin disable_streaming on the model.
+            non_streaming = ChatDatabricks(**llm_kwargs, disable_streaming=True)
             try:
-                result = structured_llm.invoke(messages_for_llm)
+                ai_msg = non_streaming.bind(response_format=response_format).invoke(messages_for_llm)
             except Exception as exc:
                 raise RuntimeError(_humanize_llm_error(exc, endpoint)) from exc
+            visible = extract_visible_text(getattr(ai_msg, "content", "") or "")
+            try:
+                result_dict = model_cls(**json.loads(visible)).model_dump()
+            except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
+                err = (
+                    f"Endpoint '{endpoint}' returned no parseable structured output: {exc}. "
+                    "The model did not return JSON matching the requested schema; "
+                    "try a different endpoint."
+                )
+                return {writes_to: err, "messages": [AIMessage(content=err)]}
 
-            result_dict = result.model_dump()
             response_text = json.dumps(result_dict, indent=2)
 
             return {
@@ -314,9 +403,10 @@ class LLMNode(BaseNode):
                 raise RuntimeError(_humanize_llm_error(exc, endpoint)) from exc
 
             if not tools or not hasattr(response, "tool_calls") or not response.tool_calls:
+                visible = extract_visible_text(response.content)
                 return {
-                    writes_to: response.content,
-                    "messages": [AIMessage(content=response.content)],
+                    writes_to: visible,
+                    "messages": [AIMessage(content=visible)],
                 }
 
             # Tool-calling loop — intermediates stay local
