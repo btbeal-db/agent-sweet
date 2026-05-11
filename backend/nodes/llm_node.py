@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from pydantic import Field, create_model
@@ -95,6 +96,31 @@ def _get_message_history(state: dict[str, Any], last_n: int = 0) -> list[BaseMes
     return messages
 
 
+_INNER_MESSAGE_RE = re.compile(r'"message"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def _humanize_llm_error(exc: Exception, endpoint: str) -> str:
+    """Pull a human-readable message out of an FMAPI / OpenAI-style error.
+
+    These errors arrive doubly nested — a Python dict repr wrapping a JSON
+    string whose ``error.message`` is the actual user-facing text. The default
+    ``str(exc)`` dumps all of it. Surface only the inner message, and append
+    an actionable tip when we recognize the temperature-rejection case.
+    """
+    raw = str(exc)
+    matches = _INNER_MESSAGE_RE.findall(raw)
+    if not matches:
+        return raw
+    inner = matches[-1].replace("\\'", "'").replace('\\"', '"').replace('\\n', ' ').strip()
+    lower = inner.lower()
+    if "temperature" in lower and ("does not support" in lower or "unsupported" in lower):
+        return (
+            f"You configured a Temperature value, but this model does not support that parameter.\n\n"
+            f"Tip: clear the Temperature field on the LLM node — `{endpoint}` uses its built-in default."
+        )
+    return inner
+
+
 def _build_schema_instruction(sub_fields: list[dict[str, str]], field_name: str) -> str:
     """Build a prompt section describing the expected structured output."""
     lines = [f"You must respond with a structured `{field_name}` object containing:"]
@@ -156,7 +182,9 @@ class LLMNode(BaseNode):
                 label="Temperature",
                 field_type="number",
                 required=False,
-                default=0.7,
+                default=None,
+                help_text="Leave blank to use the endpoint's default. Reasoning models (e.g. Claude Opus 4) reject this parameter.",
+                advanced=True,
             ),
             NodeConfigField(
                 name="conversational",
@@ -190,7 +218,6 @@ class LLMNode(BaseNode):
     def execute(self, state: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
         writes_to = config.get("_writes_to", "")
         endpoint = config.get("endpoint", "databricks-meta-llama-3-3-70b-instruct")
-        temperature = float(config.get("temperature", 0.7))
         raw_prompt = config.get("system_prompt", "You are a helpful assistant.")
         conversational = str(config.get("conversational", "false")).lower() == "true"
         last_n = int(config.get("last_n_messages", 0) or 0)
@@ -200,7 +227,18 @@ class LLMNode(BaseNode):
 
         # LLM calls use the SP credentials (default env vars). FMAPI's data-plane
         # does not accept OBO tokens. Data-access nodes (VS, Genie, UC) use OBO.
-        llm = ChatDatabricks(endpoint=endpoint, temperature=temperature)
+        # ``temperature`` is opt-in: only forward it when the user explicitly
+        # set a parsable value. Reasoning endpoints (e.g. Claude Opus 4) reject
+        # the parameter — leaving it unset lets ChatDatabricks omit it from the
+        # request payload entirely.
+        llm_kwargs: dict[str, Any] = {"endpoint": endpoint}
+        raw_temp = config.get("temperature")
+        if raw_temp not in (None, "", "null"):
+            try:
+                llm_kwargs["temperature"] = float(raw_temp)
+            except (TypeError, ValueError):
+                pass
+        llm = ChatDatabricks(**llm_kwargs)
 
         # Bind tools if configured
         tools_json_raw = config.get("tools_json", "")
@@ -252,7 +290,10 @@ class LLMNode(BaseNode):
             )
 
             structured_llm = llm.with_structured_output(model_cls)
-            result = structured_llm.invoke(messages_for_llm)
+            try:
+                result = structured_llm.invoke(messages_for_llm)
+            except Exception as exc:
+                raise RuntimeError(_humanize_llm_error(exc, endpoint)) from exc
 
             result_dict = result.model_dump()
             response_text = json.dumps(result_dict, indent=2)
@@ -267,7 +308,10 @@ class LLMNode(BaseNode):
         max_iterations = int(config.get("max_tool_iterations", 10) or 10)
 
         for _ in range(max_iterations):
-            response = llm.invoke(messages_for_llm)
+            try:
+                response = llm.invoke(messages_for_llm)
+            except Exception as exc:
+                raise RuntimeError(_humanize_llm_error(exc, endpoint)) from exc
 
             if not tools or not hasattr(response, "tool_calls") or not response.tool_calls:
                 return {
