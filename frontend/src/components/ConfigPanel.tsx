@@ -3,15 +3,11 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { useReactFlow, useNodes } from "@xyflow/react";
 import type { NodeTypeMetadata, NodeConfigField } from "../types";
 import { useStateFields } from "../StateContext";
-import { fetchEndpointCapabilities } from "../api";
 import RouteEditor, { type Route } from "./RouteEditor";
 import SchemaEditor, { type SchemaField } from "./SchemaEditor";
 import SearchableSelect from "./SearchableSelect";
 import TemplatedTextarea from "./TemplatedTextarea";
 import LocalInput from "./LocalInput";
-
-const TEMPERATURE_UNSUPPORTED_HINT =
-  "is not supported by this serving endpoint.";
 
 interface Props {
   selectedNodeId: string;
@@ -33,27 +29,6 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
   const meta = useMemo(() => nodeTypes.find((nt) => nt.type === nodeType), [nodeTypes, nodeType]);
   const isRouter = (node?.data.is_router as boolean) ?? false;
   const config = (node?.data.config ?? {}) as Record<string, unknown>;
-
-  // For LLM nodes, probe the selected endpoint to see whether it accepts
-  // ``temperature``. The backend caches per-process so this fires at most
-  // once per endpoint per app restart. ``null`` = not yet known; we render
-  // the field normally during the probe so the user isn't blocked.
-  const isLLMNode = nodeType === "llm";
-  const selectedEndpoint = isLLMNode ? ((config.endpoint as string) ?? "") : "";
-  const [endpointSupportsTemperature, setEndpointSupportsTemperature] =
-    useState<boolean | null>(null);
-  useEffect(() => {
-    if (!isLLMNode || !selectedEndpoint) {
-      setEndpointSupportsTemperature(null);
-      return;
-    }
-    let cancelled = false;
-    setEndpointSupportsTemperature(null);
-    fetchEndpointCapabilities(selectedEndpoint).then((caps) => {
-      if (!cancelled) setEndpointSupportsTemperature(caps.supports_temperature);
-    });
-    return () => { cancelled = true; };
-  }, [isLLMNode, selectedEndpoint]);
 
   /** Remove all outgoing edges from this router node. */
   const clearRouterEdges = useCallback(() => {
@@ -227,25 +202,6 @@ export default function ConfigPanel({ selectedNodeId, nodeTypes, stateVariables 
           {field.help_text && (
             <span className="config-hint">{field.help_text}</span>
           )}
-        </div>
-      );
-    }
-
-    // Gate the LLM ``temperature`` field on the per-endpoint probe result.
-    // Only hide on a definitive ``false``; ``null`` (probe still running or
-    // never started) renders the field normally so the user isn't blocked
-    // while the probe is in flight.
-    const hideTemperatureField =
-      isLLMNode &&
-      field.name === "temperature" &&
-      endpointSupportsTemperature === false;
-
-    if (hideTemperatureField) {
-      return (
-        <div key={field.name} className="config-field">
-          <div className="config-notice" role="note">
-            <strong>{field.label}</strong> {TEMPERATURE_UNSUPPORTED_HINT}
-          </div>
         </div>
       );
     }

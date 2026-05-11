@@ -36,11 +36,6 @@ export interface DiscoveryResponse {
   error?: string | null;
 }
 
-export interface EndpointCapabilities {
-  supports_temperature: boolean;
-  error?: string | null;
-}
-
 export interface NodeTypeMetadata {
   type: string;
   display_name: string;
