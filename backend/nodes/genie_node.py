@@ -31,8 +31,8 @@ def _format_genie_mcp_content(payload: dict) -> str:
                 parts.append(t)
 
     for qa in content.get("queryAttachments", []) or []:
-        if qa.get("description"):
-            parts.append(qa["description"])
+        # Skip qa.description — Genie restates the user's question, which
+        # duplicates the textAttachment answer above without adding info.
         if qa.get("query"):
             parts.append(f"```sql\n{qa['query']}\n```")
         stmt = qa.get("statement_response") or {}
@@ -50,10 +50,21 @@ def _format_genie_mcp_content(payload: dict) -> str:
                 return vals if isinstance(vals, list) else list(row.values())
             return list(row) if not isinstance(row, str) else [row]
 
+        def _unwrap_typed(v):
+            # Managed MCP wraps each cell as {"string_value": ...} /
+            # {"number_value": ...} / {"boolean_value": ...} / etc. Unwrap
+            # to the inner scalar so str() doesn't render the dict repr.
+            if isinstance(v, dict) and len(v) == 1:
+                key = next(iter(v))
+                if key.endswith("_value"):
+                    return v[key]
+            return v
+
         # Escape pipes so cell text doesn't break the markdown table row.
         # Underscores are fine — the renderer's inline pass only converts
         # `_word_` pairs, not bare identifiers like patient_id.
         def _md_cell(v):
+            v = _unwrap_typed(v)
             if v is None:
                 return ""
             return str(v).replace("|", "\\|")
