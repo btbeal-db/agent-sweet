@@ -38,15 +38,32 @@ def _format_genie_mcp_content(payload: dict) -> str:
         stmt = qa.get("statement_response") or {}
         result = (stmt.get("result") or {})
         manifest = (stmt.get("manifest") or {})
-        rows = result.get("data_array") or []
+        rows = result.get("data_array") or result.get("data_typed_array") or []
         cols = [c.get("name") or f"col_{i}" for i, c in
                 enumerate((manifest.get("schema") or {}).get("columns", []))]
+
+        def _row_cells(row):
+            # Managed Genie MCP returns rows as {"values": [...]} per row;
+            # the SDK returns plain lists. Handle either.
+            if isinstance(row, dict):
+                vals = row.get("values")
+                return vals if isinstance(vals, list) else list(row.values())
+            return list(row) if not isinstance(row, str) else [row]
+
+        # Escape pipes + underscores so column values don't break the
+        # markdown table or get rendered as italics by the frontend.
+        def _md_cell(v):
+            if v is None:
+                return ""
+            s = str(v)
+            return s.replace("|", "\\|").replace("_", "\\_")
+
         if rows:
             display = rows[:MAX_ROWS]
             if cols:
-                header = "| " + " | ".join(cols) + " |"
+                header = "| " + " | ".join(_md_cell(c) for c in cols) + " |"
                 sep = "| " + " | ".join("---" for _ in cols) + " |"
-                body = ["| " + " | ".join("" if v is None else str(v) for v in row) + " |"
+                body = ["| " + " | ".join(_md_cell(v) for v in _row_cells(row)) + " |"
                         for row in display]
                 parts.append("\n".join([header, sep, *body]))
             total = manifest.get("total_row_count", len(rows))
