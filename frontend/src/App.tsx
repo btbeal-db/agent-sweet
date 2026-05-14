@@ -95,6 +95,15 @@ export default function App() {
     setView("builder");
   }, []);
 
+  // Stable so Canvas's [onGraphReady]/[onImportReady] effects don't re-run on
+  // every App render — that pattern was driving an idle render storm.
+  const handleGraphReady = useCallback((getter: () => GraphDef) => {
+    setGraphGetter(() => getter);
+  }, []);
+  const handleImportReady = useCallback((importer: (g: GraphDef) => void) => {
+    setGraphImporter(() => importer);
+  }, []);
+
   const handleClearAll = useCallback(() => {
     if (!graphImporter) return;
     graphImporter({ nodes: [], edges: [], state_fields: [], output_fields: [] });
@@ -256,8 +265,8 @@ export default function App() {
               nodeTypes={nodeTypes}
               selectedNodeId={selectedNodeId}
               onNodeSelect={setSelectedNodeId}
-              onGraphReady={(getter) => setGraphGetter(() => getter)}
-              onImportReady={(importer) => setGraphImporter(() => importer)}
+              onGraphReady={handleGraphReady}
+              onImportReady={handleImportReady}
               visible={view === "builder"}
             />
           </div>
