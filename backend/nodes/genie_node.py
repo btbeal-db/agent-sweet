@@ -80,18 +80,30 @@ class GenieNode(BaseNode):
         self, config: dict, writes_to: str, query: str, room_id: str,
     ) -> dict[str, Any]:
         """Direct SDK path — used by serving endpoints."""
+        import time
         from databricks.sdk.service.dashboards import MessageStatus
 
+        # Manual start + poll so a FAILED status surfaces the Genie-side error
+        # message instead of being swallowed by SDK's generic OperationFailed.
         try:
             w = get_data_client()
-            message = w.genie.start_conversation_and_wait(room_id, query)
+            waiter = w.genie.start_conversation(room_id, query)
+            conv_id, msg_id = waiter.conversation_id, waiter.message_id
+            deadline = time.monotonic() + 300
+            message = w.genie.get_message(room_id, conv_id, msg_id)
+            terminal = {MessageStatus.COMPLETED, MessageStatus.FAILED, MessageStatus.CANCELLED}
+            while message.status not in terminal and time.monotonic() < deadline:
+                time.sleep(2)
+                message = w.genie.get_message(room_id, conv_id, msg_id)
         except Exception as exc:
             error_detail = getattr(exc, "message", str(exc))
             logger.exception("Genie SDK call failed (space=%s)", room_id)
             return {writes_to: f"Genie API error: {error_detail}"}
 
-        if message.status == MessageStatus.FAILED:
-            error_text = message.error.message if message.error else "Unknown error"
+        if message.status != MessageStatus.COMPLETED:
+            error_text = message.error.message if message.error else f"status={message.status}"
+            logger.error("Genie message did not complete (space=%s, status=%s, error=%s)",
+                         room_id, message.status, error_text)
             return {writes_to: f"Genie error: {error_text}"}
 
         parts: list[str] = []
@@ -153,7 +165,7 @@ class GenieNode(BaseNode):
             url = config.get("mcp_server_url") or _genie_mcp_url(room_id)
             client = _get_mcp_client(url)
             result_text = _run_mcp_in_thread(
-                _mcp_discover_and_call, url, client, {"question": str(query)},
+                _mcp_discover_and_call, url, client, {"query": str(query)},
             )
         except Exception as exc:
             logger.exception("Genie MCP call failed (room=%s)", room_id)
