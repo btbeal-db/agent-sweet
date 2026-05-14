@@ -50,13 +50,13 @@ def _format_genie_mcp_content(payload: dict) -> str:
                 return vals if isinstance(vals, list) else list(row.values())
             return list(row) if not isinstance(row, str) else [row]
 
-        # Escape pipes + underscores so column values don't break the
-        # markdown table or get rendered as italics by the frontend.
+        # Escape pipes so cell text doesn't break the markdown table row.
+        # Underscores are fine — the renderer's inline pass only converts
+        # `_word_` pairs, not bare identifiers like patient_id.
         def _md_cell(v):
             if v is None:
                 return ""
-            s = str(v)
-            return s.replace("|", "\\|").replace("_", "\\_")
+            return str(v).replace("|", "\\|")
 
         if rows:
             display = rows[:MAX_ROWS]
