@@ -3831,36 +3831,49 @@ h4.md-header { font-size: 0.82em; }
 
 .eval-summary-card {
   flex: 1 1 150px;
-  padding: 0.8rem 1rem;
+  padding: 0.75rem 1rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.04),
-    rgba(255, 255, 255, 0.01)
-  );
-  transition: border-color 120ms ease, transform 120ms ease;
-}
-
-.eval-summary-card:hover {
-  border-color: var(--border-strong);
-  transform: translateY(-1px);
+  background: var(--bg-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
 }
 
 .eval-summary-name {
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   text-transform: capitalize;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
   color: var(--text-muted);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .eval-summary-value {
-  font-size: 1.6rem;
-  font-weight: 700;
-  margin-top: 0.25rem;
+  font-size: 1.5rem;
+  font-weight: 600;
   letter-spacing: -0.02em;
+  color: var(--text-primary);
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
 }
+
+.eval-summary-value::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  align-self: center;
+}
+
+.eval-summary-value.eval-pass {
+  color: var(--text-primary);
+}
+.eval-summary-value.eval-pass::before { background: var(--success, #18b26b); }
+.eval-summary-value.eval-fail::before { background: var(--danger, #c0392b); }
+.eval-summary-value.eval-neutral::before { background: var(--text-muted); }
 
 .eval-rows-scroll {
   overflow-x: auto;
@@ -3872,7 +3885,6 @@ h4.md-header { font-size: 0.82em; }
 .eval-rows-table {
   display: flex;
   flex-direction: column;
-  min-width: max-content;
   color: var(--text-primary);
 }
 
@@ -3947,33 +3959,20 @@ h4.md-header { font-size: 0.82em; }
 }
 
 .eval-col-scorer {
-  font-weight: 700;
-  font-size: 0.78rem;
+  font-weight: 600;
+  font-size: 0.82rem;
   text-align: center;
-  padding: 0.2rem 0.4rem;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.04);
   align-self: center;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   text-transform: capitalize;
+  letter-spacing: 0.01em;
 }
 
-.eval-pass {
-  color: var(--success, #18b26b);
-  background: rgba(24, 178, 107, 0.12);
-}
-
-.eval-fail {
-  color: var(--danger, #c0392b);
-  background: rgba(192, 57, 43, 0.14);
-}
-
-.eval-neutral {
-  color: var(--text-muted);
-  background: transparent;
-}
+.eval-pass { color: var(--success, #18b26b); }
+.eval-fail { color: var(--danger, #c0392b); }
+.eval-neutral { color: var(--text-muted); }
 
 .eval-row-detail {
   padding: 0.85rem 1.15rem 1rem;

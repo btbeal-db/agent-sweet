@@ -307,6 +307,34 @@ def _make_predict_fn(graph: GraphDef, obo_token: str | None, pat: str | None) ->
     return predict_fn
 
 
+def _extract_root_output(trace) -> str:
+    """Pull the agent's response text out of the root span's outputs.
+
+    ``mlflow.genai.evaluate`` typically wraps the predict_fn return value as
+    a single-key dict (``{"output": "..."}`` or similar). Unwrap that to
+    return just the response string the user actually wants to see.
+    """
+    if not trace or not trace.data or not trace.data.spans:
+        return ""
+    raw_out = getattr(trace.data.spans[0], "outputs", None)
+    if raw_out is None:
+        return ""
+    if isinstance(raw_out, str):
+        return raw_out
+    if isinstance(raw_out, dict):
+        # Single-value wrapper (e.g. {"output": "..."}) — just unwrap.
+        if len(raw_out) == 1:
+            val = next(iter(raw_out.values()))
+            if isinstance(val, str):
+                return val
+            return json.dumps(val, indent=2, default=str)
+        for key in ("output", "response", "answer", "content"):
+            if isinstance(raw_out.get(key), str):
+                return raw_out[key]
+        return json.dumps(raw_out, indent=2, default=str)
+    return str(raw_out)
+
+
 def _extract_assessments(trace) -> dict[str, dict[str, Any]]:
     """Flatten a trace's scorer feedback into ``{scorer_name: {value, rationale}}``.
 
@@ -423,16 +451,7 @@ def run_eval(req: EvalRunRequest, request: FastAPIRequest) -> EvalRunResponse:
     rows: list[EvalRowResult] = []
     for i, row in enumerate(req.dataset):
         trace = traces[i] if i < len(traces) else None
-        output_text = ""
-        if trace and trace.data and trace.data.spans:
-            root = trace.data.spans[0]
-            raw_out = getattr(root, "outputs", None)
-            if isinstance(raw_out, str):
-                output_text = raw_out
-            elif isinstance(raw_out, dict):
-                output_text = raw_out.get("output") or json.dumps(raw_out, default=str)
-            elif raw_out is not None:
-                output_text = str(raw_out)
+        output_text = _extract_root_output(trace)
         rows.append(
             EvalRowResult(
                 inputs=row.inputs,
