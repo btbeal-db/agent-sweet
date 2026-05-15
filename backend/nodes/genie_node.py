@@ -3,12 +3,20 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import mlflow
+from mlflow.entities import SpanType
+
 from ..auth import get_data_client
 from ..tools import _get_mcp_client, _genie_mcp_url, _mcp_discover_and_call, _run_mcp_in_thread, _use_sdk_path
 from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
 
 logger = logging.getLogger(__name__)
+
+
+def _as_retriever_docs(text: str, source: str) -> list[dict]:
+    """Wrap an answer blob as a single Document for the RETRIEVER span."""
+    return [{"page_content": text or "", "metadata": {"source": source}}]
 
 MAX_ROWS = 50
 
@@ -154,45 +162,55 @@ class GenieNode(BaseNode):
         import time
         from databricks.sdk.service.dashboards import MessageStatus
 
-        # Manual start + poll so a FAILED status surfaces the Genie-side error
-        # message instead of being swallowed by SDK's generic OperationFailed.
-        try:
-            w = get_data_client()
-            waiter = w.genie.start_conversation(room_id, query)
-            conv_id, msg_id = waiter.conversation_id, waiter.message_id
-            deadline = time.monotonic() + 300
-            message = w.genie.get_message(room_id, conv_id, msg_id)
-            terminal = {MessageStatus.COMPLETED, MessageStatus.FAILED, MessageStatus.CANCELLED}
-            while message.status not in terminal and time.monotonic() < deadline:
-                time.sleep(2)
+        with mlflow.start_span(
+            name=f"genie.{room_id}", span_type=SpanType.RETRIEVER,
+        ) as span:
+            span.set_inputs({"query": query, "room_id": room_id})
+            # Manual start + poll so a FAILED status surfaces the Genie-side
+            # error message instead of being swallowed by SDK's generic
+            # OperationFailed.
+            try:
+                w = get_data_client()
+                waiter = w.genie.start_conversation(room_id, query)
+                conv_id, msg_id = waiter.conversation_id, waiter.message_id
+                deadline = time.monotonic() + 300
                 message = w.genie.get_message(room_id, conv_id, msg_id)
-        except Exception as exc:
-            error_detail = getattr(exc, "message", str(exc))
-            logger.exception("Genie SDK call failed (space=%s)", room_id)
-            return {writes_to: f"Genie API error: {error_detail}"}
+                terminal = {MessageStatus.COMPLETED, MessageStatus.FAILED, MessageStatus.CANCELLED}
+                while message.status not in terminal and time.monotonic() < deadline:
+                    time.sleep(2)
+                    message = w.genie.get_message(room_id, conv_id, msg_id)
+            except Exception as exc:
+                error_detail = getattr(exc, "message", str(exc))
+                logger.exception("Genie SDK call failed (space=%s)", room_id)
+                return {writes_to: f"Genie API error: {error_detail}"}
 
-        if message.status != MessageStatus.COMPLETED:
-            error_text = message.error.message if message.error else f"status={message.status}"
-            logger.error("Genie message did not complete (space=%s, status=%s, error=%s)",
-                         room_id, message.status, error_text)
-            return {writes_to: f"Genie error: {error_text}"}
+            if message.status != MessageStatus.COMPLETED:
+                error_text = message.error.message if message.error else f"status={message.status}"
+                logger.error(
+                    "Genie message did not complete (space=%s, status=%s, error=%s)",
+                    room_id, message.status, error_text,
+                )
+                return {writes_to: f"Genie error: {error_text}"}
 
-        parts: list[str] = []
-        for attachment in message.attachments or []:
-            if attachment.text and attachment.text.content:
-                parts.append(attachment.text.content)
-            if attachment.query and attachment.attachment_id:
-                try:
-                    result = w.genie.get_message_attachment_query_result(
-                        room_id, message.conversation_id,
-                        message.message_id, attachment.attachment_id,
-                    )
-                    parts.append(self._format_query_result(attachment.query, result))
-                except Exception as exc:
-                    logger.exception("Failed to fetch Genie query result")
-                    parts.append(f"(failed to fetch query result: {exc})")
+            parts: list[str] = []
+            for attachment in message.attachments or []:
+                if attachment.text and attachment.text.content:
+                    parts.append(attachment.text.content)
+                if attachment.query and attachment.attachment_id:
+                    try:
+                        result = w.genie.get_message_attachment_query_result(
+                            room_id, message.conversation_id,
+                            message.message_id, attachment.attachment_id,
+                        )
+                        parts.append(self._format_query_result(attachment.query, result))
+                    except Exception as exc:
+                        logger.exception("Failed to fetch Genie query result")
+                        parts.append(f"(failed to fetch query result: {exc})")
 
-        return {writes_to: "\n\n".join(parts) if parts else "(Genie returned no content)"}
+            answer = "\n\n".join(parts) if parts else "(Genie returned no content)"
+            span.set_outputs(_as_retriever_docs(answer, f"genie:{room_id}"))
+
+        return {writes_to: answer}
 
     @staticmethod
     def _format_query_result(query_attachment, result_response) -> str:
@@ -249,38 +267,45 @@ class GenieNode(BaseNode):
             except (ValueError, TypeError):
                 return {}
 
-        try:
-            url = config.get("mcp_server_url") or _genie_mcp_url(room_id)
-            client = _get_mcp_client(url)
-            # 1) Kick off the query (picks first tool = query_space_<id>)
-            raw = _run_mcp_in_thread(
-                _mcp_discover_and_call, url, client, {"query": str(query)},
-            )
-            payload = _parse(raw)
-            status = str(payload.get("status", "")).upper()
-
-            # 2) Poll until terminal
-            poll_tool = f"poll_response_{room_id}"
-            deadline = time.monotonic() + 300
-            while status and status not in TERMINAL and time.monotonic() < deadline:
-                time.sleep(2)
+        with mlflow.start_span(
+            name=f"genie.{room_id}", span_type=SpanType.RETRIEVER,
+        ) as span:
+            span.set_inputs({"query": query, "room_id": room_id})
+            try:
+                url = config.get("mcp_server_url") or _genie_mcp_url(room_id)
                 client = _get_mcp_client(url)
+                # 1) Kick off the query (picks first tool = query_space_<id>)
                 raw = _run_mcp_in_thread(
-                    _mcp_discover_and_call, url, client,
-                    {
-                        "conversation_id": payload.get("conversationId", ""),
-                        "message_id": payload.get("messageId", ""),
-                    },
-                    poll_tool,
+                    _mcp_discover_and_call, url, client, {"query": str(query)},
                 )
-                payload = _parse(raw) or payload
+                payload = _parse(raw)
                 status = str(payload.get("status", "")).upper()
-        except Exception as exc:
-            logger.exception("Genie MCP call failed (room=%s)", room_id)
-            return {writes_to: f"Genie error: {exc}"}
 
-        if status and status != "COMPLETED":
-            err = payload.get("error") or f"status={status}"
-            return {writes_to: f"Genie error: {err}"}
+                # 2) Poll until terminal
+                poll_tool = f"poll_response_{room_id}"
+                deadline = time.monotonic() + 300
+                while status and status not in TERMINAL and time.monotonic() < deadline:
+                    time.sleep(2)
+                    client = _get_mcp_client(url)
+                    raw = _run_mcp_in_thread(
+                        _mcp_discover_and_call, url, client,
+                        {
+                            "conversation_id": payload.get("conversationId", ""),
+                            "message_id": payload.get("messageId", ""),
+                        },
+                        poll_tool,
+                    )
+                    payload = _parse(raw) or payload
+                    status = str(payload.get("status", "")).upper()
+            except Exception as exc:
+                logger.exception("Genie MCP call failed (room=%s)", room_id)
+                return {writes_to: f"Genie error: {exc}"}
 
-        return {writes_to: _format_genie_mcp_content(payload) or raw}
+            if status and status != "COMPLETED":
+                err = payload.get("error") or f"status={status}"
+                return {writes_to: f"Genie error: {err}"}
+
+            answer = _format_genie_mcp_content(payload) or raw
+            span.set_outputs(_as_retriever_docs(answer, f"genie:{room_id}"))
+
+        return {writes_to: answer}

@@ -4,6 +4,9 @@ import json
 import logging
 from typing import Any
 
+import mlflow
+from mlflow.entities import SpanType
+
 from ..auth import get_data_client
 from ..tools import _use_sdk_path
 from ..tools import (
@@ -17,6 +20,38 @@ from .base import BaseNode, NodeConfigField, resolve_state
 from . import register
 
 logger = logging.getLogger(__name__)
+
+
+def _format_vs_rows(
+    result_dict: dict, index_name: str,
+) -> tuple[list[str], list[dict]]:
+    """Render VS rows as joined text + structured ``Document``-like dicts.
+
+    The text list feeds the node's state update; the structured list is set
+    as the RETRIEVER span's outputs so MLflow retrieval scorers can read it.
+    """
+    data_chunk = result_dict.get("result", {}).get("data_array", [])
+    col_names = [c["name"] for c in result_dict.get("manifest", {}).get("columns", [])]
+    docs_text: list[str] = []
+    docs_struct: list[dict] = []
+    for row in data_chunk:
+        row_parts = [
+            f"{col_names[i]}: {row[i]}"
+            for i in range(len(row))
+            if i < len(col_names)
+        ]
+        joined = "\n".join(row_parts)
+        docs_text.append(joined)
+        metadata: dict[str, Any] = {"index": index_name}
+        # Surface non-text columns as metadata for the judge.
+        for i in range(len(row)):
+            if i >= len(col_names):
+                continue
+            val = row[i]
+            if not isinstance(val, str) or len(val) <= 80:
+                metadata[col_names[i]] = val
+        docs_struct.append({"page_content": joined, "metadata": metadata})
+    return docs_text, docs_struct
 
 
 @register
@@ -178,25 +213,26 @@ class VectorSearchNode(BaseNode):
                     parameters=RerankerConfigRerankerParameters(columns_to_rerank=rerank_cols),
                 )
 
-        try:
-            w = get_data_client()
-            response = w.vector_search_indexes.query_index(
-                index_name=index_name, columns=columns, query_text=query,
-                num_results=num_results, score_threshold=score_threshold,
-                filters_json=filters_json, reranker=reranker,
-            )
-        except Exception as exc:
-            logger.exception("VS SDK call failed (index=%s)", index_name)
-            return {writes_to: f"Vector Search error: {exc}"}
+        with mlflow.start_span(
+            name=f"vector_search.{index_name}", span_type=SpanType.RETRIEVER,
+        ) as span:
+            span.set_inputs({"query": query, "index": index_name})
+            try:
+                w = get_data_client()
+                response = w.vector_search_indexes.query_index(
+                    index_name=index_name, columns=columns, query_text=query,
+                    num_results=num_results, score_threshold=score_threshold,
+                    filters_json=filters_json, reranker=reranker,
+                )
+            except Exception as exc:
+                logger.exception("VS SDK call failed (index=%s)", index_name)
+                return {writes_to: f"Vector Search error: {exc}"}
 
-        result_dict = response.as_dict()
-        docs: list[str] = []
-        data_chunk = result_dict.get("result", {}).get("data_array", [])
-        col_names = [c["name"] for c in result_dict.get("manifest", {}).get("columns", [])]
-        for row in data_chunk:
-            row_parts = [f"{col_names[i]}: {row[i]}" for i in range(len(row)) if i < len(col_names)]
-            docs.append("\n".join(row_parts))
-        return {writes_to: "\n\n---\n\n".join(docs) if docs else "(no results)"}
+            result_dict = response.as_dict()
+            docs_text, docs_struct = _format_vs_rows(result_dict, index_name)
+            span.set_outputs(docs_struct)
+
+        return {writes_to: "\n\n---\n\n".join(docs_text) if docs_text else "(no results)"}
 
     def _execute_mcp(
         self, state: dict, config: dict, writes_to: str, query: str, index_name: str,
@@ -220,15 +256,25 @@ class VectorSearchNode(BaseNode):
                     except json.JSONDecodeError:
                         pass
 
-        try:
-            url = config.get("mcp_server_url") or _vs_mcp_url(index_name)
-            client = _get_mcp_client(url)
-            result_text = _run_mcp_in_thread(
-                _mcp_discover_and_call, url, client, {"query": str(query)},
-                None, meta,
-            )
-        except Exception as exc:
-            logger.exception("VS MCP call failed (index=%s)", index_name)
-            return {writes_to: f"Vector Search error: {exc}"}
+        with mlflow.start_span(
+            name=f"vector_search.{index_name}", span_type=SpanType.RETRIEVER,
+        ) as span:
+            span.set_inputs({"query": query, "index": index_name})
+            try:
+                url = config.get("mcp_server_url") or _vs_mcp_url(index_name)
+                client = _get_mcp_client(url)
+                result_text = _run_mcp_in_thread(
+                    _mcp_discover_and_call, url, client, {"query": str(query)},
+                    None, meta,
+                )
+            except Exception as exc:
+                logger.exception("VS MCP call failed (index=%s)", index_name)
+                return {writes_to: f"Vector Search error: {exc}"}
+
+            # MCP returns a pre-formatted blob; emit it as a single document so
+            # the retrieval scorers have something to ground on.
+            span.set_outputs([
+                {"page_content": result_text or "", "metadata": {"index": index_name}}
+            ])
 
         return {writes_to: result_text}

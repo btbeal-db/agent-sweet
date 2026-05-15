@@ -202,13 +202,10 @@ def list_scorers() -> list[ScorerMeta]:
 
 @router.post("/scorers/suggest", response_model=SuggestResponse)
 def suggest_scorers(req: SuggestRequest) -> SuggestResponse:
-    """Return the scorers that make sense for this graph as defaults.
-
-    Retrieval scorers are not auto-suggested today: they require spans tagged
-    ``span_type="RETRIEVER"``, which the VS/Genie nodes don't emit yet. Users
-    can still enable them manually from the picker.
-    """
+    """Return the scorers that make sense for this graph as defaults."""
     suggested = ["safety", "relevance_to_query"]
+    if any(n.type in _RETRIEVAL_NODE_TYPES for n in req.graph.nodes):
+        suggested.append("retrieval_groundedness")
     return SuggestResponse(suggested=suggested, catalog=_SCORER_CATALOG)
 
 
