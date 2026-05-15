@@ -166,6 +166,18 @@ export default function EvalModal({ graphGetter, onClose, session, setSession }:
   }, [graphGetter, setSession, updateSession]);
 
   const backendRows = useMemo(() => draftsToBackendRows(rows), [rows]);
+  const rowsWithExpected = useMemo(
+    () => rows.filter((r) => r.input.trim() && r.expected.trim()).length,
+    [rows],
+  );
+  const rowsWithInput = useMemo(
+    () => rows.filter((r) => r.input.trim()).length,
+    [rows],
+  );
+  const correctnessEnabled = selections.correctness?.enabled ?? false;
+  const correctnessMissing = correctnessEnabled
+    ? Math.max(0, rowsWithInput - rowsWithExpected)
+    : 0;
 
   const handleGenerate = useCallback(async () => {
     if (!graphGetter) return;
@@ -196,6 +208,13 @@ export default function EvalModal({ graphGetter, onClose, session, setSession }:
     if (!scorerConfigs.length) {
       updateSession({ error: "Pick at least one scorer." });
       setTab("scorers");
+      return;
+    }
+    if (correctnessMissing > 0) {
+      updateSession({
+        error: `Correctness is enabled but ${correctnessMissing} of ${rowsWithInput} row(s) have no Expected response. Fill in expectations or uncheck Correctness.`,
+      });
+      setTab("dataset");
       return;
     }
     setRunning(true);
@@ -385,6 +404,8 @@ export default function EvalModal({ graphGetter, onClose, session, setSession }:
 
               {catalog.map((sc) => {
                 const sel = selections[sc.key] || { enabled: false };
+                const showCorrectnessWarning =
+                  sc.key === "correctness" && sel.enabled && correctnessMissing > 0;
                 return (
                   <div key={sc.key} className="eval-scorer-row">
                     <label className="eval-scorer-label">
@@ -394,8 +415,17 @@ export default function EvalModal({ graphGetter, onClose, session, setSession }:
                         onChange={(e) => setSelection(sc.key, { enabled: e.target.checked })}
                       />
                       <span className="eval-scorer-title">{sc.label}</span>
+                      {sc.requires_expectations && (
+                        <span className="eval-scorer-tag">needs expected response</span>
+                      )}
                     </label>
                     <div className="eval-scorer-desc">{sc.description}</div>
+                    {showCorrectnessWarning && (
+                      <div className="eval-scorer-warning">
+                        {correctnessMissing} of {rowsWithInput} row(s) have no
+                        Expected response — Correctness will fail on those rows.
+                      </div>
+                    )}
                     {sc.supports_guidelines && sel.enabled && (
                       <textarea
                         className="deploy-input eval-textarea eval-guidelines"
@@ -519,9 +549,10 @@ function RowDetails({ row, scorerNames }: { row: EvalRowResult; scorerNames: str
             return <div key={n} className="eval-col-scorer eval-neutral">—</div>;
           }
           if (a.error) {
+            const missingExpectation = /expected_response|expected_facts|expectations/i.test(a.error);
             return (
-              <div key={n} className="eval-col-scorer eval-fail" title={a.error}>
-                ERR
+              <div key={n} className="eval-col-scorer eval-neutral" title={a.error}>
+                {missingExpectation ? "no expected" : "ERR"}
               </div>
             );
           }
