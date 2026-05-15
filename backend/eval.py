@@ -352,12 +352,43 @@ def _make_predict_fn(graph: GraphDef, obo_token: str | None, pat: str | None) ->
     return predict_fn
 
 
+_AI_ROLES = {"ai", "assistant"}
+_NON_RESPONSE_KEYS = {"input", "query", "question", "user_input"}
+_PREFERRED_RESPONSE_KEYS = (
+    "agent_output", "output", "response", "answer", "content", "result",
+)
+
+
+def _last_ai_message_content(messages: Any) -> str:
+    """Return the content of the most recent AI/assistant message, if any."""
+    if not isinstance(messages, list):
+        return ""
+    for msg in reversed(messages):
+        role: str = ""
+        content: Any = None
+        if isinstance(msg, dict):
+            role = str(msg.get("type") or msg.get("role") or "").lower()
+            content = msg.get("content")
+        else:
+            role = str(getattr(msg, "type", "") or getattr(msg, "role", "")).lower()
+            content = getattr(msg, "content", None)
+        if role in _AI_ROLES and isinstance(content, str) and content.strip():
+            return content
+    return ""
+
+
 def _extract_root_output(trace) -> str:
     """Pull the agent's response text out of the root span's outputs.
 
-    ``mlflow.genai.evaluate`` typically wraps the predict_fn return value as
-    a single-key dict (``{"output": "..."}`` or similar). Unwrap that to
-    return just the response string the user actually wants to see.
+    The shape depends on what produced the trace:
+
+    * ``predict_fn`` returning a plain string → ``outputs`` is the string.
+    * ``predict_fn`` returning a dict like ``{"output": "..."}`` → unwrap.
+    * ``mlflow.langchain.autolog`` traces the LangGraph invoke directly,
+      so ``outputs`` is the *whole* state dict (``input``, ``messages``,
+      and the graph's writes_to field). For that case we prefer the last
+      AI message, then any well-known response key, then the first
+      meaningful string field.
     """
     if not trace or not trace.data or not trace.data.spans:
         return ""
@@ -367,15 +398,27 @@ def _extract_root_output(trace) -> str:
     if isinstance(raw_out, str):
         return raw_out
     if isinstance(raw_out, dict):
-        # Single-value wrapper (e.g. {"output": "..."}) — just unwrap.
+        # 1) LangGraph state → use the final AI message.
+        ai_text = _last_ai_message_content(raw_out.get("messages"))
+        if ai_text:
+            return ai_text
+        # 2) Single-value wrapper (e.g. {"output": "..."}).
         if len(raw_out) == 1:
             val = next(iter(raw_out.values()))
             if isinstance(val, str):
                 return val
             return json.dumps(val, indent=2, default=str)
-        for key in ("output", "response", "answer", "content"):
-            if isinstance(raw_out.get(key), str):
-                return raw_out[key]
+        # 3) Well-known response keys.
+        for key in _PREFERRED_RESPONSE_KEYS:
+            val = raw_out.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+        # 4) First substantive string field that isn't the input echo.
+        for k, v in raw_out.items():
+            if k in _NON_RESPONSE_KEYS:
+                continue
+            if isinstance(v, str) and v.strip():
+                return v
         return json.dumps(raw_out, indent=2, default=str)
     return str(raw_out)
 
