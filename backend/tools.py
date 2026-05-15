@@ -24,11 +24,13 @@ import re
 from typing import Any
 from urllib.parse import urlparse
 
+import mlflow
 from databricks.sdk import WorkspaceClient
 from databricks_mcp import DatabricksOAuthClientProvider
 from langchain_core.tools import BaseTool, StructuredTool, tool
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+from mlflow.entities import SpanType
 
 from .auth import get_data_client, get_user_token, is_serving
 
@@ -327,6 +329,9 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
     # ── Build LangChain tools ───────────────────────────────────────
     custom_desc = config.get("tool_description", "")
     tool_meta = config.get("mcp_meta")  # preset _meta params (VS config, etc.)
+    # Optional MLflow span_type — set to "RETRIEVER" by VS/Genie wrappers so
+    # the eval suite's retrieval scorers can find their context.
+    span_type = config.get("span_type")
     sync_tools: list[BaseTool] = []
 
     for td in tool_defs:
@@ -336,14 +341,31 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
         # the original name.
         lc_name = _safe_tool_name(tool_name)
 
-        def _make_fn(_name: str = tool_name, _meta: dict | None = tool_meta) -> Any:
-            def call_tool(**kwargs: Any) -> str:
-                client = _get_mcp_client(server_url)  # fresh client per call
+        def _make_fn(
+            _name: str = tool_name,
+            _meta: dict | None = tool_meta,
+            _span_type: str | None = span_type,
+        ) -> Any:
+            def _invoke(kwargs: dict[str, Any]) -> str:
+                client = _get_mcp_client(server_url)
                 result = _run_mcp_in_thread(
                     _mcp_call_tool, server_url, client, _name, kwargs, _meta,
                 )
                 parts = [c.text for c in result.content if hasattr(c, "text")]
                 return "\n".join(parts) if parts else "(no output)"
+
+            def call_tool(**kwargs: Any) -> str:
+                if _span_type != SpanType.RETRIEVER:
+                    return _invoke(kwargs)
+                with mlflow.start_span(
+                    name=f"mcp.{_name}", span_type=SpanType.RETRIEVER,
+                ) as span:
+                    span.set_inputs({"tool": _name, **kwargs})
+                    output = _invoke(kwargs)
+                    span.set_outputs([
+                        {"page_content": output, "metadata": {"tool": _name}}
+                    ])
+                    return output
             return call_tool
 
         desc = td.get("description", "")
@@ -425,47 +447,66 @@ def _make_vector_search_tool_sdk(config: dict[str, Any]) -> list[BaseTool]:
     @tool
     def vector_search(query: str, filters: str = "") -> str:
         """Search for relevant documents in a vector index."""
-        reranker = None
-        if enable_reranker:
-            rerank_cols_raw = config.get("columns_to_rerank", "")
-            rerank_cols = (
-                [c.strip() for c in rerank_cols_raw.split(",") if c.strip()]
-                if rerank_cols_raw
-                else None
-            )
-            if rerank_cols:
-                reranker = RerankerConfig(
-                    model="databricks_reranker",
-                    parameters=RerankerConfigRerankerParameters(columns_to_rerank=rerank_cols),
+        with mlflow.start_span(
+            name=f"vector_search.{index_name}", span_type=SpanType.RETRIEVER,
+        ) as span:
+            span.set_inputs({"query": query, "index": index_name})
+            reranker = None
+            if enable_reranker:
+                rerank_cols_raw = config.get("columns_to_rerank", "")
+                rerank_cols = (
+                    [c.strip() for c in rerank_cols_raw.split(",") if c.strip()]
+                    if rerank_cols_raw
+                    else None
                 )
+                if rerank_cols:
+                    reranker = RerankerConfig(
+                        model="databricks_reranker",
+                        parameters=RerankerConfigRerankerParameters(columns_to_rerank=rerank_cols),
+                    )
 
-        filters_json = None
-        if filters and filters.strip():
-            try:
-                json.loads(filters)
-                filters_json = filters
-            except json.JSONDecodeError:
-                pass
+            filters_json = None
+            if filters and filters.strip():
+                try:
+                    json.loads(filters)
+                    filters_json = filters
+                except json.JSONDecodeError:
+                    pass
 
-        w = get_data_client()
-        response = w.vector_search_indexes.query_index(
-            index_name=index_name,
-            columns=columns,
-            query_text=query,
-            num_results=num_results,
-            score_threshold=score_threshold,
-            filters_json=filters_json,
-            reranker=reranker,
-        )
+            w = get_data_client()
+            response = w.vector_search_indexes.query_index(
+                index_name=index_name,
+                columns=columns,
+                query_text=query,
+                num_results=num_results,
+                score_threshold=score_threshold,
+                filters_json=filters_json,
+                reranker=reranker,
+            )
 
-        result_dict = response.as_dict()
-        docs: list[str] = []
-        data_chunk = result_dict.get("result", {}).get("data_array", [])
-        col_names = [c["name"] for c in result_dict.get("manifest", {}).get("columns", [])]
-        for row in data_chunk:
-            row_parts = [f"{col_names[i]}: {row[i]}" for i in range(len(row)) if i < len(col_names)]
-            docs.append("\n".join(row_parts))
-        return "\n\n---\n\n".join(docs) if docs else "(no results)"
+            result_dict = response.as_dict()
+            data_chunk = result_dict.get("result", {}).get("data_array", [])
+            col_names = [c["name"] for c in result_dict.get("manifest", {}).get("columns", [])]
+            docs_text: list[str] = []
+            docs_struct: list[dict] = []
+            for row in data_chunk:
+                row_parts = [
+                    f"{col_names[i]}: {row[i]}"
+                    for i in range(len(row))
+                    if i < len(col_names)
+                ]
+                joined = "\n".join(row_parts)
+                docs_text.append(joined)
+                metadata: dict[str, Any] = {"index": index_name}
+                for i in range(len(row)):
+                    if i >= len(col_names):
+                        continue
+                    val = row[i]
+                    if not isinstance(val, str) or len(val) <= 80:
+                        metadata[col_names[i]] = val
+                docs_struct.append({"page_content": joined, "metadata": metadata})
+            span.set_outputs(docs_struct)
+            return "\n\n---\n\n".join(docs_text) if docs_text else "(no results)"
 
     vector_search.name = _safe_tool_name(f"search_{index_name.replace('.', '_')}")
     custom_desc = config.get("tool_description", "")
@@ -485,49 +526,55 @@ def _make_genie_tool_sdk(config: dict[str, Any]) -> list[BaseTool]:
     @tool
     def genie_query(question: str) -> str:
         """Ask a natural-language question to get structured data answers."""
-        w = get_data_client()
-        try:
-            message = w.genie.start_conversation_and_wait(room_id, question)
-        except Exception as exc:
-            return f"Genie error: {exc}"
+        with mlflow.start_span(
+            name=f"genie.{room_id}", span_type=SpanType.RETRIEVER,
+        ) as span:
+            span.set_inputs({"query": question, "room_id": room_id})
+            w = get_data_client()
+            try:
+                message = w.genie.start_conversation_and_wait(room_id, question)
+            except Exception as exc:
+                return f"Genie error: {exc}"
 
-        if message.status == MessageStatus.FAILED:
-            error_text = message.error.message if message.error else "Unknown error"
-            return f"Genie error: {error_text}"
+            if message.status == MessageStatus.FAILED:
+                error_text = message.error.message if message.error else "Unknown error"
+                return f"Genie error: {error_text}"
 
-        parts: list[str] = []
-        for attachment in message.attachments or []:
-            if attachment.text and attachment.text.content:
-                parts.append(attachment.text.content)
-            if attachment.query and attachment.attachment_id:
-                try:
-                    result = w.genie.get_message_attachment_query_result(
-                        room_id, message.conversation_id,
-                        message.message_id, attachment.attachment_id,
-                    )
-                    query_parts: list[str] = []
-                    if attachment.query.description:
-                        query_parts.append(attachment.query.description)
-                    if attachment.query.query:
-                        query_parts.append(f"```sql\n{attachment.query.query}\n```")
-                    stmt = result.statement_response if result else None
-                    if stmt and stmt.result and stmt.result.data_array:
-                        cols = []
-                        if stmt.manifest and stmt.manifest.schema and stmt.manifest.schema.columns:
-                            cols = [c.name or f"col_{i}" for i, c in enumerate(stmt.manifest.schema.columns)]
-                        rows = stmt.result.data_array[:50]
-                        if cols:
-                            header = "| " + " | ".join(cols) + " |"
-                            sep = "| " + " | ".join("---" for _ in cols) + " |"
-                            table_rows = [
-                                "| " + " | ".join(str(v) if v is not None else "" for v in row) + " |"
-                                for row in rows
-                            ]
-                            query_parts.append("\n".join([header, sep, *table_rows]))
-                    parts.append("\n\n".join(query_parts))
-                except Exception as exc:
-                    parts.append(f"(failed to fetch query result: {exc})")
-        return "\n\n".join(parts) if parts else "(Genie returned no content)"
+            parts: list[str] = []
+            for attachment in message.attachments or []:
+                if attachment.text and attachment.text.content:
+                    parts.append(attachment.text.content)
+                if attachment.query and attachment.attachment_id:
+                    try:
+                        result = w.genie.get_message_attachment_query_result(
+                            room_id, message.conversation_id,
+                            message.message_id, attachment.attachment_id,
+                        )
+                        query_parts: list[str] = []
+                        if attachment.query.description:
+                            query_parts.append(attachment.query.description)
+                        if attachment.query.query:
+                            query_parts.append(f"```sql\n{attachment.query.query}\n```")
+                        stmt = result.statement_response if result else None
+                        if stmt and stmt.result and stmt.result.data_array:
+                            cols = []
+                            if stmt.manifest and stmt.manifest.schema and stmt.manifest.schema.columns:
+                                cols = [c.name or f"col_{i}" for i, c in enumerate(stmt.manifest.schema.columns)]
+                            rows = stmt.result.data_array[:50]
+                            if cols:
+                                header = "| " + " | ".join(cols) + " |"
+                                sep = "| " + " | ".join("---" for _ in cols) + " |"
+                                table_rows = [
+                                    "| " + " | ".join(str(v) if v is not None else "" for v in row) + " |"
+                                    for row in rows
+                                ]
+                                query_parts.append("\n".join([header, sep, *table_rows]))
+                        parts.append("\n\n".join(query_parts))
+                    except Exception as exc:
+                        parts.append(f"(failed to fetch query result: {exc})")
+            answer = "\n\n".join(parts) if parts else "(Genie returned no content)"
+            span.set_outputs([{"page_content": answer, "metadata": {"source": f"genie:{room_id}"}}])
+            return answer
 
     genie_query.name = f"genie_{room_id}"
     custom_desc = config.get("tool_description", "")
@@ -576,6 +623,7 @@ def _make_vector_search_tool_mcp(config: dict[str, Any]) -> list[BaseTool]:
         "tool_description": config.get("tool_description", ""),
         "discovered_tools": config.get("discovered_tools"),
         "mcp_meta": _build_vs_meta(config),
+        "span_type": SpanType.RETRIEVER,
     }
     return _make_mcp_tools(mcp_config)
 
@@ -593,6 +641,7 @@ def _make_genie_tool_mcp(config: dict[str, Any]) -> list[BaseTool]:
         "server_url": url,
         "tool_description": config.get("tool_description", ""),
         "discovered_tools": config.get("discovered_tools"),
+        "span_type": SpanType.RETRIEVER,
     }
     return _make_mcp_tools(mcp_config)
 
