@@ -400,25 +400,28 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
         # belong in filters, not in the semantic query string.
         input_schema = td.get("inputSchema") or {"type": "object", "properties": {}}
         if is_vs_retriever:
+            column_hint = config.get("vs_column_hint", "")
+            schema_desc = (
+                "Optional JSON object for exact-match filtering, e.g. "
+                '`{"patient_id": "P008"}` or `{"year >=": 2020}`. Use this '
+                "for specific-ID/category/date lookups so results aren't "
+                "diluted by semantically similar but unrelated rows."
+            )
+            if column_hint:
+                schema_desc += f"\n\nFilterable columns: {column_hint}."
             input_schema = dict(input_schema)
             props = dict(input_schema.get("properties") or {})
-            props["filters"] = {
-                "type": "string",
-                "description": (
-                    "Optional JSON object for exact-match filtering, e.g. "
-                    '`{"patient_id": "P008"}` or `{"year >=": 2020}`. Use this '
-                    "for specific-ID/category/date lookups so results aren't "
-                    "diluted by semantically similar but unrelated rows."
-                ),
-            }
+            props["filters"] = {"type": "string", "description": schema_desc}
             input_schema["properties"] = props
             if desc:
-                desc = (
-                    desc
-                    + "\n\nFor exact lookups (specific ID, category, date), set "
+                hint = (
+                    "\n\nFor exact lookups (specific ID, category, date), set "
                     '`filters` to a JSON object like `{"patient_id": "P008"}` '
                     "instead of putting the ID in the query."
                 )
+                if column_hint:
+                    hint += f"\n\nFilterable columns: {column_hint}."
+                desc = desc + hint
 
         sync_tools.append(
             StructuredTool(
@@ -430,6 +433,46 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
         )
 
     return sync_tools
+
+
+def _describe_vs_filterable_columns(index_name: str) -> str:
+    """Return a readable "name (type), …" list of columns in the VS index.
+
+    Knowing the column names upfront lets the LLM construct filters like
+    ``{"patient_id": "P008"}`` without first probing the index. Resolution
+    is best-effort: any failure (missing permission on the source table,
+    direct-access index with no source, lookup error) returns "" so the
+    tool description falls back to the generic example.
+    """
+    if not index_name:
+        return ""
+    try:
+        w = get_data_client()
+        idx = w.vector_search_indexes.get_index(index_name=index_name)
+        spec = getattr(idx, "delta_sync_index_spec", None)
+        source_table = getattr(spec, "source_table", None) if spec else None
+        if not source_table:
+            return ""
+        table = w.tables.get(full_name=source_table)
+        parts: list[str] = []
+        for c in (table.columns or []):
+            name = getattr(c, "name", None)
+            if not name:
+                continue
+            # Skip the embedded vector column itself — it can't be filtered.
+            type_text = (
+                getattr(c, "type_text", None)
+                or getattr(c, "type_name", None)
+                or ""
+            )
+            if isinstance(type_text, str) and "array<float" in type_text.lower():
+                continue
+            label = f"{name} ({type_text})" if type_text else name
+            parts.append(label)
+        return ", ".join(parts)
+    except Exception as exc:
+        logger.warning("VS column discovery failed for %s: %s", index_name, exc)
+        return ""
 
 
 def _build_vs_meta(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -558,16 +601,24 @@ def _make_vector_search_tool_sdk(config: dict[str, Any]) -> list[BaseTool]:
 
     vector_search.name = _safe_tool_name(f"search_{index_name.replace('.', '_')}")
     custom_desc = config.get("tool_description", "")
-    vector_search.description = custom_desc or (
-        f"Search the vector index '{index_name}' for relevant documents. "
-        f"Returns the top {num_results} results.\n\n"
-        "For exact-match lookups (e.g. a specific ID, category, or date), "
-        "set `filters` to a JSON object like "
-        '`{"patient_id": "P008"}` or `{"year >=": 2020}` so the search '
-        "is restricted to matching rows instead of relying on semantic "
-        "similarity alone. Inspect the columns in the results to learn "
-        "which fields are filterable."
-    )
+    if custom_desc:
+        vector_search.description = custom_desc
+    else:
+        column_hint = _describe_vs_filterable_columns(index_name)
+        filter_block = (
+            "For exact-match lookups (e.g. a specific ID, category, or date), "
+            "set `filters` to a JSON object like "
+            '`{"patient_id": "P008"}` or `{"year >=": 2020}` so the search '
+            "is restricted to matching rows instead of relying on semantic "
+            "similarity alone."
+        )
+        if column_hint:
+            filter_block += f"\n\nFilterable columns: {column_hint}."
+        vector_search.description = (
+            f"Search the vector index '{index_name}' for relevant documents. "
+            f"Returns the top {num_results} results.\n\n"
+            f"{filter_block}"
+        )
     return [vector_search]
 
 
@@ -661,9 +712,9 @@ def _make_uc_function_tools_sdk(config: dict[str, Any]) -> list[BaseTool]:
 
 def _make_vector_search_tool_mcp(config: dict[str, Any]) -> list[BaseTool]:
     """Create VS tool(s) via managed MCP."""
+    index_name = config.get("index_name", "")
     url = config.get("mcp_server_url")
     if not url:
-        index_name = config.get("index_name", "")
         if not index_name:
             logger.warning("VS tool config missing index_name")
             return []
@@ -678,6 +729,7 @@ def _make_vector_search_tool_mcp(config: dict[str, Any]) -> list[BaseTool]:
         "discovered_tools": config.get("discovered_tools"),
         "mcp_meta": _build_vs_meta(config),
         "span_type": SpanType.RETRIEVER,
+        "vs_column_hint": _describe_vs_filterable_columns(index_name),
     }
     return _make_mcp_tools(mcp_config)
 
