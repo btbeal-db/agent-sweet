@@ -191,13 +191,31 @@ import type {
   ScorerSuggestResponse,
 } from "./types";
 
+/** Build a human-readable message from a failed HTTP response, regardless of
+ *  whether the body is JSON, text, or empty. Includes the status code so the
+ *  caller can tell a 4xx (bad input) from a 5xx (server crash) at a glance. */
+async function explainHttpError(res: Response, fallback: string): Promise<string> {
+  const text = await res.text().catch(() => "");
+  if (text) {
+    try {
+      const data = JSON.parse(text);
+      const detail = data?.detail ?? data?.message ?? data?.error;
+      if (typeof detail === "string" && detail) return `${fallback} (${res.status}): ${detail}`;
+      return `${fallback} (${res.status}): ${text.slice(0, 800)}`;
+    } catch {
+      return `${fallback} (${res.status}): ${text.slice(0, 800)}`;
+    }
+  }
+  return `${fallback} (${res.status})`;
+}
+
 export async function suggestScorers(graph: GraphDef): Promise<ScorerSuggestResponse> {
   const res = await fetch(`${BASE}/eval/scorers/suggest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ graph }),
   });
-  if (!res.ok) throw new Error(`Failed to load scorers: ${res.status}`);
+  if (!res.ok) throw new Error(await explainHttpError(res, "Failed to load scorers"));
   return res.json();
 }
 
@@ -211,10 +229,7 @@ export async function generateEvalDataset(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ graph, description, count }),
   });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({ detail: "Generation failed" }));
-    throw new Error(detail.detail || "Generation failed");
-  }
+  if (!res.ok) throw new Error(await explainHttpError(res, "Generation failed"));
   return res.json();
 }
 
@@ -234,10 +249,7 @@ export async function enableEvalMonitoring(
       sample_rate: sampleRate,
     }),
   });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({ detail: "Monitoring failed" }));
-    throw new Error(detail.detail || "Monitoring failed");
-  }
+  if (!res.ok) throw new Error(await explainHttpError(res, "Monitoring failed"));
   return res.json();
 }
 
@@ -256,9 +268,6 @@ export async function runEval(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({ detail: "Eval failed" }));
-    throw new Error(detail.detail || "Eval failed");
-  }
+  if (!res.ok) throw new Error(await explainHttpError(res, "Eval failed"));
   return res.json();
 }

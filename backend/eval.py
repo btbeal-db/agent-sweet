@@ -529,6 +529,14 @@ def run_eval(req: EvalRunRequest, request: FastAPIRequest) -> EvalRunResponse:
             experiment_ids=[experiment_id],
             return_type="list",
         )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Eval run failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"{type(exc).__name__}: {exc}",
+        ) from exc
     finally:
         mlflow.set_tracking_uri(prev_uri)
 

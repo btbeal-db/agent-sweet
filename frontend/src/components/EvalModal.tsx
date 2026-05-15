@@ -384,23 +384,21 @@ export default function EvalModal({ graphGetter, onClose, session, setSession }:
 
           {tab === "scorers" && (
             <div className="eval-section">
-              <div className="eval-judge-row">
-                <label className="deploy-label eval-judge-label">
-                  Judge model
-                  <SearchableSelect
-                    value={judgeModel}
-                    onChange={(value) => updateSession({ judgeModel: value })}
-                    fetchEndpoint="/api/discover/serving-endpoints"
-                    placeholder="Pick a serving endpoint"
-                    showProviderIcons
-                  />
-                </label>
-                <div className="eval-hint">
+              <label className="deploy-label">
+                Judge model
+                <SearchableSelect
+                  value={judgeModel}
+                  onChange={(value) => updateSession({ judgeModel: value })}
+                  fetchEndpoint="/api/discover/serving-endpoints"
+                  placeholder="Pick a serving endpoint"
+                  showProviderIcons
+                />
+                <span className="deploy-hint">
                   The LLM that grades your agent's answers. Use a strong model
                   (e.g. <code>databricks-gpt-5-mini</code> or
                   <code> databricks-claude-sonnet-4</code>) for reliable judgements.
-                </div>
-              </div>
+                </span>
+              </label>
 
               {catalog.map((sc) => {
                 const sel = selections[sc.key] || { enabled: false };
