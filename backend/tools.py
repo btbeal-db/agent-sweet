@@ -405,7 +405,11 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
                 "Optional JSON object for exact-match filtering, e.g. "
                 '`{"patient_id": "P008"}` or `{"year >=": 2020}`. Use this '
                 "for specific-ID/category/date lookups so results aren't "
-                "diluted by semantically similar but unrelated rows."
+                "diluted by semantically similar but unrelated rows.\n\n"
+                "When you set `filters`, `query` should describe the KIND of "
+                "content you want from the filtered rows (e.g. \"clinical "
+                "notes\", \"lab results\") — NOT the entity name or ID, which "
+                "the filter has already pinned."
             )
             if column_hint:
                 schema_desc += f"\n\nFilterable columns: {column_hint}."
@@ -417,7 +421,9 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
                 hint = (
                     "\n\nFor exact lookups (specific ID, category, date), set "
                     '`filters` to a JSON object like `{"patient_id": "P008"}` '
-                    "instead of putting the ID in the query."
+                    "instead of putting the ID in the query. When filters are "
+                    "set, use `query` for the document TYPE (e.g. \"clinical "
+                    "notes\"), not the entity name."
                 )
                 if column_hint:
                     hint += f"\n\nFilterable columns: {column_hint}."
@@ -610,7 +616,13 @@ def _make_vector_search_tool_sdk(config: dict[str, Any]) -> list[BaseTool]:
             "set `filters` to a JSON object like "
             '`{"patient_id": "P008"}` or `{"year >=": 2020}` so the search '
             "is restricted to matching rows instead of relying on semantic "
-            "similarity alone."
+            "similarity alone.\n\n"
+            "When you use `filters`, `query` should describe the KIND of "
+            "content you want from the matched rows (e.g. \"clinical notes\", "
+            "\"medication history\", \"lab results\") — NOT the entity name or "
+            "ID you're already filtering for. The filter has pinned the rows; "
+            "the query just orders them. If you want everything for that "
+            "entity, use a broad generic query that matches the document type."
         )
         if column_hint:
             filter_block += f"\n\nFilterable columns: {column_hint}."
