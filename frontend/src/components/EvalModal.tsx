@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ClipboardList, Loader2, Play, Sparkles, XCircle } from "lucide-react";
+import { CheckCircle2, ClipboardList, Loader2, Play, Plus, Sparkles, Trash2, XCircle } from "lucide-react";
 import {
   generateEvalDataset,
   runEval,
@@ -12,6 +12,7 @@ import type {
   GraphDef,
   ScorerMeta,
 } from "../types";
+import SearchableSelect from "./SearchableSelect";
 
 interface Props {
   graphGetter: (() => GraphDef) | null;
@@ -25,28 +26,44 @@ interface ScorerSelection {
   guidelines?: string;
 }
 
+interface RowDraft {
+  id: number;
+  input: string;
+  expected: string;
+}
+
 const DEFAULT_GUIDELINES =
   "Response must be concise.\nResponse must avoid speculation about the user.";
 
-function rowsToJsonl(rows: EvalRow[]): string {
-  return rows.map((r) => JSON.stringify(r)).join("\n");
+let _rowIdSeq = 1;
+const nextRowId = () => _rowIdSeq++;
+
+function newRow(input = "", expected = ""): RowDraft {
+  return { id: nextRowId(), input, expected };
 }
 
-function parseJsonl(text: string): { rows: EvalRow[]; error: string | null } {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-  const rows: EvalRow[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    try {
-      const parsed = JSON.parse(lines[i]);
-      if (!parsed.inputs || typeof parsed.inputs !== "object") {
-        return { rows: [], error: `Line ${i + 1}: missing "inputs" object.` };
-      }
-      rows.push({ inputs: parsed.inputs, expectations: parsed.expectations ?? null });
-    } catch (e) {
-      return { rows: [], error: `Line ${i + 1}: ${(e as Error).message}` };
-    }
+function draftsFromBackendRows(rows: EvalRow[]): RowDraft[] {
+  return rows.map((r) => {
+    const inputVal = typeof r.inputs.input === "string" ? r.inputs.input : "";
+    const expectedVal =
+      r.expectations && typeof r.expectations.expected_response === "string"
+        ? r.expectations.expected_response
+        : "";
+    return newRow(inputVal, expectedVal);
+  });
+}
+
+function draftsToBackendRows(drafts: RowDraft[]): EvalRow[] {
+  const out: EvalRow[] = [];
+  for (const d of drafts) {
+    const input = d.input.trim();
+    if (!input) continue;
+    const row: EvalRow = { inputs: { input } };
+    const expected = d.expected.trim();
+    if (expected) row.expectations = { expected_response: expected };
+    out.push(row);
   }
-  return { rows, error: null };
+  return out;
 }
 
 function renderValue(v: unknown): string {
@@ -68,9 +85,7 @@ function passColor(value: unknown): string {
 
 export default function EvalModal({ graphGetter, onClose }: Props) {
   const [tab, setTab] = useState<Tab>("dataset");
-  const [datasetText, setDatasetText] = useState<string>(
-    JSON.stringify({ inputs: { input: "Hello, what can you do?" } }),
-  );
+  const [rows, setRows] = useState<RowDraft[]>([newRow("Hello, what can you do?")]);
   const [generating, setGenerating] = useState(false);
   const [genDescription, setGenDescription] = useState("");
   const [genCount, setGenCount] = useState(5);
@@ -78,6 +93,7 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
 
   const [catalog, setCatalog] = useState<ScorerMeta[]>([]);
   const [selections, setSelections] = useState<Record<string, ScorerSelection>>({});
+  const [judgeModel, setJudgeModel] = useState<string>("databricks-gpt-5-mini");
 
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -110,7 +126,7 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
     };
   }, [graphGetter]);
 
-  const datasetParse = useMemo(() => parseJsonl(datasetText), [datasetText]);
+  const backendRows = useMemo(() => draftsToBackendRows(rows), [rows]);
 
   const handleGenerate = useCallback(async () => {
     if (!graphGetter) return;
@@ -123,7 +139,7 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
         setGenError("Model returned no rows. Try a more specific description.");
         return;
       }
-      setDatasetText(rowsToJsonl(res.rows));
+      setRows(draftsFromBackendRows(res.rows));
     } catch (e) {
       setGenError((e as Error).message);
     } finally {
@@ -133,8 +149,8 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
 
   const handleRun = useCallback(async () => {
     if (!graphGetter) return;
-    if (datasetParse.error || !datasetParse.rows.length) {
-      setRunError(datasetParse.error || "Add at least one dataset row.");
+    if (!backendRows.length) {
+      setRunError("Add at least one input row.");
       return;
     }
     const scorerConfigs = Object.entries(selections)
@@ -153,14 +169,26 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
     setTab("results");
     try {
       const graph = graphGetter();
-      const res = await runEval(graph, datasetParse.rows, scorerConfigs, null);
+      const res = await runEval(graph, backendRows, scorerConfigs, judgeModel, null);
       setResult(res);
     } catch (e) {
       setRunError((e as Error).message);
     } finally {
       setRunning(false);
     }
-  }, [graphGetter, datasetParse, selections]);
+  }, [graphGetter, backendRows, selections, judgeModel]);
+
+  const updateRow = useCallback((id: number, patch: Partial<RowDraft>) => {
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }, []);
+
+  const removeRow = useCallback((id: number) => {
+    setRows((prev) => (prev.length === 1 ? prev : prev.filter((r) => r.id !== id)));
+  }, []);
+
+  const addRow = useCallback(() => {
+    setRows((prev) => [...prev, newRow()]);
+  }, []);
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -179,7 +207,7 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
             onClick={() => setTab("dataset")}
           >
             <ClipboardList size={14} /> Dataset
-            <span className="eval-tab-count">{datasetParse.rows.length}</span>
+            <span className="eval-tab-count">{backendRows.length}</span>
           </button>
           <button
             className={`eval-tab${tab === "scorers" ? " active" : ""}`}
@@ -202,6 +230,11 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
         <div className="modal-body">
           {tab === "dataset" && (
             <div className="eval-section">
+              <div className="eval-hint">
+                Each row is one test case. <strong>Input</strong> is the user message the agent receives.
+                The optional <strong>Expected response</strong> is the ideal answer — required for the
+                Correctness scorer.
+              </div>
               <div className="eval-generate-row">
                 <input
                   type="text"
@@ -222,33 +255,78 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
                   className="btn btn-playground btn-with-icon"
                   onClick={handleGenerate}
                   disabled={generating}
+                  title="Replace rows with synthetically generated examples"
                 >
                   {generating ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
                   Generate
                 </button>
               </div>
               {genError && <div className="eval-error">{genError}</div>}
-              <label className="deploy-label">
-                Dataset (JSONL — one row per line, each with <code>inputs</code> and optional <code>expectations</code>)
-                <textarea
-                  className="deploy-input eval-textarea"
-                  spellCheck={false}
-                  value={datasetText}
-                  onChange={(e) => setDatasetText(e.target.value)}
-                />
-              </label>
-              {datasetParse.error && <div className="eval-error">{datasetParse.error}</div>}
-              {!datasetParse.error && (
-                <div className="eval-hint">
-                  Parsed {datasetParse.rows.length} row(s). Example:{" "}
-                  <code>{'{"inputs": {"input": "..."}, "expectations": {"expected_response": "..."}}'}</code>
-                </div>
-              )}
+
+              <div className="eval-row-editor">
+                {rows.map((row, idx) => (
+                  <div key={row.id} className="eval-row-edit-card">
+                    <div className="eval-row-edit-head">
+                      <span className="eval-row-edit-index">#{idx + 1}</span>
+                      <button
+                        type="button"
+                        className="eval-row-edit-remove"
+                        onClick={() => removeRow(row.id)}
+                        disabled={rows.length === 1}
+                        title="Remove row"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                    <label className="eval-row-edit-label">
+                      Input
+                      <textarea
+                        className="deploy-input eval-row-edit-textarea"
+                        value={row.input}
+                        onChange={(e) => updateRow(row.id, { input: e.target.value })}
+                        placeholder="The user message the agent should respond to"
+                        rows={2}
+                      />
+                    </label>
+                    <label className="eval-row-edit-label">
+                      Expected response <span className="eval-row-edit-optional">(optional)</span>
+                      <textarea
+                        className="deploy-input eval-row-edit-textarea"
+                        value={row.expected}
+                        onChange={(e) => updateRow(row.id, { expected: e.target.value })}
+                        placeholder="The ideal answer — leave blank if there's no single right answer"
+                        rows={2}
+                      />
+                    </label>
+                  </div>
+                ))}
+                <button type="button" className="eval-row-edit-add" onClick={addRow}>
+                  <Plus size={14} /> Add row
+                </button>
+              </div>
             </div>
           )}
 
           {tab === "scorers" && (
             <div className="eval-section">
+              <div className="eval-judge-row">
+                <label className="deploy-label eval-judge-label">
+                  Judge model
+                  <SearchableSelect
+                    value={judgeModel}
+                    onChange={setJudgeModel}
+                    fetchEndpoint="/api/discover/serving-endpoints"
+                    placeholder="Pick a serving endpoint"
+                    showProviderIcons
+                  />
+                </label>
+                <div className="eval-hint">
+                  The LLM that grades your agent's answers. Use a strong model
+                  (e.g. <code>databricks-gpt-5-mini</code> or
+                  <code> databricks-claude-sonnet-4</code>) for reliable judgements.
+                </div>
+              </div>
+
               {catalog.map((sc) => {
                 const sel = selections[sc.key] || { enabled: false };
                 return (
@@ -291,7 +369,7 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
             <div className="eval-section">
               {running && (
                 <div className="eval-hint">
-                  <Loader2 size={14} className="spin" /> Running graph against {datasetParse.rows.length} row(s)…
+                  <Loader2 size={14} className="spin" /> Running graph against {backendRows.length} row(s)…
                 </div>
               )}
               {runError && (
@@ -309,7 +387,7 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
           <button
             className="btn btn-deploy btn-with-icon"
             onClick={handleRun}
-            disabled={running || !graphGetter || !datasetParse.rows.length}
+            disabled={running || !graphGetter || !backendRows.length}
           >
             {running ? <Loader2 size={14} className="spin" /> : <Play size={14} />}
             Run Evaluation
@@ -349,20 +427,22 @@ function ResultsView({ result }: { result: EvalRunResponse }) {
         })}
       </div>
 
-      <div
-        className="eval-rows-table"
-        style={{ ["--scorer-cols" as string]: String(Math.max(1, scorerNames.length)) } as React.CSSProperties}
-      >
-        <div className="eval-rows-head">
-          <div className="eval-col-input">Input</div>
-          <div className="eval-col-output">Output</div>
-          {scorerNames.map((n) => (
-            <div key={n} className="eval-col-scorer">{n}</div>
+      <div className="eval-rows-scroll">
+        <div
+          className="eval-rows-table"
+          style={{ ["--scorer-cols" as string]: String(Math.max(1, scorerNames.length)) } as React.CSSProperties}
+        >
+          <div className="eval-rows-head">
+            <div className="eval-col-input">Input</div>
+            <div className="eval-col-output">Output</div>
+            {scorerNames.map((n) => (
+              <div key={n} className="eval-col-scorer">{n}</div>
+            ))}
+          </div>
+          {result.rows.map((row, i) => (
+            <RowDetails key={i} row={row} scorerNames={scorerNames} />
           ))}
         </div>
-        {result.rows.map((row, i) => (
-          <RowDetails key={i} row={row} scorerNames={scorerNames} />
-        ))}
       </div>
     </div>
   );
@@ -378,9 +458,19 @@ function RowDetails({ row, scorerNames }: { row: EvalRowResult; scorerNames: str
         <div className="eval-col-output" title={row.output}>{row.output || "—"}</div>
         {scorerNames.map((n) => {
           const a = row.assessments[n];
+          if (!a) {
+            return <div key={n} className="eval-col-scorer eval-neutral">—</div>;
+          }
+          if (a.error) {
+            return (
+              <div key={n} className="eval-col-scorer eval-fail" title={a.error}>
+                ERR
+              </div>
+            );
+          }
           return (
-            <div key={n} className={`eval-col-scorer ${a ? passColor(a.value) : "eval-neutral"}`}>
-              {a ? renderValue(a.value) : "—"}
+            <div key={n} className={`eval-col-scorer ${passColor(a.value)}`}>
+              {renderValue(a.value)}
             </div>
           );
         })}

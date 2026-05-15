@@ -222,9 +222,11 @@ export async function runEval(
   graph: GraphDef,
   dataset: EvalRow[],
   scorers: ScorerConfig[],
+  judgeModel: string | null | undefined,
   pat: string | null | undefined,
 ): Promise<EvalRunResponse> {
   const body: Record<string, unknown> = { graph, dataset, scorers };
+  if (judgeModel) body.judge_model = judgeModel;
   if (pat) body.pat = pat;
   const res = await fetch(`${BASE}/eval/run`, {
     method: "POST",

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Callable
 
 import mlflow
@@ -40,6 +41,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _SYNTH_MODEL = "databricks-gpt-5-4-mini"
+
+# Built-in judges default to OpenAI via litellm. Route them through a
+# Databricks-hosted endpoint so they use the workspace's auth instead of
+# requiring an OPENAI_API_KEY. The ``databricks:/`` prefix tells the
+# litellm adapter to use the Databricks provider.
+_JUDGE_MODEL = os.environ.get("AGENTSWEET_JUDGE_MODEL", "databricks:/databricks-gpt-5-mini")
 
 
 # ── Scorer catalog ────────────────────────────────────────────────────────────
@@ -99,22 +106,34 @@ _SCORER_CATALOG: list[ScorerMeta] = [
 ]
 
 
-def _build_scorer(key: str, config: dict[str, Any]) -> Scorer | None:
+def _resolve_judge_model(name: str | None) -> str:
+    """Normalize a user-picked endpoint name into the litellm-style URI."""
+    candidate = (name or "").strip() or _JUDGE_MODEL
+    if "/" in candidate or ":" in candidate:
+        return candidate
+    return f"databricks:/{candidate}"
+
+
+def _build_scorer(key: str, config: dict[str, Any], judge_model: str) -> Scorer | None:
     if key == "safety":
-        return Safety()
+        return Safety(model=judge_model)
     if key == "relevance_to_query":
-        return RelevanceToQuery()
+        return RelevanceToQuery(model=judge_model)
     if key == "correctness":
-        return Correctness()
+        return Correctness(model=judge_model)
     if key == "retrieval_groundedness":
-        return RetrievalGroundedness()
+        return RetrievalGroundedness(model=judge_model)
     if key == "retrieval_relevance":
-        return RetrievalRelevance()
+        return RetrievalRelevance(model=judge_model)
     if key == "guidelines":
         guidelines = config.get("guidelines") or ""
         if not guidelines.strip():
             return None
-        return Guidelines(name=config.get("name") or "guidelines", guidelines=guidelines)
+        return Guidelines(
+            name=config.get("name") or "guidelines",
+            guidelines=guidelines,
+            model=judge_model,
+        )
     return None
 
 
@@ -135,6 +154,7 @@ class EvalRunRequest(BaseModel):
     graph: GraphDef
     dataset: list[EvalRow]
     scorers: list[ScorerConfig]
+    judge_model: str | None = None
     pat: str | None = None
 
 
@@ -182,11 +202,13 @@ def list_scorers() -> list[ScorerMeta]:
 
 @router.post("/scorers/suggest", response_model=SuggestResponse)
 def suggest_scorers(req: SuggestRequest) -> SuggestResponse:
-    """Return the scorers that make sense for this graph as defaults."""
-    has_retrieval = any(n.type in _RETRIEVAL_NODE_TYPES for n in req.graph.nodes)
+    """Return the scorers that make sense for this graph as defaults.
+
+    Retrieval scorers are not auto-suggested today: they require spans tagged
+    ``span_type="RETRIEVER"``, which the VS/Genie nodes don't emit yet. Users
+    can still enable them manually from the picker.
+    """
     suggested = ["safety", "relevance_to_query"]
-    if has_retrieval:
-        suggested.append("retrieval_groundedness")
     return SuggestResponse(suggested=suggested, catalog=_SCORER_CATALOG)
 
 
@@ -286,7 +308,11 @@ def _make_predict_fn(graph: GraphDef, obo_token: str | None, pat: str | None) ->
 
 
 def _extract_assessments(trace) -> dict[str, dict[str, Any]]:
-    """Flatten a trace's assessments into ``{scorer_name: {value, rationale}}``."""
+    """Flatten a trace's scorer feedback into ``{scorer_name: {value, rationale}}``.
+
+    Skips expectation rows (ground-truth labels like ``expected_response``) —
+    those aren't scorer outputs and shouldn't appear as result columns.
+    """
     out: dict[str, dict[str, Any]] = {}
     if not trace:
         return out
@@ -294,13 +320,16 @@ def _extract_assessments(trace) -> dict[str, dict[str, Any]]:
     for a in assessments:
         name = getattr(a, "name", "") or ""
         feedback = getattr(a, "feedback", None)
+        error = getattr(a, "error", None)
+        # Skip pure expectations (no feedback and no error => it's ground truth).
+        if feedback is None and error is None:
+            continue
         value: Any = None
         if feedback is not None:
             value = getattr(feedback, "value", None)
         if value is None:
             value = getattr(a, "value", None)
         rationale = getattr(a, "rationale", "") or ""
-        error = getattr(a, "error", None)
         out[name] = {
             "value": value,
             "rationale": rationale,
@@ -342,9 +371,10 @@ def run_eval(req: EvalRunRequest, request: FastAPIRequest) -> EvalRunResponse:
     if not req.scorers:
         raise HTTPException(status_code=400, detail="Pick at least one scorer.")
 
+    judge_model = _resolve_judge_model(req.judge_model)
     scorers: list[Scorer] = []
     for sc in req.scorers:
-        built = _build_scorer(sc.key, sc.config)
+        built = _build_scorer(sc.key, sc.config, judge_model)
         if built is not None:
             scorers.append(built)
     if not scorers:
