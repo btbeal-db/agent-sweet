@@ -126,7 +126,12 @@ export interface DeployEvent {
   step: DeployStepName;
   status: DeployStepStatus;
   message: string;
-  data?: { endpoint_url?: string; model_version?: string; run_id?: string };
+  data?: {
+    endpoint_url?: string;
+    model_version?: string;
+    run_id?: string;
+    experiment_id?: string;
+  };
 }
 
 export interface DeployRequest {

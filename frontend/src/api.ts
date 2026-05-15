@@ -218,6 +218,29 @@ export async function generateEvalDataset(
   return res.json();
 }
 
+export async function enableEvalMonitoring(
+  experimentId: string,
+  scorers: ScorerConfig[],
+  judgeModel: string | null | undefined,
+  sampleRate: number,
+): Promise<{ registered: string[]; skipped: { key: string; reason: string }[] }> {
+  const res = await fetch(`${BASE}/eval/monitor/enable`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      experiment_id: experimentId,
+      scorers,
+      judge_model: judgeModel || null,
+      sample_rate: sampleRate,
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: "Monitoring failed" }));
+    throw new Error(detail.detail || "Monitoring failed");
+  }
+  return res.json();
+}
+
 export async function runEval(
   graph: GraphDef,
   dataset: EvalRow[],

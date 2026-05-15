@@ -29,6 +29,7 @@ from mlflow.genai.scorers import (
     RetrievalRelevance,
     Safety,
     Scorer,
+    ScorerSamplingConfig,
 )
 from pydantic import BaseModel
 
@@ -173,6 +174,18 @@ class EvalRunResponse(BaseModel):
     rows: list[EvalRowResult]
 
 
+class MonitorEnableRequest(BaseModel):
+    experiment_id: str
+    scorers: list[ScorerConfig]
+    judge_model: str | None = None
+    sample_rate: float = 1.0
+
+
+class MonitorEnableResponse(BaseModel):
+    registered: list[str]
+    skipped: list[dict[str, str]] = []
+
+
 class SuggestRequest(BaseModel):
     graph: GraphDef
 
@@ -198,6 +211,41 @@ class GenerateResponse(BaseModel):
 @router.get("/scorers", response_model=list[ScorerMeta])
 def list_scorers() -> list[ScorerMeta]:
     return _SCORER_CATALOG
+
+
+@router.post("/monitor/enable", response_model=MonitorEnableResponse)
+def enable_monitoring(req: MonitorEnableRequest) -> MonitorEnableResponse:
+    """Register + start the configured scorers against a deployed experiment.
+
+    The scorers sample live traces from the experiment (the one the serving
+    endpoint is logging to) at ``sample_rate`` and write their assessments
+    back as feedback on each trace. Uses SP credentials so it has the same
+    permissions the deploy flow already relies on for MLflow ops.
+    """
+    judge_model = _resolve_judge_model(req.judge_model)
+    mlflow.set_tracking_uri("databricks")
+
+    registered: list[str] = []
+    skipped: list[dict[str, str]] = []
+    sampling = ScorerSamplingConfig(sample_rate=max(0.0, min(1.0, req.sample_rate)))
+
+    for sc in req.scorers:
+        built = _build_scorer(sc.key, sc.config, judge_model)
+        if built is None:
+            skipped.append({"key": sc.key, "reason": "invalid config"})
+            continue
+        try:
+            built.register(experiment_id=req.experiment_id)
+            built.start(
+                experiment_id=req.experiment_id,
+                sampling_config=sampling,
+            )
+            registered.append(built.name)
+        except Exception as exc:
+            logger.exception("Failed to enable scorer %s", sc.key)
+            skipped.append({"key": sc.key, "reason": str(exc)})
+
+    return MonitorEnableResponse(registered=registered, skipped=skipped)
 
 
 @router.post("/scorers/suggest", response_model=SuggestResponse)

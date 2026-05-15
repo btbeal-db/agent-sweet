@@ -5,7 +5,8 @@ import Canvas from "./components/Canvas";
 import NodePalette from "./components/NodePalette";
 import ChatPlayground from "./components/ChatPlayground";
 import DeployModal from "./components/DeployModal";
-import EvalModal from "./components/EvalModal";
+import EvalModal, { newEvalSession } from "./components/EvalModal";
+import type { EvalSessionState } from "./components/EvalModal";
 import HomePage from "./components/HomePage";
 import BuilderWalkthrough from "./components/BuilderWalkthrough";
 import AIChatDropdown from "./components/AIChatDropdown";
@@ -26,6 +27,7 @@ export default function App() {
   const aiChatWrapperRef = useRef<HTMLDivElement>(null);
   const [showDeploy, setShowDeploy] = useState(false);
   const [showEval, setShowEval] = useState(false);
+  const [evalSession, setEvalSession] = useState<EvalSessionState>(() => newEvalSession());
   const [showImportJson, setShowImportJson] = useState(false);
   const [importJsonInput, setImportJsonInput] = useState("");
   const [importJsonError, setImportJsonError] = useState("");
@@ -318,6 +320,7 @@ export default function App() {
           onClose={() => { setShowDeploy(false); refreshModels(); }}
           defaultExperimentPath={experimentPath ?? ""}
           onGoToSetup={() => { setShowDeploy(false); setView("setup"); }}
+          evalSession={evalSession}
         />
       )}
 
@@ -325,6 +328,8 @@ export default function App() {
         <EvalModal
           graphGetter={graphGetter}
           onClose={() => setShowEval(false)}
+          session={evalSession}
+          setSession={setEvalSession}
         />
       )}
 

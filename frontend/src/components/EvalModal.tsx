@@ -14,22 +14,23 @@ import type {
 } from "../types";
 import SearchableSelect from "./SearchableSelect";
 
-interface Props {
-  graphGetter: (() => GraphDef) | null;
-  onClose: () => void;
+export interface RowDraft {
+  id: number;
+  input: string;
+  expected: string;
 }
 
-type Tab = "dataset" | "scorers" | "results";
-
-interface ScorerSelection {
+export interface ScorerSelection {
   enabled: boolean;
   guidelines?: string;
 }
 
-interface RowDraft {
-  id: number;
-  input: string;
-  expected: string;
+export interface EvalSessionState {
+  rows: RowDraft[];
+  selections: Record<string, ScorerSelection>;
+  judgeModel: string;
+  result: EvalRunResponse | null;
+  error: string | null;
 }
 
 const DEFAULT_GUIDELINES =
@@ -38,9 +39,37 @@ const DEFAULT_GUIDELINES =
 let _rowIdSeq = 1;
 const nextRowId = () => _rowIdSeq++;
 
-function newRow(input = "", expected = ""): RowDraft {
+export function newRow(input = "", expected = ""): RowDraft {
   return { id: nextRowId(), input, expected };
 }
+
+export function newEvalSession(): EvalSessionState {
+  return {
+    rows: [newRow("Hello, what can you do?")],
+    selections: {},
+    judgeModel: "databricks-gpt-5-mini",
+    result: null,
+    error: null,
+  };
+}
+
+export function enabledScorerConfigs(session: EvalSessionState) {
+  return Object.entries(session.selections)
+    .filter(([, s]) => s.enabled)
+    .map(([key, s]) => ({
+      key,
+      config: key === "guidelines" && s.guidelines ? { guidelines: s.guidelines } : {},
+    }));
+}
+
+interface Props {
+  graphGetter: (() => GraphDef) | null;
+  onClose: () => void;
+  session: EvalSessionState;
+  setSession: React.Dispatch<React.SetStateAction<EvalSessionState>>;
+}
+
+type Tab = "dataset" | "scorers" | "results";
 
 function draftsFromBackendRows(rows: EvalRow[]): RowDraft[] {
   return rows.map((r) => {
@@ -83,23 +112,27 @@ function passColor(value: unknown): string {
   return "eval-neutral";
 }
 
-export default function EvalModal({ graphGetter, onClose }: Props) {
-  const [tab, setTab] = useState<Tab>("dataset");
-  const [rows, setRows] = useState<RowDraft[]>([newRow("Hello, what can you do?")]);
+export default function EvalModal({ graphGetter, onClose, session, setSession }: Props) {
+  const { rows, selections, judgeModel, result } = session;
+
+  const [tab, setTab] = useState<Tab>(result ? "results" : "dataset");
   const [generating, setGenerating] = useState(false);
   const [genDescription, setGenDescription] = useState("");
   const [genCount, setGenCount] = useState(5);
   const [genError, setGenError] = useState<string | null>(null);
-
   const [catalog, setCatalog] = useState<ScorerMeta[]>([]);
-  const [selections, setSelections] = useState<Record<string, ScorerSelection>>({});
-  const [judgeModel, setJudgeModel] = useState<string>("databricks-gpt-5-mini");
-
   const [running, setRunning] = useState(false);
-  const [runError, setRunError] = useState<string | null>(null);
-  const [result, setResult] = useState<EvalRunResponse | null>(null);
+  const runError = session.error;
 
-  // Load catalog + suggestions when modal opens.
+  const updateSession = useCallback(
+    (patch: Partial<EvalSessionState>) => {
+      setSession((prev) => ({ ...prev, ...patch }));
+    },
+    [setSession],
+  );
+
+  // Load catalog once. Initialize selections for any new scorer keys without
+  // overwriting choices the user has already made.
   useEffect(() => {
     if (!graphGetter) return;
     let cancelled = false;
@@ -109,22 +142,28 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
         const data = await suggestScorers(graph);
         if (cancelled) return;
         setCatalog(data.catalog);
-        const initial: Record<string, ScorerSelection> = {};
-        for (const s of data.catalog) {
-          initial[s.key] = {
-            enabled: data.suggested.includes(s.key),
-            guidelines: s.key === "guidelines" ? DEFAULT_GUIDELINES : undefined,
-          };
-        }
-        setSelections(initial);
+        setSession((prev) => {
+          const next: Record<string, ScorerSelection> = { ...prev.selections };
+          let changed = false;
+          for (const s of data.catalog) {
+            if (!(s.key in next)) {
+              next[s.key] = {
+                enabled: data.suggested.includes(s.key),
+                guidelines: s.key === "guidelines" ? DEFAULT_GUIDELINES : undefined,
+              };
+              changed = true;
+            }
+          }
+          return changed ? { ...prev, selections: next } : prev;
+        });
       } catch (e) {
-        setRunError((e as Error).message);
+        updateSession({ error: (e as Error).message });
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [graphGetter]);
+  }, [graphGetter, setSession, updateSession]);
 
   const backendRows = useMemo(() => draftsToBackendRows(rows), [rows]);
 
@@ -139,56 +178,72 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
         setGenError("Model returned no rows. Try a more specific description.");
         return;
       }
-      setRows(draftsFromBackendRows(res.rows));
+      updateSession({ rows: draftsFromBackendRows(res.rows) });
     } catch (e) {
       setGenError((e as Error).message);
     } finally {
       setGenerating(false);
     }
-  }, [graphGetter, genDescription, genCount]);
+  }, [graphGetter, genDescription, genCount, updateSession]);
 
   const handleRun = useCallback(async () => {
     if (!graphGetter) return;
     if (!backendRows.length) {
-      setRunError("Add at least one input row.");
+      updateSession({ error: "Add at least one input row." });
       return;
     }
-    const scorerConfigs = Object.entries(selections)
-      .filter(([, s]) => s.enabled)
-      .map(([key, s]) => ({
-        key,
-        config: key === "guidelines" && s.guidelines ? { guidelines: s.guidelines } : {},
-      }));
+    const scorerConfigs = enabledScorerConfigs(session);
     if (!scorerConfigs.length) {
-      setRunError("Pick at least one scorer.");
+      updateSession({ error: "Pick at least one scorer." });
       setTab("scorers");
       return;
     }
     setRunning(true);
-    setRunError(null);
+    updateSession({ error: null });
     setTab("results");
     try {
       const graph = graphGetter();
       const res = await runEval(graph, backendRows, scorerConfigs, judgeModel, null);
-      setResult(res);
+      updateSession({ result: res, error: null });
     } catch (e) {
-      setRunError((e as Error).message);
+      updateSession({ error: (e as Error).message });
     } finally {
       setRunning(false);
     }
-  }, [graphGetter, backendRows, selections, judgeModel]);
+  }, [graphGetter, backendRows, session, judgeModel, updateSession]);
 
-  const updateRow = useCallback((id: number, patch: Partial<RowDraft>) => {
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch } : r)));
-  }, []);
+  const updateRow = useCallback(
+    (id: number, patch: Partial<RowDraft>) => {
+      setSession((prev) => ({
+        ...prev,
+        rows: prev.rows.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+      }));
+    },
+    [setSession],
+  );
 
-  const removeRow = useCallback((id: number) => {
-    setRows((prev) => (prev.length === 1 ? prev : prev.filter((r) => r.id !== id)));
-  }, []);
+  const removeRow = useCallback(
+    (id: number) => {
+      setSession((prev) =>
+        prev.rows.length === 1 ? prev : { ...prev, rows: prev.rows.filter((r) => r.id !== id) },
+      );
+    },
+    [setSession],
+  );
 
   const addRow = useCallback(() => {
-    setRows((prev) => [...prev, newRow()]);
-  }, []);
+    setSession((prev) => ({ ...prev, rows: [...prev.rows, newRow()] }));
+  }, [setSession]);
+
+  const setSelection = useCallback(
+    (key: string, patch: Partial<ScorerSelection>) => {
+      setSession((prev) => ({
+        ...prev,
+        selections: { ...prev.selections, [key]: { ...prev.selections[key], ...patch } },
+      }));
+    },
+    [setSession],
+  );
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -197,7 +252,8 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
           <h1>Evaluate Agent</h1>
           <p>
             Run your graph against a dataset and score it with built-in LLM judges.
-            Use these results to iterate before deploying.
+            Results persist for this session so you can iterate, then deploy the
+            same scorers as production monitoring.
           </p>
         </div>
 
@@ -314,7 +370,7 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
                   Judge model
                   <SearchableSelect
                     value={judgeModel}
-                    onChange={setJudgeModel}
+                    onChange={(value) => updateSession({ judgeModel: value })}
                     fetchEndpoint="/api/discover/serving-endpoints"
                     placeholder="Pick a serving endpoint"
                     showProviderIcons
@@ -335,12 +391,7 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
                       <input
                         type="checkbox"
                         checked={sel.enabled}
-                        onChange={(e) =>
-                          setSelections((prev) => ({
-                            ...prev,
-                            [sc.key]: { ...sel, enabled: e.target.checked },
-                          }))
-                        }
+                        onChange={(e) => setSelection(sc.key, { enabled: e.target.checked })}
                       />
                       <span className="eval-scorer-title">{sc.label}</span>
                     </label>
@@ -349,12 +400,7 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
                       <textarea
                         className="deploy-input eval-textarea eval-guidelines"
                         value={sel.guidelines ?? ""}
-                        onChange={(e) =>
-                          setSelections((prev) => ({
-                            ...prev,
-                            [sc.key]: { ...sel, guidelines: e.target.value },
-                          }))
-                        }
+                        onChange={(e) => setSelection(sc.key, { guidelines: e.target.value })}
                         placeholder="One rule per line, e.g. 'Response must be polite.'"
                       />
                     )}
@@ -377,7 +423,16 @@ export default function EvalModal({ graphGetter, onClose }: Props) {
                   <XCircle size={14} /> {runError}
                 </div>
               )}
-              {result && <ResultsView result={result} />}
+              {result && (
+                <>
+                  <div className="eval-deploy-hint">
+                    Like what you see? Open <strong>Deploy</strong> and turn on
+                    <em> Production monitoring</em> to run these same scorers
+                    against live traffic.
+                  </div>
+                  <ResultsView result={result} />
+                </>
+              )}
             </div>
           )}
         </div>
@@ -416,10 +471,12 @@ function ResultsView({ result }: { result: EvalRunResponse }) {
         {scorerNames.map((name) => {
           const score = result.summary[name];
           const pct = score !== undefined ? Math.round(score * 100) : null;
+          const bucket =
+            pct !== null && pct >= 80 ? "eval-pass" : pct !== null && pct < 50 ? "eval-fail" : "eval-neutral";
           return (
             <div key={name} className="eval-summary-card">
               <div className="eval-summary-name">{name}</div>
-              <div className={`eval-summary-value ${pct !== null && pct >= 80 ? "eval-pass" : pct !== null && pct < 50 ? "eval-fail" : "eval-neutral"}`}>
+              <div className={`eval-summary-value ${bucket}`}>
                 {pct !== null ? `${pct}%` : "—"}
               </div>
             </div>
@@ -477,10 +534,22 @@ function RowDetails({ row, scorerNames }: { row: EvalRowResult; scorerNames: str
       </button>
       {open && (
         <div className="eval-row-detail">
+          <div className="eval-detail-block">
+            <div className="eval-detail-label">Input</div>
+            <div className="eval-detail-prose">{renderValue(input)}</div>
+          </div>
+          <div className="eval-detail-block">
+            <div className="eval-detail-label">Response</div>
+            <div className="eval-detail-prose">{row.output || "(no response)"}</div>
+          </div>
           {row.expectations && (
             <div className="eval-detail-block">
-              <div className="eval-detail-label">Expectations</div>
-              <pre className="eval-detail-pre">{JSON.stringify(row.expectations, null, 2)}</pre>
+              <div className="eval-detail-label">Expected</div>
+              <div className="eval-detail-prose">
+                {typeof row.expectations.expected_response === "string"
+                  ? row.expectations.expected_response
+                  : JSON.stringify(row.expectations, null, 2)}
+              </div>
             </div>
           )}
           {scorerNames.map((n) => {
@@ -488,7 +557,9 @@ function RowDetails({ row, scorerNames }: { row: EvalRowResult; scorerNames: str
             if (!a) return null;
             return (
               <div key={n} className="eval-detail-block">
-                <div className="eval-detail-label">{n} — {renderValue(a.value)}</div>
+                <div className="eval-detail-label">
+                  {n} — <span className={passColor(a.value)}>{renderValue(a.value)}</span>
+                </div>
                 {a.rationale && <div className="eval-detail-rationale">{a.rationale}</div>}
                 {a.error && <div className="eval-error">{a.error}</div>}
               </div>

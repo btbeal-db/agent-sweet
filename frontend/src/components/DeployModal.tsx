@@ -1,12 +1,15 @@
 import { useState, useCallback } from "react";
-import { validateGraph, deployGraphStream } from "../api";
+import { deployGraphStream, enableEvalMonitoring } from "../api";
 import type { GraphDef, DeployMode, AuthMode, DeployStepName, DeployStepStatus, DeployEvent } from "../types";
+import type { EvalSessionState } from "./EvalModal";
+import { enabledScorerConfigs } from "./EvalModal";
 
 interface Props {
   graphGetter: (() => GraphDef) | null;
   onClose: () => void;
   defaultExperimentPath?: string;
   onGoToSetup?: () => void;
+  evalSession?: EvalSessionState;
 }
 
 type Phase = "form" | "deploying" | "done" | "error";
@@ -101,7 +104,12 @@ function StepIcon({ status }: { status: DeployStepStatus }) {
   }
 }
 
-export default function DeployModal({ graphGetter, onClose, defaultExperimentPath, onGoToSetup }: Props) {
+export default function DeployModal({ graphGetter, onClose, defaultExperimentPath, onGoToSetup, evalSession }: Props) {
+  const configuredScorers = evalSession ? enabledScorerConfigs(evalSession) : [];
+  const canEnableMonitoring = configuredScorers.length > 0;
+  const [enableMonitoring, setEnableMonitoring] = useState<boolean>(canEnableMonitoring);
+  const [sampleRate, setSampleRate] = useState<number>(1);
+  const [monitorStatus, setMonitorStatus] = useState<string>("");
   const [modelName, setModelName] = useState("");
   const [experimentName, setExperimentName] = useState("");
   // The full experiment path: base folder from setup + user-provided experiment name.
@@ -172,11 +180,34 @@ export default function DeployModal({ graphGetter, onClose, defaultExperimentPat
           lakebase_existing_project_id: lakebaseMode === "existing" ? lakebaseExistingProjectId : "",
           lakebase_conn_string: lakebaseMode === "connstring" ? lakebaseConnString : "",
         },
-        (event: DeployEvent) => {
+        async (event: DeployEvent) => {
           if (event.step === "complete") {
             receivedTerminal = true;
-            setResultData(event.data ?? {});
+            const data = event.data ?? {};
+            setResultData(data);
             setPhase("done");
+            const experimentId = data.experiment_id;
+            if (enableMonitoring && experimentId && evalSession && configuredScorers.length) {
+              setMonitorStatus("Enabling production monitoring…");
+              try {
+                const res = await enableEvalMonitoring(
+                  experimentId,
+                  configuredScorers,
+                  evalSession.judgeModel,
+                  sampleRate,
+                );
+                const skippedMsg = res.skipped.length
+                  ? ` (${res.skipped.length} skipped: ${res.skipped.map((s) => s.key).join(", ")})`
+                  : "";
+                setMonitorStatus(
+                  res.registered.length
+                    ? `Monitoring enabled for: ${res.registered.join(", ")}${skippedMsg}`
+                    : `No scorers were registered${skippedMsg}`,
+                );
+              } catch (e) {
+                setMonitorStatus(`Monitoring setup failed: ${(e as Error).message}`);
+              }
+            }
             return;
           }
           setSteps((prev) => ({
@@ -393,6 +424,45 @@ export default function DeployModal({ graphGetter, onClose, defaultExperimentPat
                   </span>
                 </label>
               )}
+
+              <div className="deploy-monitor-block">
+                <label className="deploy-monitor-toggle">
+                  <input
+                    type="checkbox"
+                    checked={enableMonitoring}
+                    onChange={(e) => setEnableMonitoring(e.target.checked)}
+                    disabled={!canEnableMonitoring}
+                  />
+                  <span>Enable production monitoring</span>
+                </label>
+                {canEnableMonitoring ? (
+                  <>
+                    <span className="deploy-hint">
+                      Run the same scorers from your last eval against live traffic
+                      (sample rate {Math.round(sampleRate * 100)}%): {" "}
+                      <strong>{configuredScorers.map((s) => s.key).join(", ")}</strong>.
+                    </span>
+                    {enableMonitoring && (
+                      <label className="deploy-label deploy-monitor-rate">
+                        Sample rate
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={sampleRate}
+                          onChange={(e) => setSampleRate(Number(e.target.value))}
+                        />
+                      </label>
+                    )}
+                  </>
+                ) : (
+                  <span className="deploy-hint">
+                    Configure scorers in the <strong>Evaluate</strong> panel first
+                    to enable production monitoring.
+                  </span>
+                )}
+              </div>
             </div>
 
             <div className="deploy-actions">
@@ -457,6 +527,9 @@ export default function DeployModal({ graphGetter, onClose, defaultExperimentPat
 
             <div className="deploy-success">
               <p>{doneMessage}</p>
+              {monitorStatus && (
+                <p className="deploy-monitor-status">{monitorStatus}</p>
+              )}
               {resultData?.endpoint_url && (
                 <label className="deploy-label">
                   Endpoint URL
