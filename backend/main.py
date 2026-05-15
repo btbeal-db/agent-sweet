@@ -544,9 +544,11 @@ class OBOMiddleware(BaseHTTPMiddleware):
 app.add_middleware(OBOMiddleware)
 
 from .discovery import router as discovery_router
+from .eval import router as eval_router
 
 app.include_router(setup_router, prefix="/api/setup", tags=["setup"])
 app.include_router(discovery_router, prefix="/api/discover", tags=["discovery"])
+app.include_router(eval_router, prefix="/api/eval", tags=["eval"])
 
 
 # ── Preview session store (in-memory, per-process) ────────────────────────────

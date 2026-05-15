@@ -200,3 +200,50 @@ export interface SetupValidateResponse {
   experiment_id: string | null;
   error: string | null;
 }
+
+// ── Eval ───────────────────────────────────────────────────────────────────
+
+export interface ScorerMeta {
+  key: string;
+  label: string;
+  description: string;
+  requires_expectations: boolean;
+  requires_retrieval: boolean;
+  supports_guidelines: boolean;
+}
+
+export interface ScorerConfig {
+  key: string;
+  config: Record<string, unknown>;
+}
+
+export interface EvalRow {
+  inputs: Record<string, unknown>;
+  expectations?: Record<string, unknown> | null;
+}
+
+export interface EvalAssessment {
+  value: unknown;
+  rationale: string;
+  error: string | null;
+}
+
+export interface EvalRowResult {
+  inputs: Record<string, unknown>;
+  expectations?: Record<string, unknown> | null;
+  output: string;
+  assessments: Record<string, EvalAssessment>;
+  error: string | null;
+}
+
+export interface EvalRunResponse {
+  run_id: string;
+  experiment_id: string;
+  summary: Record<string, number>;
+  rows: EvalRowResult[];
+}
+
+export interface ScorerSuggestResponse {
+  suggested: string[];
+  catalog: ScorerMeta[];
+}

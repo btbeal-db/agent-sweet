@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { Home, Hammer, Trash2, CloudDownload, Save, Upload, MessageSquare, Rocket, Sparkles, Settings, Package, X, HelpCircle, CakeSlice } from "lucide-react";
+import { Home, Hammer, Trash2, CloudDownload, Save, Upload, MessageSquare, Rocket, Sparkles, Settings, Package, X, HelpCircle, CakeSlice, ClipboardCheck } from "lucide-react";
 import Canvas from "./components/Canvas";
 import NodePalette from "./components/NodePalette";
 import ChatPlayground from "./components/ChatPlayground";
 import DeployModal from "./components/DeployModal";
+import EvalModal from "./components/EvalModal";
 import HomePage from "./components/HomePage";
 import BuilderWalkthrough from "./components/BuilderWalkthrough";
 import AIChatDropdown from "./components/AIChatDropdown";
@@ -24,6 +25,7 @@ export default function App() {
   const [showAIChat, setShowAIChat] = useState(false);
   const aiChatWrapperRef = useRef<HTMLDivElement>(null);
   const [showDeploy, setShowDeploy] = useState(false);
+  const [showEval, setShowEval] = useState(false);
   const [showImportJson, setShowImportJson] = useState(false);
   const [importJsonInput, setImportJsonInput] = useState("");
   const [importJsonError, setImportJsonError] = useState("");
@@ -181,6 +183,10 @@ export default function App() {
                   <MessageSquare size={14} />
                   Playground
                 </button>
+                <button className="btn btn-playground btn-with-icon" onClick={() => setShowEval(true)}>
+                  <ClipboardCheck size={14} />
+                  Evaluate
+                </button>
                 <button className="btn btn-deploy btn-with-icon" onClick={() => setShowDeploy(true)}>
                   <Rocket size={14} />
                   Deploy
@@ -312,6 +318,13 @@ export default function App() {
           onClose={() => { setShowDeploy(false); refreshModels(); }}
           defaultExperimentPath={experimentPath ?? ""}
           onGoToSetup={() => { setShowDeploy(false); setView("setup"); }}
+        />
+      )}
+
+      {showEval && (
+        <EvalModal
+          graphGetter={graphGetter}
+          onClose={() => setShowEval(false)}
         />
       )}
 

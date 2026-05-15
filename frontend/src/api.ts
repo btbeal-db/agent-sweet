@@ -181,3 +181,59 @@ export async function autoSetup(): Promise<SetupValidateResponse> {
   if (!res.ok) throw new Error("Failed to auto-setup");
   return res.json();
 }
+
+// ── Eval ───────────────────────────────────────────────────────────────────
+
+import type {
+  EvalRow,
+  EvalRunResponse,
+  ScorerConfig,
+  ScorerSuggestResponse,
+} from "./types";
+
+export async function suggestScorers(graph: GraphDef): Promise<ScorerSuggestResponse> {
+  const res = await fetch(`${BASE}/eval/scorers/suggest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ graph }),
+  });
+  if (!res.ok) throw new Error(`Failed to load scorers: ${res.status}`);
+  return res.json();
+}
+
+export async function generateEvalDataset(
+  graph: GraphDef,
+  description: string,
+  count: number,
+): Promise<{ rows: EvalRow[] }> {
+  const res = await fetch(`${BASE}/eval/dataset/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ graph, description, count }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: "Generation failed" }));
+    throw new Error(detail.detail || "Generation failed");
+  }
+  return res.json();
+}
+
+export async function runEval(
+  graph: GraphDef,
+  dataset: EvalRow[],
+  scorers: ScorerConfig[],
+  pat: string | null | undefined,
+): Promise<EvalRunResponse> {
+  const body: Record<string, unknown> = { graph, dataset, scorers };
+  if (pat) body.pat = pat;
+  const res = await fetch(`${BASE}/eval/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: "Eval failed" }));
+    throw new Error(detail.detail || "Eval failed");
+  }
+  return res.json();
+}
