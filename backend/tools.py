@@ -332,6 +332,10 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
     # Optional MLflow span_type — set to "RETRIEVER" by VS/Genie wrappers so
     # the eval suite's retrieval scorers can find their context.
     span_type = config.get("span_type")
+    # Vector-search tools also accept a per-call `filters` arg that we route
+    # into MCP `_meta.filters` so the LLM can do exact-match lookups instead
+    # of relying on semantic similarity alone.
+    is_vs_retriever = span_type == SpanType.RETRIEVER and "vector-search" in server_url
     sync_tools: list[BaseTool] = []
 
     for td in tool_defs:
@@ -345,23 +349,42 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
             _name: str = tool_name,
             _meta: dict | None = tool_meta,
             _span_type: str | None = span_type,
+            _supports_filters: bool = is_vs_retriever,
         ) -> Any:
-            def _invoke(kwargs: dict[str, Any]) -> str:
+            def _invoke(kwargs: dict[str, Any], extra_meta: dict | None) -> str:
+                merged_meta = dict(_meta or {})
+                if extra_meta:
+                    merged_meta.update(extra_meta)
                 client = _get_mcp_client(server_url)
                 result = _run_mcp_in_thread(
-                    _mcp_call_tool, server_url, client, _name, kwargs, _meta,
+                    _mcp_call_tool, server_url, client, _name, kwargs, merged_meta or None,
                 )
                 parts = [c.text for c in result.content if hasattr(c, "text")]
                 return "\n".join(parts) if parts else "(no output)"
 
             def call_tool(**kwargs: Any) -> str:
+                extra_meta: dict[str, Any] = {}
+                # Pull a per-call filters arg out of kwargs and route it to
+                # MCP _meta.filters; the MCP server's `query` arg only knows
+                # about the search string itself.
+                if _supports_filters:
+                    raw = kwargs.pop("filters", None)
+                    if raw:
+                        if isinstance(raw, dict):
+                            extra_meta["filters"] = json.dumps(raw)
+                        elif isinstance(raw, str) and raw.strip():
+                            try:
+                                json.loads(raw)
+                                extra_meta["filters"] = raw
+                            except json.JSONDecodeError:
+                                logger.warning("Ignoring non-JSON filters arg: %r", raw)
                 if _span_type != SpanType.RETRIEVER:
-                    return _invoke(kwargs)
+                    return _invoke(kwargs, extra_meta)
                 with mlflow.start_span(
                     name=f"mcp.{_name}", span_type=SpanType.RETRIEVER,
                 ) as span:
-                    span.set_inputs({"tool": _name, **kwargs})
-                    output = _invoke(kwargs)
+                    span.set_inputs({"tool": _name, **kwargs, **extra_meta})
+                    output = _invoke(kwargs, extra_meta)
                     span.set_outputs([
                         {"page_content": output, "metadata": {"tool": _name}}
                     ])
@@ -372,11 +395,36 @@ def _make_mcp_tools(config: dict[str, Any]) -> list[BaseTool]:
         if custom_desc and len(tool_defs) == 1:
             desc = custom_desc
 
+        # Augment VS retriever tools with a `filters` arg in the schema +
+        # a hint in the description so the LLM knows exact-match lookups
+        # belong in filters, not in the semantic query string.
+        input_schema = td.get("inputSchema") or {"type": "object", "properties": {}}
+        if is_vs_retriever:
+            input_schema = dict(input_schema)
+            props = dict(input_schema.get("properties") or {})
+            props["filters"] = {
+                "type": "string",
+                "description": (
+                    "Optional JSON object for exact-match filtering, e.g. "
+                    '`{"patient_id": "P008"}` or `{"year >=": 2020}`. Use this '
+                    "for specific-ID/category/date lookups so results aren't "
+                    "diluted by semantically similar but unrelated rows."
+                ),
+            }
+            input_schema["properties"] = props
+            if desc:
+                desc = (
+                    desc
+                    + "\n\nFor exact lookups (specific ID, category, date), set "
+                    '`filters` to a JSON object like `{"patient_id": "P008"}` '
+                    "instead of putting the ID in the query."
+                )
+
         sync_tools.append(
             StructuredTool(
                 name=lc_name,
                 description=desc,
-                args_schema=td.get("inputSchema", {}),
+                args_schema=input_schema,
                 func=_make_fn(),
             )
         )
@@ -512,7 +560,13 @@ def _make_vector_search_tool_sdk(config: dict[str, Any]) -> list[BaseTool]:
     custom_desc = config.get("tool_description", "")
     vector_search.description = custom_desc or (
         f"Search the vector index '{index_name}' for relevant documents. "
-        f"Returns the top {num_results} results."
+        f"Returns the top {num_results} results.\n\n"
+        "For exact-match lookups (e.g. a specific ID, category, or date), "
+        "set `filters` to a JSON object like "
+        '`{"patient_id": "P008"}` or `{"year >=": 2020}` so the search '
+        "is restricted to matching rows instead of relying on semantic "
+        "similarity alone. Inspect the columns in the results to learn "
+        "which fields are filterable."
     )
     return [vector_search]
 
