@@ -3922,8 +3922,11 @@ h4.md-header { font-size: 0.82em; }
   border-top: none;
 }
 
+/* Hover lives on the card so it covers the full row regardless of how
+   the inner grid distributes columns. The button itself stays transparent
+   so the card's hover bg is the only one painted. */
 .eval-row-card:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.045);
 }
 
 .eval-row-summary {
@@ -3936,10 +3939,6 @@ h4.md-header { font-size: 0.82em; }
   line-height: 1.45;
   color: var(--text-primary);
   font-family: inherit;
-}
-
-.eval-row-summary:hover {
-  background: rgba(255, 255, 255, 0.025);
 }
 
 .eval-col-input,
